@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif;
+  --font-body: "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+  --color-warm-50: #faf7f2;
+  --color-warm-100: #f4ede3;
+  --color-warm-200: #e8dccf;
+  --color-warm-300: #d6c6b4;
+  --color-warm-400: #b8a08a;
+  --color-warm-500: #8f6d52;
+  --color-warm-600: #7a5a3e;
+  --color-warm-700: #5c4230;
+  --color-warm-800: #3d2c20;
+  --color-warm-900: #1d1611;
+  --color-accent: #8f4d2e;
+  --color-accent-light: #f4ebe2;
+  --color-page-bg: #f1ede7;
+  --color-card-bg: #e8e0d8;
+  --color-text-primary: #1a1613;
+  --color-text-secondary: #6b5c4f;
+  --color-border-card: #d6c6b4;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--color-page-bg);
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(204, 120, 92, 0.5);
+}
+
+/* Page titles: stylish Mincho */
+.page-title {
+  font-family: var(--font-display);
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}

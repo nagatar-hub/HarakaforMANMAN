@@ -1,0 +1,23 @@
+{
+  "name": "haraka-webapp",
+  "private": true,
+  "workspaces": [
+    "packages/shared",
+    "packages/web",
+    "packages/api",
+    "packages/job"
+  ],
+  "scripts": {
+    "dev:web": "npm -w packages/web run dev",
+    "dev:api": "npm -w packages/api run dev",
+    "build:shared": "npm -w packages/shared run build",
+    "build:web": "npm -w packages/web run build",
+    "build:api": "npm -w packages/api run build",
+    "build:job": "npm -w packages/job run build",
+    "typecheck": "npm -ws --if-present run typecheck"
+  },
+  "devDependencies": {
+    "supabase": "^2.78.1",
+    "typescript": "^5.7.0"
+  }
+}

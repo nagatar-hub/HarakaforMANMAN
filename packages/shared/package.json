@@ -1,0 +1,21 @@
+{
+  "name": "@haraka/shared",
+  "version": "0.0.1",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./types": "./dist/types/index.js",
+    "./types/*": "./dist/types/*.js",
+    "./constants": "./dist/constants/index.js",
+    "./constants/*": "./dist/constants/*.js",
+    "./utils": "./dist/utils/index.js",
+    "./utils/*": "./dist/utils/*.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsc --watch"
+  }
+}

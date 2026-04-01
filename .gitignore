@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.next/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+.turbo/
+.vercel/
+supabase/.temp/
+Harakawebapp

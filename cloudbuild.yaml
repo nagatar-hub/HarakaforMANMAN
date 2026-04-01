@@ -1,0 +1,22 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-api', '.']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-api']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'haraka-api'
+      - '--image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-api'
+      - '--region=asia-northeast1'
+      - '--platform=managed'
+      - '--no-cpu-throttling'
+      - '--timeout=300'
+      - '--memory=1Gi'
+
+images:
+  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-api'
