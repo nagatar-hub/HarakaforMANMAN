@@ -30,7 +30,7 @@ export async function getCredentials(): Promise<OAuthCredentials> {
   // Cloud Run: Secret Manager から取得
   const { getSecret } = await import('./secret-manager.js');
   const [refreshToken, clientId, clientSecret] = await Promise.all([
-    getSecret('haraka-oauth-refresh-token'),
+    getSecret('haraka-oauth-kecak-refresh-token'),
     getSecret('haraka-oauth-client-id'),
     getSecret('haraka-oauth-client-secret'),
   ]);
