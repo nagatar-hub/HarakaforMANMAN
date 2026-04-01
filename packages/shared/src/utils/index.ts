@@ -1,2 +1,2 @@
-export { niceLowerBound, calculateBuyPriceLow } from './price.js';
+export { niceLowerBound, calculateBuyPriceLow, calculateBoxPriceLow } from './price.js';
 export { normalizeText } from './normalize.js';

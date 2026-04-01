@@ -35,6 +35,7 @@ function makeCard(overrides: Partial<PreparedCardRow> = {}): PreparedCardRow {
 function makeRule(overrides: Partial<RuleRow> = {}): RuleRow {
   return {
     id: `rule-${Math.random().toString(36).slice(2, 8)}`,
+    store: 'oripark',
     franchise: 'Pokemon',
     tag_pattern: 'TOP',
     match_type: 'exact',
