@@ -2,8 +2,10 @@ import type { Metadata } from 'next';
 import { BottomNav } from '@/components/bottom-nav';
 import './globals.css';
 
+const STORE_DISPLAY_NAME = process.env.NEXT_PUBLIC_STORE_DISPLAY_NAME ?? 'Haraka';
+
 export const metadata: Metadata = {
-  title: 'Haraka',
+  title: STORE_DISPLAY_NAME,
   description: '買取表自動生成システム',
 };
 

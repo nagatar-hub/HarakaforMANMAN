@@ -50,3 +50,13 @@ export function calculateBuyPriceLow(priceHigh: number, franchise: Franchise): n
   const raw = priceHigh * rate;
   return niceLowerBound(raw);
 }
+
+/**
+ * BOX シュリンク無価格を計算
+ * discountRate: 0.15 = 15% OFF（設定画面で変更可能）
+ * 端数は100円単位で切り捨て
+ */
+export function calculateBoxPriceLow(priceHigh: number, discountRate: number = 0.15): number {
+  if (!priceHigh || priceHigh <= 0) return 0;
+  return Math.floor(priceHigh * (1 - discountRate) / 100) * 100;
+}

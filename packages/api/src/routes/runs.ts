@@ -6,6 +6,8 @@ import path from 'path';
 
 export const runRoutes = new Hono();
 
+const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+
 /** 実行中ジョブのPID管理（インスタンス内メモリ） */
 const runningJobs: { jobName: string; pid: number; startedAt: Date }[] = [];
 
@@ -16,6 +18,7 @@ runRoutes.get('/runs', async (c) => {
   const { data, error } = await supabase
     .from('run')
     .select('*')
+    .eq('store', STORE_NAME)
     .order('started_at', { ascending: false })
     .limit(limit);
   if (error) return c.json({ error: error.message }, 500);

@@ -5,15 +5,18 @@ import { createSupabaseClient } from '../lib/supabase.js';
 
 export const galleryRoutes = new Hono();
 
+const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+
 /** 日付一覧: generated_page の created_at から DISTINCT 日付を抽出 */
 galleryRoutes.get('/gallery/dates', async (c) => {
   const supabase = createSupabaseClient();
 
-  // generated_page から run_id ごとの日付と件数を取得
+  // generated_page から run_id ごとの日付と件数を取得（storeフィルタ: image_key prefix）
   const { data: pages, error } = await supabase
     .from('generated_page')
     .select('run_id, franchise, image_key, created_at')
     .eq('status', 'generated')
+    .like('image_key', `generated/${STORE_NAME}/%`)
     .order('created_at', { ascending: false });
 
   if (error) return c.json({ error: error.message }, 500);
@@ -46,7 +49,7 @@ galleryRoutes.get('/gallery/images', async (c) => {
 
   const supabase = createSupabaseClient();
   const [year, month, day] = date.split('-');
-  const prefix = `generated/${year}/${month}/${day}/`;
+  const prefix = `generated/${STORE_NAME}/${year}/${month}/${day}/`;
 
   let query = supabase
     .from('generated_page')
@@ -270,8 +273,8 @@ galleryRoutes.post('/gallery/pages/:pageId/cards', async (c) => {
   if (pageErr || !page) return c.json({ error: 'Page not found' }, 404);
 
   const currentIds = (page as Record<string, unknown>).card_ids as string[] || [];
-  if (currentIds.length >= 40) {
-    return c.json({ error: 'ページは最大40枚です' }, 400);
+  if (currentIds.length >= 30) {
+    return c.json({ error: 'ページは最大30枚です' }, 400);
   }
 
   let cardId = body.cardId;

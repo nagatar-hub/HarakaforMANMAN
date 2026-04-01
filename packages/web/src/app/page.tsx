@@ -53,7 +53,7 @@ export default async function DashboardPage() {
     <div>
       {/* Hero */}
       <div className="mb-14">
-        <h1 className="font-[family-name:var(--font-display)] text-3xl sm:text-5xl font-bold tracking-tight text-text-primary">Haraka</h1>
+        <h1 className="font-[family-name:var(--font-display)] text-3xl sm:text-5xl font-bold tracking-tight text-text-primary">{process.env.NEXT_PUBLIC_STORE_DISPLAY_NAME ?? 'Haraka'}</h1>
         <p className="text-text-secondary mt-2 sm:mt-3 text-base sm:text-lg">買取表自動生成</p>
       </div>
 

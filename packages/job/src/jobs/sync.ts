@@ -44,13 +44,15 @@ type GeneratedPageInsert = Database['public']['Tables']['generated_page']['Inser
 // メイン処理
 // ---------------------------------------------------------------------------
 
+const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+
 export async function runSync() {
   const supabase = createSupabaseClient();
 
   // ---- 1. Run レコード作成 ----
   const { data: run, error: runError } = await supabase
     .from('run')
-    .insert({ triggered_by: process.env.TRIGGER || 'manual' })
+    .insert({ triggered_by: process.env.TRIGGER || 'manual', store: STORE_NAME })
     .select()
     .single<RunRow>();
   if (runError || !run) throw new Error(`Run作成失敗: ${runError?.message}`);
@@ -146,6 +148,23 @@ export async function runSync() {
       console.log(`[sync] db_card upsert 完了: ${dbCardRows.length}件`);
     }
 
+    // ---- 4.75. store_config から BOX割引率を取得 ----
+    let boxDiscountRate = 0.15;
+    try {
+      const { data: storeConfig } = await supabase
+        .from('store_config')
+        .select('settings')
+        .eq('store', STORE_NAME)
+        .single();
+      if (storeConfig?.settings && typeof storeConfig.settings === 'object') {
+        const rate = (storeConfig.settings as Record<string, unknown>).box_shrink_discount_rate;
+        if (typeof rate === 'number') boxDiscountRate = rate;
+      }
+    } catch {
+      console.log('[sync] store_config 取得スキップ（デフォルト割引率 15% 使用）');
+    }
+    console.log(`[sync] BOX割引率: ${(boxDiscountRate * 100).toFixed(0)}%`);
+
     // ---- 5. PreparedCard 変換 + 保存 ----
     await updateProgress(supabase, run.id, 30, 100, 'PreparedCard 変換中...');
     let totalPrepared = 0;
@@ -157,7 +176,7 @@ export async function runSync() {
       const lookupMap = lookupMaps.get(franchise);
       if (!lookupMap) continue;
 
-      const prepared = prepareCards(rawImports, lookupMap, franchise);
+      const prepared = prepareCards(rawImports, lookupMap, franchise, boxDiscountRate);
       if (prepared.length === 0) continue;
 
       await batchInsert(supabase, 'prepared_card', prepared as unknown as Record<string, unknown>[]);
@@ -322,18 +341,20 @@ export async function runSync() {
 
       if (validCards.length === 0) continue;
 
-      // asset_profile 取得
+      // asset_profile 取得（storeフィルタ）
       const { data: profile, error: profileError } = await supabase
         .from('asset_profile')
         .select('*')
+        .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .single<AssetProfileRow>();
       if (profileError || !profile) throw new Error(`asset_profile 取得失敗 (${franchise}): ${profileError?.message}`);
 
-      // rule 取得
+      // rule 取得（storeフィルタ）
       const { data: rules, error: rulesError } = await supabase
         .from('rule')
         .select('*')
+        .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .returns<RuleRow[]>();
       if (rulesError) throw new Error(`rule 取得失敗: ${rulesError.message}`);

@@ -26,8 +26,18 @@ export type RunStatus = 'running' | 'completed' | 'failed';
 export type RuleMatchType = 'exact' | 'contains' | 'regex';
 export type RuleBehavior = 'isolate' | 'merge' | 'exclude' | 'group';
 
+export type StoreConfigRow = {
+  store: string;
+  settings: {
+    box_shrink_discount_rate?: number;
+    [key: string]: unknown;
+  };
+  updated_at: string;
+};
+
 export type RunRow = {
   id: string;
+  store: string;
   triggered_by: string;
   status: RunStatus;
   total_imported: number;
@@ -52,6 +62,7 @@ export type RunRow = {
 
 export type RuleRow = {
   id: string;
+  store: string;
   franchise: 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
   tag_pattern: string;
   match_type: RuleMatchType;
@@ -64,6 +75,7 @@ export type RuleRow = {
 
 export type AssetProfileRow = {
   id: string;
+  store: string;
   franchise: 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
   template_image: string | null;
   card_back_image: string | null;
@@ -282,6 +294,12 @@ export type Database = {
           image_key?: string | null; image_url?: string | null; status?: PageStatus;
         };
         Update: Partial<Omit<GeneratedPageRow, 'id' | 'created_at'>>;
+        Relationships: [];
+      };
+      store_config: {
+        Row: StoreConfigRow;
+        Insert: Omit<StoreConfigRow, 'updated_at'> & { updated_at?: string };
+        Update: Partial<StoreConfigRow>;
         Relationships: [];
       };
       db_card: {

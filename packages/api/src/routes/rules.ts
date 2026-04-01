@@ -7,9 +7,11 @@ type RuleUpdate = Database['public']['Tables']['rule']['Update'];
 
 export const ruleRoutes = new Hono();
 
+const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+
 ruleRoutes.get('/rules', async (c) => {
   const supabase = createSupabaseClient();
-  const { data, error } = await supabase.from('rule').select('*').order('priority', { ascending: false });
+  const { data, error } = await supabase.from('rule').select('*').eq('store', STORE_NAME).order('priority', { ascending: false });
   if (error) return c.json({ error: error.message }, 500);
   return c.json(data);
 });
@@ -17,7 +19,7 @@ ruleRoutes.get('/rules', async (c) => {
 ruleRoutes.post('/rules', async (c) => {
   const body = await c.req.json<RuleInsert>();
   const supabase = createSupabaseClient();
-  const { data, error } = await supabase.from('rule').insert(body).select().single();
+  const { data, error } = await supabase.from('rule').insert({ ...body, store: STORE_NAME }).select().single();
   if (error) return c.json({ error: error.message }, 500);
   return c.json(data, 201);
 });
@@ -45,10 +47,11 @@ ruleRoutes.get('/tag-stats', async (c) => {
   const runs = parseInt(c.req.query('runs') || '5');
   const supabase = createSupabaseClient();
 
-  // 過去N回のcompleted runを取得
+  // 過去N回のcompleted runを取得（storeフィルタ）
   const { data: recentRuns } = await supabase
     .from('run')
     .select('id')
+    .eq('store', STORE_NAME)
     .eq('status', 'completed')
     .order('started_at', { ascending: false })
     .limit(runs);

@@ -57,6 +57,8 @@ function romanizeLabel(label: string): string {
 // メイン処理
 // ---------------------------------------------------------------------------
 
+const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+
 export async function runGenerate() {
   const supabase = createSupabaseClient();
   const t0 = Date.now();
@@ -66,6 +68,7 @@ export async function runGenerate() {
     .from('run')
     .select('*')
     .eq('status', 'completed')
+    .eq('store', STORE_NAME)
     .order('started_at', { ascending: false })
     .limit(1)
     .single<RunRow>();
@@ -75,7 +78,7 @@ export async function runGenerate() {
   // Run を再度 running に更新（generate フェーズ開始）
   await supabase.from('run').update({ status: 'running' }).eq('id', run.id);
 
-  // 日付ベースのストレージパス (YYYY/MM/DD)
+  // 日付ベースのストレージパス
   const today = new Date();
   const datePath = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
 
@@ -84,7 +87,7 @@ export async function runGenerate() {
     await updateProgress(supabase, run.id, 0, 100, 'クリーンアップ中...');
     console.log('[generate] Storage クリーンアップ中...');
     for (const folder of ['Pokemon', 'ONEPIECE', 'YU-GI-OH']) {
-      const prefix = `generated/${datePath}/${folder}`;
+      const prefix = `generated/${STORE_NAME}/${datePath}/${folder}`;
       const { data: files } = await supabase.storage.from('haraka-images').list(prefix);
       if (files && files.length > 0) {
         const paths = files.map(f => `${prefix}/${f.name}`);
@@ -120,10 +123,11 @@ export async function runGenerate() {
       }
       if (validCards.length === 0) continue;
 
-      // asset_profile + rule 取得
+      // asset_profile + rule 取得（store フィルタ）
       const { data: profile } = await supabase
         .from('asset_profile')
         .select('*')
+        .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .single<AssetProfileRow>();
       if (!profile) continue;
@@ -131,6 +135,7 @@ export async function runGenerate() {
       const { data: rules } = await supabase
         .from('rule')
         .select('*')
+        .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .returns<RuleRow[]>();
 
@@ -196,10 +201,11 @@ export async function runGenerate() {
 
       const cardById = new Map((cards ?? []).map(c => [c.id, c]));
 
-      // asset_profile 取得
+      // asset_profile 取得（store フィルタ）
       const { data: profile, error: profileError } = await supabase
         .from('asset_profile')
         .select('*')
+        .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .single<AssetProfileRow>();
       if (profileError || !profile) throw new Error(`asset_profile 取得失敗 (${franchise}): ${profileError?.message}`);
@@ -367,7 +373,7 @@ export async function runGenerate() {
             rarityIconBuffers,
             cardImageBuffers,
             dateText,
-            skipPriceLow: isBOX,
+            skipPriceLow: !isBOX,
             layoutAdjust,
             rowPriceAdjust,
             rowCardAdjust,
@@ -376,7 +382,7 @@ export async function runGenerate() {
           const composeMs = Date.now() - tCompose;
 
           const safeLabel = romanizeLabel(label);
-          const storageKey = `generated/${datePath}/${safeFranchise}/page_${pageIdx}_${safeLabel}.png`;
+          const storageKey = `generated/${STORE_NAME}/${datePath}/${safeFranchise}/page_${pageIdx}_${safeLabel}.png`;
 
           const { error: uploadError } = await supabase.storage
             .from('haraka-images')
