@@ -165,7 +165,10 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
       // カード画像が取得できた
       try {
         cardBuffer = await sharp(imageBuffer)
-          .resize(layout.cardWidth, layout.cardHeight, { fit: 'cover' })
+          .resize(layout.cardWidth, layout.cardHeight, {
+            fit: 'contain',
+            background: { r: 255, g: 255, b: 255, alpha: 1 },
+          })
           .png()
           .toBuffer();
       } catch {

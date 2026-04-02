@@ -113,38 +113,18 @@ function splitIntoGroupedPages(
     group.sort((a, b) => (b.price_high ?? 0) - (a.price_high ?? 0));
   }
 
-  // 2. サイズ降順（同サイズなら最高価格降順）で FFD ビンパッキング
+  // 2. タグごとに独立したページを生成（タグをまたいだパッキングなし）
+  //    最高価格降順でソート
   const groups = [...tagGroups.entries()].sort((a, b) => {
-    if (b[1].length !== a[1].length) return b[1].length - a[1].length;
     return (b[1][0]?.price_high ?? 0) - (a[1][0]?.price_high ?? 0);
   });
 
   const bins: PreparedCardRow[][] = [];
-  const binSizes: number[] = [];
 
   for (const [, group] of groups) {
-    // 1グループが1ページを超える → 分割
-    if (group.length > totalSlots) {
-      for (let i = 0; i < group.length; i += totalSlots) {
-        bins.push(group.slice(i, i + totalSlots));
-        binSizes.push(Math.min(group.length - i, totalSlots));
-      }
-      continue;
-    }
-
-    // 既存ビンに収まる場所を探す (First Fit)
-    let placed = false;
-    for (let b = 0; b < bins.length; b++) {
-      if (binSizes[b] + group.length <= totalSlots) {
-        bins[b].push(...group);
-        binSizes[b] += group.length;
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) {
-      bins.push([...group]);
-      binSizes.push(group.length);
+    // 1グループが1ページを超える → 分割（タグは混在しない）
+    for (let i = 0; i < group.length; i += totalSlots) {
+      bins.push(group.slice(i, i + totalSlots));
     }
   }
 

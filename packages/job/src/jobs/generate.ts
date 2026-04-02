@@ -139,8 +139,19 @@ export async function runGenerate() {
         .eq('franchise', franchise)
         .returns<RuleRow[]>();
 
-      const pagePlans = planPages(validCards, rules ?? [], profile.total_slots);
-      console.log(`[generate]   ${franchise}: ${validCards.length}枚 → ${pagePlans.length}ページ`);
+      // BOX/PSA を分離してそれぞれページプランを生成
+      const psaCards = validCards.filter(c => !c.card_name?.includes('【BOX】'));
+      const boxCards = validCards.filter(c => c.card_name?.includes('【BOX】'));
+
+      const psaPlans = planPages(psaCards, rules ?? [], profile.total_slots);
+      const boxRawPlans = planPages(boxCards, rules ?? [], profile.total_slots);
+      // BOXページラベルを 'BOX-...' に統一（isBOX 判定に使用）
+      const boxPlans = boxRawPlans.map(p => ({
+        ...p,
+        label: p.label.startsWith('BOX') ? p.label : `BOX-${p.label}`,
+      }));
+      const pagePlans = [...psaPlans, ...boxPlans];
+      console.log(`[generate]   ${franchise}: PSA ${psaCards.length}枚/${psaPlans.length}ページ, BOX ${boxCards.length}枚/${boxPlans.length}ページ`);
 
       if (pagePlans.length === 0) continue;
 
