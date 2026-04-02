@@ -25,7 +25,7 @@ galleryRoutes.get('/gallery/dates', async (c) => {
   const dateMap = new Map<string, Record<string, number>>();
 
   for (const p of pages || []) {
-    const match = p.image_key?.match(/^generated\/(\d{4})\/(\d{2})\/(\d{2})\//);
+    const match = p.image_key?.match(/^generated\/[^/]+\/(\d{4})\/(\d{2})\/(\d{2})\//);
     if (!match) continue;
     const dateStr = `${match[1]}-${match[2]}-${match[3]}`;
     if (!dateMap.has(dateStr)) dateMap.set(dateStr, {});
