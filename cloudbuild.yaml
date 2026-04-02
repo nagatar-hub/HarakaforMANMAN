@@ -17,7 +17,7 @@ steps:
       - '--no-cpu-throttling'
       - '--timeout=300'
       - '--memory=1Gi'
-      - '--set-env-vars=STORE_NAME=manman'
+      - '--update-env-vars=STORE_NAME=manman'
 
 images:
   - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-api'
