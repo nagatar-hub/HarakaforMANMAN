@@ -14,7 +14,7 @@
  * 10. ページプランニング → generated_page 保存
  */
 
-import { createSupabaseClient } from '../lib/supabase.js';
+import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
 import { getAccessToken } from '../lib/auth.js';
 import { batchInsert, batchUpsert } from '../lib/batch.js';
@@ -27,6 +27,7 @@ import { deduplicateByListNo } from '../lib/dedup.js';
 import { checkImageHealth } from '../lib/image-health-check.js';
 import { updateProgress, clearProgress } from '../lib/progress.js';
 import { planPages } from '../lib/page-planner.js';
+import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import type {
   Database,
   Franchise,
@@ -47,7 +48,7 @@ type GeneratedPageInsert = Database['public']['Tables']['generated_page']['Inser
 const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
 
 export async function runSync() {
-  const supabase = createSupabaseClient();
+  const supabase = await createSupabaseClientFromSecrets();
 
   // ---- 1. Run レコード作成 ----
   const { data: run, error: runError } = await supabase
@@ -193,6 +194,7 @@ export async function runSync() {
     // ---- 6. Spectre 取込 ----
     await updateProgress(supabase, run.id, 40, 100, 'Spectre 取込中...');
     console.log('[sync] SpectreMapping 取得中...');
+    const spectreTagMap = new Map<string, string>();
     try {
       const spectreRows = await fetchSheetValues({
         accessToken,
@@ -203,6 +205,12 @@ export async function runSync() {
       if (spectreRows.length > 1) {
         const spectreCards = parseSpectreRows(spectreRows, 'Pokemon', run.id);
         if (spectreCards.length > 0) {
+          // spectreTagMap を構築（交差処理用）
+          for (const sc of spectreCards) {
+            if (sc.list_no && sc.tag) {
+              spectreTagMap.set(`${sc.list_no}|${sc.grade ?? ''}`, sc.tag);
+            }
+          }
           await batchInsert(supabase, 'prepared_card', spectreCards as unknown as Record<string, unknown>[]);
           totalPrepared += spectreCards.length;
           console.log(`[sync] Spectre カード: ${spectreCards.length}件 追加`);
@@ -245,6 +253,51 @@ export async function runSync() {
         }
         console.log(`[sync]   ${franchise}: ${removedCount}件 重複除外`);
       }
+    }
+
+    // ---- 7b. Spectre ∩ KECAK 交差処理 ----
+    if (spectreTagMap.size > 0) {
+      console.log('[sync] Spectre ∩ KECAK 交差処理...');
+      let tagUpdated = 0;
+      let spectreOnlyRemoved = 0;
+
+      for (const franchise of FRANCHISES) {
+        const { data: cards } = await supabase
+          .from('prepared_card')
+          .select('*')
+          .eq('run_id', run.id)
+          .eq('franchise', franchise)
+          .returns<PreparedCardRow[]>();
+        if (!cards?.length) continue;
+
+        // KECAK カードに Spectre のタグを上書き（交差部分）
+        const updateIds: { id: string; tag: string }[] = [];
+        for (const card of cards) {
+          if (card.source !== 'kecak' || !card.list_no) continue;
+          const key = `${card.list_no}|${card.grade ?? ''}`;
+          const spectreTag = spectreTagMap.get(key);
+          if (spectreTag) {
+            updateIds.push({ id: card.id, tag: spectreTag });
+          }
+        }
+        for (const { id, tag } of updateIds) {
+          await supabase.from('prepared_card').update({ tag }).eq('id', id);
+        }
+        tagUpdated += updateIds.length;
+
+        // Spectre のみのカード（KECAK に存在しない）を削除
+        const spectreOnlyIds = cards
+          .filter(c => c.source === 'spectre')
+          .map(c => c.id);
+        for (let i = 0; i < spectreOnlyIds.length; i += 100) {
+          const batch = spectreOnlyIds.slice(i, i + 100);
+          await supabase.from('prepared_card').delete().in('id', batch);
+        }
+        spectreOnlyRemoved += spectreOnlyIds.length;
+      }
+
+      totalPrepared -= spectreOnlyRemoved;
+      console.log(`[sync] 交差処理完了: タグ更新=${tagUpdated}件, Spectreのみ削除=${spectreOnlyRemoved}件`);
     }
 
     // ---- 8. 画像ヘルスチェック ----
@@ -342,12 +395,14 @@ export async function runSync() {
       if (validCards.length === 0) continue;
 
       // asset_profile 取得（storeフィルタ）
-      const { data: profile, error: profileError } = await supabase
+      const { data: profileArr, error: profileError } = await supabase
         .from('asset_profile')
         .select('*')
         .eq('store', STORE_NAME)
         .eq('franchise', franchise)
-        .single<AssetProfileRow>();
+        .limit(1)
+        .returns<AssetProfileRow[]>();
+      const profile = profileArr?.[0] ?? null;
       if (profileError || !profile) throw new Error(`asset_profile 取得失敗 (${franchise}): ${profileError?.message}`);
 
       // rule 取得（storeフィルタ）
@@ -406,6 +461,20 @@ export async function runSync() {
     await clearProgress(supabase, run.id);
     console.log(`[sync] 完了: imported=${totalImported}, prepared=${totalPrepared}, untagged=${totalUntagged}, image_ng=${deadCount}, pages=${totalPages}`);
 
+    // Discord 通知: 成功
+    await sendDiscordNotification({
+      title: '🟢 Sync ジョブ完了',
+      description: 'データ取込・ページプランニングが正常に完了しました。',
+      color: COLOR.SUCCESS,
+      fields: [
+        { name: 'インポート', value: `${totalImported}`, inline: true },
+        { name: '準備完了', value: `${totalPrepared}`, inline: true },
+        { name: 'タグなし', value: `${totalUntagged}`, inline: true },
+        { name: '画像NG', value: `${deadCount}`, inline: true },
+        { name: 'ページ数', value: `${totalPages}`, inline: true },
+      ],
+    });
+
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await supabase.from('run').update({
@@ -413,6 +482,18 @@ export async function runSync() {
       error_message: message,
     }).eq('id', run.id);
     await clearProgress(supabase, run.id);
+
+    // Discord 通知: 失敗
+    await sendDiscordNotification({
+      title: '🔴 Sync ジョブ失敗',
+      description: message,
+      color: COLOR.ERROR,
+      fields: [
+        { name: 'ジョブ', value: 'sync', inline: true },
+        { name: 'エラー', value: message.substring(0, 1000) },
+      ],
+    });
+
     throw err;
   }
 }

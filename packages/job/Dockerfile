@@ -35,6 +35,12 @@ FROM node:22-slim AS production
 ENV NODE_ENV=production
 WORKDIR /app
 
+# CJK フォント（日本語テキスト描画に必要）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    fontconfig fonts-noto-cjk \
+  && fc-cache -fv \
+  && rm -rf /var/lib/apt/lists/*
+
 # Copy root workspace manifests
 COPY package.json package-lock.json tsconfig.base.json ./
 

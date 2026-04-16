@@ -11,7 +11,8 @@
  * ページプランは毎回 prepared_card から再生成し、最新の価格フィルターを適用する。
  */
 
-import { createSupabaseClient } from '../lib/supabase.js';
+import sharp from 'sharp';
+import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
 import { getAccessToken } from '../lib/auth.js';
 import { composePage } from '../lib/image-composer.js';
@@ -19,6 +20,7 @@ import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-
 import { updateProgress, clearProgress } from '../lib/progress.js';
 import { planPages } from '../lib/page-planner.js';
 import { batchInsert } from '../lib/batch.js';
+import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import type {
   Database,
   PreparedCardRow,
@@ -60,7 +62,7 @@ function romanizeLabel(label: string): string {
 const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
 
 export async function runGenerate() {
-  const supabase = createSupabaseClient();
+  const supabase = await createSupabaseClientFromSecrets();
   const t0 = Date.now();
 
   // ---- 1. 最新の completed run を取得 ----
@@ -124,12 +126,14 @@ export async function runGenerate() {
       if (validCards.length === 0) continue;
 
       // asset_profile + rule 取得（store フィルタ）
-      const { data: profile } = await supabase
+      const { data: profileArr } = await supabase
         .from('asset_profile')
         .select('*')
         .eq('store', STORE_NAME)
         .eq('franchise', franchise)
-        .single<AssetProfileRow>();
+        .limit(1)
+        .returns<AssetProfileRow[]>();
+      const profile = profileArr?.[0] ?? null;
       if (!profile) continue;
 
       const { data: rules } = await supabase
@@ -213,12 +217,14 @@ export async function runGenerate() {
       const cardById = new Map((cards ?? []).map(c => [c.id, c]));
 
       // asset_profile 取得（store フィルタ）
-      const { data: profile, error: profileError } = await supabase
+      const { data: profileArr2, error: profileError } = await supabase
         .from('asset_profile')
         .select('*')
         .eq('store', STORE_NAME)
         .eq('franchise', franchise)
-        .single<AssetProfileRow>();
+        .limit(1)
+        .returns<AssetProfileRow[]>();
+      const profile = profileArr2?.[0] ?? null;
       if (profileError || !profile) throw new Error(`asset_profile 取得失敗 (${franchise}): ${profileError?.message}`);
       if (!profile.layout_config) throw new Error(`layout_config が未設定 (${franchise})`);
 
@@ -348,17 +354,47 @@ export async function runGenerate() {
         const currentTemplate = (isBOX && templateBufferBOX) ? templateBufferBOX : templateBuffer;
         const currentCardBack = (isBOX && cardBackBufferBOX) ? cardBackBufferBOX : cardBackBuffer;
 
-        // カード画像のダウンロード
+        // カード画像のダウンロード（image_url → alt_image_url バリデーション付きフォールバック）
         const tDl = Date.now();
-        const imageUrls = pageCards.map(c => c.image_url || c.alt_image_url || null);
-        const imageBuffers = await downloadImagesWithConcurrency(accessToken, imageUrls, 8);
+        const primaryUrls = pageCards.map(c => c.image_url || c.alt_image_url || null);
+        const primaryBuffers = await downloadImagesWithConcurrency(accessToken, primaryUrls, 8);
+
+        // DL成功でも sharp で読めなければ alt_image_url でリトライ
+        const altRetryIndices: number[] = [];
+        for (let ci = 0; ci < pageCards.length; ci++) {
+          const buf = primaryBuffers[ci];
+          if (!buf && pageCards[ci].alt_image_url && pageCards[ci].image_url) {
+            altRetryIndices.push(ci);
+          } else if (buf) {
+            try {
+              await sharp(buf).metadata();
+            } catch {
+              primaryBuffers[ci] = null;
+              if (pageCards[ci].alt_image_url) {
+                altRetryIndices.push(ci);
+              }
+            }
+          }
+        }
+
+        if (altRetryIndices.length > 0) {
+          const altUrls = altRetryIndices.map(ci => pageCards[ci].alt_image_url!);
+          const altBuffers = await downloadImagesWithConcurrency(accessToken, altUrls, 8);
+          altRetryIndices.forEach((ci, ai) => {
+            if (altBuffers[ai]) {
+              primaryBuffers[ci] = altBuffers[ai];
+              console.log(`[generate]     alt_image_url で復旧: ${pageCards[ci].card_name}`);
+            }
+          });
+        }
+
         const dlMs = Date.now() - tDl;
 
         let dlOk = 0;
         let dlFail = 0;
         const cardImageBuffers = new Map<string, Buffer>();
         pageCards.forEach((card, i) => {
-          const buf = imageBuffers[i];
+          const buf = primaryBuffers[i];
           if (buf) {
             cardImageBuffers.set(card.id, buf);
             dlOk++;
@@ -403,9 +439,11 @@ export async function runGenerate() {
             });
 
           if (uploadError) {
-            console.log(`[generate]     Storage アップロード失敗: ${uploadError.message}`);
+            const errMsg = `Storage アップロード失敗: ${uploadError.message}`;
+            console.log(`[generate]     ${errMsg}`);
             await supabase.from('generated_page').update({
               status: 'failed',
+              error_message: errMsg,
             }).eq('id', generatedPage.id);
             return;
           }
@@ -418,13 +456,16 @@ export async function runGenerate() {
             status: 'generated',
             image_key: storageKey,
             image_url: publicUrl.publicUrl,
+            error_message: null,
           }).eq('id', generatedPage.id);
 
           console.log(`[generate]     → 生成完了: ${storageKey} (DL=${dlMs}ms, 合成=${composeMs}ms, 計=${Date.now() - tPage}ms)`);
         } catch (composeErr) {
-          console.error(`[generate]     → 合成失敗:`, composeErr);
+          const errMsg = composeErr instanceof Error ? composeErr.message : String(composeErr);
+          console.error(`[generate]     → 合成失敗: ${errMsg}`);
           await supabase.from('generated_page').update({
             status: 'failed',
+            error_message: `合成失敗: ${errMsg}`,
           }).eq('id', generatedPage.id);
         }
       }
@@ -458,7 +499,37 @@ export async function runGenerate() {
     }).eq('id', run.id);
 
     await clearProgress(supabase, run.id);
+
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     console.log(`[generate] 完了: total_pages=${totalPages}, 総時間=${Date.now() - t0}ms`);
+
+    // 失敗ページ数を集計
+    const { count: failedPageCount } = await supabase
+      .from('generated_page')
+      .select('*', { count: 'exact', head: true })
+      .eq('run_id', run.id)
+      .eq('status', 'failed');
+
+    const failedPages = failedPageCount ?? 0;
+    const hasFailures = failedPages > 0;
+
+    if (hasFailures) {
+      console.warn(`[generate] ⚠️ 失敗ページ: ${failedPages}`);
+    }
+
+    // Discord 通知: 成功（失敗ありなら警告色）
+    await sendDiscordNotification({
+      title: hasFailures ? '🟡 Generate ジョブ完了（一部失敗あり）' : '🟢 Generate ジョブ完了',
+      description: hasFailures
+        ? `画像生成完了。${failedPages}ページが失敗しました。`
+        : '画像生成が正常に完了しました。',
+      color: hasFailures ? COLOR.WARNING : COLOR.SUCCESS,
+      fields: [
+        { name: '生成ページ数', value: `${totalPages}`, inline: true },
+        ...(hasFailures ? [{ name: '失敗ページ数', value: `${failedPages}`, inline: true }] : []),
+        { name: '所要時間', value: `${elapsed}s`, inline: true },
+      ],
+    });
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -467,6 +538,18 @@ export async function runGenerate() {
       error_message: message,
     }).eq('id', run.id);
     await clearProgress(supabase, run.id);
+
+    // Discord 通知: 失敗
+    await sendDiscordNotification({
+      title: '🔴 Generate ジョブ失敗',
+      description: message,
+      color: COLOR.ERROR,
+      fields: [
+        { name: 'ジョブ', value: 'generate', inline: true },
+        { name: 'エラー', value: message.substring(0, 1000) },
+      ],
+    });
+
     throw err;
   }
 }

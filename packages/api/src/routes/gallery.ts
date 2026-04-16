@@ -15,7 +15,7 @@ galleryRoutes.get('/gallery/dates', async (c) => {
   const { data: pages, error } = await supabase
     .from('generated_page')
     .select('run_id, franchise, image_key, created_at')
-    .eq('status', 'generated')
+    .in('status', ['generated', 'pending', 'failed'])
     .like('image_key', `generated/${STORE_NAME}/%`)
     .order('created_at', { ascending: false });
 
@@ -53,8 +53,8 @@ galleryRoutes.get('/gallery/images', async (c) => {
 
   let query = supabase
     .from('generated_page')
-    .select('id, run_id, franchise, page_index, page_label, card_ids, image_key, image_url, status, created_at, run:run_id(started_at)')
-    .eq('status', 'generated')
+    .select('id, run_id, franchise, page_index, page_label, card_ids, image_key, image_url, status, error_message, created_at, run:run_id(started_at)')
+    .in('status', ['generated', 'pending', 'failed'])
     .like('image_key', `${prefix}%`)
     .order('created_at', { ascending: false })
     .order('franchise')

@@ -235,6 +235,7 @@ export type GeneratedPageRow = {
   image_key: string | null;
   image_url: string | null;
   status: PageStatus;
+  error_message: string | null;
   created_at: string;
 };
 
@@ -289,9 +290,10 @@ export type Database = {
       };
       generated_page: {
         Row: GeneratedPageRow;
-        Insert: Omit<GeneratedPageRow, 'id' | 'created_at' | 'image_key' | 'image_url' | 'status'> & {
+        Insert: Omit<GeneratedPageRow, 'id' | 'created_at' | 'image_key' | 'image_url' | 'status' | 'error_message'> & {
           id?: string; created_at?: string;
           image_key?: string | null; image_url?: string | null; status?: PageStatus;
+          error_message?: string | null;
         };
         Update: Partial<Omit<GeneratedPageRow, 'id' | 'created_at'>>;
         Relationships: [];

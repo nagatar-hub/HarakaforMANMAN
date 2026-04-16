@@ -1,4 +1,5 @@
 steps:
+  # ---- API サービス ----
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build', '-t', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-api', '.']
 
@@ -19,5 +20,53 @@ steps:
       - '--memory=1Gi'
       - '--update-env-vars=STORE_NAME=manman'
 
+  # ---- Job イメージ ----
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-job', '-f', 'packages/job/Dockerfile', '.']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-job']
+
+  # ---- Cloud Run Jobs ----
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'jobs'
+      - 'update'
+      - 'haraka-manman-sync'
+      - '--image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-job'
+      - '--region=asia-northeast1'
+      - '--task-timeout=1800'
+      - '--memory=2Gi'
+      - '--update-env-vars=JOB_NAME=sync,STORE_NAME=manman'
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'jobs'
+      - 'update'
+      - 'haraka-manman-generate'
+      - '--image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-job'
+      - '--region=asia-northeast1'
+      - '--task-timeout=3600'
+      - '--memory=2Gi'
+      - '--update-env-vars=JOB_NAME=generate,STORE_NAME=manman'
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'jobs'
+      - 'update'
+      - 'haraka-manman-watchdog'
+      - '--image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-job'
+      - '--region=asia-northeast1'
+      - '--task-timeout=5400'
+      - '--memory=2Gi'
+      - '--update-env-vars=JOB_NAME=watchdog,TRIGGER=watchdog,STORE_NAME=manman'
+
 images:
   - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-api'
+  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-job'
