@@ -470,7 +470,12 @@ export default function RunsPage() {
                   <div className="space-y-1 max-h-40 overflow-y-auto">
                     {generateConfirm.untagged.map(c => (
                       <div key={c.id} className="text-xs text-text-secondary flex gap-2 py-0.5">
-                        <span className="text-text-primary font-medium truncate flex-1">{c.card_name}</span>
+                        <button
+                          onClick={() => openTagEditor(c)}
+                          className="text-text-primary font-medium truncate flex-1 text-left underline decoration-dotted underline-offset-2 hover:text-amber-700 transition-colors"
+                        >
+                          {c.card_name}
+                        </button>
                         <span className="text-warm-400 shrink-0">{c.franchise}</span>
                         <span className="shrink-0">{c.grade}</span>
                       </div>
