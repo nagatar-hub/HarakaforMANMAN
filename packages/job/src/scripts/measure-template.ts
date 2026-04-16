@@ -127,14 +127,20 @@ async function measureTemplate(name: string, fileId: string, accessToken: string
   const GRID_ROWS = 5;
   const GRID_COLS = 6;
   const colWidth = Math.floor(width / GRID_COLS);
-  const cardWidth = Math.round(colWidth * 0.85);
+
+  // YU-GI-OH! はカードが縦長なので小さめに配置（黄色ラベルとの被り防止）
+  const isYugioh = name.includes('YU-GI-OH');
+  const cardWidthRatio = isYugioh ? 0.63 : 0.73;
+  const cardAspectRatio = isYugioh ? 1.46 : 1.40;
+
+  const cardWidth = Math.round(colWidth * cardWidthRatio);
   const startX = Math.round((colWidth - cardWidth) / 2);
 
   // price バンドの Y をそのまま使用
   const priceHighYs = bands.slice(0, GRID_ROWS).map(b => b.yCenter);
 
   // card Y = priceHighY から上方向 (cardHeight 分)
-  const cardHeight = Math.round(colWidth * 1.4);
+  const cardHeight = Math.round(cardWidth * cardAspectRatio);
   const cardYs = priceHighYs.map(py => py - cardHeight - 10);
 
   // BOX 判定: バンドが行ごとに 2 本ある（価格High と Low）
