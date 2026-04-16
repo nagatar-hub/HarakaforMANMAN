@@ -6,7 +6,8 @@
  * 価格や画像URLの変更後に再生成すれば反映される。
  */
 
-import { createSupabaseClient } from '../lib/supabase.js';
+import sharp from 'sharp';
+import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { getAccessToken } from '../lib/auth.js';
 import { composePage } from '../lib/image-composer.js';
 import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-drive.js';
@@ -39,19 +40,23 @@ export async function runRegeneratePage() {
   const pageId = process.env.PAGE_ID;
   if (!pageId) throw new Error('PAGE_ID が未設定です');
 
-  const supabase = createSupabaseClient();
+  const supabase = await createSupabaseClientFromSecrets();
   console.log(`[regenerate-page] ページ再生成開始: ${pageId}`);
 
   try {
     await _runRegeneratePage(supabase, pageId);
   } catch (err) {
-    // 失敗時にステータスを更新（ポーリングで検知可能に）
-    await supabase.from('generated_page').update({ status: 'failed' }).eq('id', pageId);
+    // 失敗時: status は 'generated' を維持（ギャラリーから消えないように）し、error_message に記録
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await supabase.from('generated_page').update({
+      status: 'generated',
+      error_message: `再生成失敗: ${errMsg}`,
+    }).eq('id', pageId);
     throw err;
   }
 }
 
-async function _runRegeneratePage(supabase: ReturnType<typeof createSupabaseClient>, pageId: string) {
+async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>, pageId: string) {
 
   // ---- 1. ページ情報取得 ----
   const { data: page, error: pageErr } = await supabase
@@ -78,11 +83,15 @@ async function _runRegeneratePage(supabase: ReturnType<typeof createSupabaseClie
   console.log(`[regenerate-page] カード数: ${orderedCards.length}`);
 
   // ---- 3. アセットプロファイル取得 ----
-  const { data: profile, error: profileErr } = await supabase
+  const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+  const { data: profileArr, error: profileErr } = await supabase
     .from('asset_profile')
     .select('*')
+    .eq('store', STORE_NAME)
     .eq('franchise', page.franchise as 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!')
-    .single<AssetProfileRow>();
+    .limit(1)
+    .returns<AssetProfileRow[]>();
+  const profile = profileArr?.[0] ?? null;
 
   if (profileErr || !profile) throw new Error(`プロファイルが見つかりません: ${profileErr?.message}`);
 
@@ -152,13 +161,42 @@ async function _runRegeneratePage(supabase: ReturnType<typeof createSupabaseClie
     }
   }
 
-  // ---- 5. カード画像ダウンロード ----
-  const imageUrls = orderedCards.map(c => c.image_url || c.alt_image_url || null);
-  const imageBuffers = await downloadImagesWithConcurrency(accessToken, imageUrls, 8);
+  // ---- 5. カード画像ダウンロード（alt_image_url バリデーション付きフォールバック） ----
+  const primaryUrls = orderedCards.map(c => c.image_url || c.alt_image_url || null);
+  const primaryBuffers = await downloadImagesWithConcurrency(accessToken, primaryUrls, 8);
+
+  // DL成功でも sharp で読めなければ alt_image_url でリトライ
+  const altRetryIndices: number[] = [];
+  for (let ci = 0; ci < orderedCards.length; ci++) {
+    const buf = primaryBuffers[ci];
+    if (!buf && orderedCards[ci].alt_image_url && orderedCards[ci].image_url) {
+      altRetryIndices.push(ci);
+    } else if (buf) {
+      try {
+        await sharp(buf).metadata();
+      } catch {
+        primaryBuffers[ci] = null;
+        if (orderedCards[ci].alt_image_url) {
+          altRetryIndices.push(ci);
+        }
+      }
+    }
+  }
+
+  if (altRetryIndices.length > 0) {
+    const altUrls = altRetryIndices.map(ci => orderedCards[ci].alt_image_url!);
+    const altBuffers = await downloadImagesWithConcurrency(accessToken, altUrls, 8);
+    altRetryIndices.forEach((ci, ai) => {
+      if (altBuffers[ai]) {
+        primaryBuffers[ci] = altBuffers[ai];
+        console.log(`[regenerate-page] alt_image_url で復旧: ${orderedCards[ci].card_name}`);
+      }
+    });
+  }
 
   const cardImageBuffers = new Map<string, Buffer>();
   orderedCards.forEach((card, i) => {
-    const buf = imageBuffers[i];
+    const buf = primaryBuffers[i];
     if (buf) cardImageBuffers.set(card.id, buf);
   });
 
@@ -226,6 +264,7 @@ async function _runRegeneratePage(supabase: ReturnType<typeof createSupabaseClie
     status: 'generated',
     image_key: storageKey,
     image_url: publicUrl.publicUrl,
+    error_message: null,
   }).eq('id', pageId);
 
   console.log(`[regenerate-page] 完了: ${storageKey}`);

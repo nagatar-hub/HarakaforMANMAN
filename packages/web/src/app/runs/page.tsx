@@ -104,6 +104,11 @@ export default function RunsPage() {
   const [generateConfirm, setGenerateConfirm] = useState<ExcludedCards | null>(null);
   const [generateConfirmChecked, setGenerateConfirmChecked] = useState(false);
   const [generateConfirmLoading, setGenerateConfirmLoading] = useState(false);
+  const [editingCard, setEditingCard] = useState<ExcludedCard | null>(null);
+  const [tagInput, setTagInput] = useState('');
+  const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
+  const [tagSuggestionsLoading, setTagSuggestionsLoading] = useState(false);
+  const [tagSaving, setTagSaving] = useState(false);
 
   // モーダル表示中に背景スクロール防止
   useEffect(() => {
@@ -252,6 +257,55 @@ export default function RunsPage() {
       updateDetailCard(card.id, { fixing: false, fixResult: 'dead' });
     }
   }
+
+  const openTagEditor = async (card: ExcludedCard) => {
+    setEditingCard(card);
+    setTagInput('');
+    setTagSuggestions([]);
+    setTagSuggestionsLoading(true);
+    try {
+      const res = await fetch(
+        `${API_URL}/api/cards/tags?franchise=${encodeURIComponent(card.franchise)}`
+      );
+      if (res.ok) {
+        const tags: string[] = await res.json();
+        setTagSuggestions(tags);
+      }
+    } catch {
+      // タグ候補取得失敗は無視
+    } finally {
+      setTagSuggestionsLoading(false);
+    }
+  };
+
+  const saveTag = async () => {
+    if (!editingCard || !tagInput.trim()) return;
+    setTagSaving(true);
+    try {
+      const res = await fetch(
+        `${API_URL}/api/cards/${editingCard.id}/tag`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tag: tagInput.trim() }),
+        }
+      );
+      if (!res.ok) throw new Error('保存に失敗しました');
+      // 除外カードリストから削除
+      setGenerateConfirm(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          untagged: prev.untagged.filter(c => c.id !== editingCard.id),
+        };
+      });
+      setEditingCard(null);
+    } catch {
+      alert('タグの保存に失敗しました。もう一度お試しください。');
+    } finally {
+      setTagSaving(false);
+    }
+  };
 
   async function toggleDetail(runId: string, type: 'untagged' | 'image') {
     if (expandedDetail?.runId === runId && expandedDetail?.type === type) {
@@ -416,7 +470,12 @@ export default function RunsPage() {
                   <div className="space-y-1 max-h-40 overflow-y-auto">
                     {generateConfirm.untagged.map(c => (
                       <div key={c.id} className="text-xs text-text-secondary flex gap-2 py-0.5">
-                        <span className="text-text-primary font-medium truncate flex-1">{c.card_name}</span>
+                        <button
+                          onClick={() => openTagEditor(c)}
+                          className="text-text-primary font-medium truncate flex-1 text-left underline decoration-dotted underline-offset-2 hover:text-amber-700 transition-colors"
+                        >
+                          {c.card_name}
+                        </button>
                         <span className="text-warm-400 shrink-0">{c.franchise}</span>
                         <span className="shrink-0">{c.grade}</span>
                       </div>
@@ -750,7 +809,14 @@ export default function RunsPage() {
                             {detailCards.map((card) => (
                               <tr key={card.id} className="border-b border-border-card/50 last:border-0">
                                 <td className="py-1.5 pr-3 text-text-secondary">{card.franchise}</td>
-                                <td className="py-1.5 pr-3 text-text-primary font-medium">{card.card_name}</td>
+                                <td className="py-1.5 pr-3">
+                                  <button
+                                    onClick={() => openTagEditor(card as unknown as ExcludedCard)}
+                                    className="text-text-primary font-medium underline decoration-dotted underline-offset-2 hover:text-amber-700 transition-colors"
+                                  >
+                                    {card.card_name}
+                                  </button>
+                                </td>
                                 <td className="py-1.5 pr-3 text-text-secondary">{card.grade || '-'}</td>
                                 <td className="py-1.5 pr-3 text-text-secondary">{card.list_no || '-'}</td>
                                 <td className="py-1.5 text-right text-text-primary">
@@ -840,6 +906,71 @@ export default function RunsPage() {
               )}
             </div>
           ))}
+        </div>
+      )}
+      {/* Tag editing modal */}
+      {editingCard && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40">
+          <div className="bg-card-bg border border-border-card rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
+            <h3 className="text-base font-bold text-text-primary mb-4">タグ設定</h3>
+            <div className="space-y-1 mb-4 text-sm text-text-secondary">
+              <p><span className="text-text-primary font-medium">{editingCard.card_name}</span></p>
+              <p>{editingCard.franchise} / {editingCard.grade ?? '-'}</p>
+            </div>
+            <div className="mb-3">
+              <label className="text-xs font-medium text-text-secondary mb-1 block">タグ</label>
+              <input
+                type="text"
+                value={tagInput}
+                onChange={e => setTagInput(e.target.value)}
+                placeholder="タグを入力..."
+                className="w-full px-3 py-2 text-sm border border-border-card rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                autoFocus
+              />
+            </div>
+            {tagSuggestionsLoading ? (
+              <p className="text-xs text-text-secondary mb-3">候補を読み込み中...</p>
+            ) : tagSuggestions.length > 0 ? (
+              <div className="mb-3">
+                <p className="text-xs text-text-secondary mb-1">候補（クリックで選択）</p>
+                <div className="max-h-32 overflow-y-auto border border-border-card rounded-lg divide-y divide-border-card">
+                  {tagSuggestions
+                    .filter(t => !tagInput || t.toLowerCase().includes(tagInput.toLowerCase()))
+                    .slice(0, 20)
+                    .map(t => (
+                      <button
+                        key={t}
+                        onClick={() => setTagInput(t)}
+                        className={`w-full text-left px-3 py-1.5 text-xs hover:bg-warm-50 transition-colors ${
+                          tagInput === t ? 'bg-amber-50 font-semibold text-amber-800' : 'text-text-secondary'
+                        }`}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                </div>
+              </div>
+            ) : null}
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setEditingCard(null)}
+                className="px-4 py-2 rounded-full text-sm border border-border-card text-text-secondary hover:bg-warm-50 transition-colors"
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={saveTag}
+                disabled={!tagInput.trim() || tagSaving}
+                className={`px-5 py-2 rounded-full text-sm font-semibold transition-all ${
+                  tagInput.trim() && !tagSaving
+                    ? 'bg-amber-600 text-white hover:bg-amber-700 active:scale-95'
+                    : 'bg-amber-600/30 text-white/50 cursor-not-allowed'
+                }`}
+              >
+                {tagSaving ? '保存中...' : '適用'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

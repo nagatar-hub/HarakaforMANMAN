@@ -166,6 +166,21 @@ runRoutes.get('/runs/:id/excluded-cards', async (c) => {
   });
 });
 
+/** 失敗ページ一覧 */
+runRoutes.get('/runs/:id/failed-pages', async (c) => {
+  const id = c.req.param('id');
+  const supabase = createSupabaseClient();
+  const { data, error } = await supabase
+    .from('generated_page')
+    .select('id, franchise, page_index, page_label, status, error_message, created_at')
+    .eq('run_id', id)
+    .eq('status', 'failed')
+    .order('franchise')
+    .order('page_index');
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json(data);
+});
+
 /** 強制停止: 子プロセスをkill + DBステータス更新 */
 runRoutes.post('/runs/:id/reset', async (c) => {
   const id = c.req.param('id');
