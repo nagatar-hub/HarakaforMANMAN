@@ -67,10 +67,12 @@ export function resolveRegenerateAdjustments(params: {
     fallbackRowCardAdjust,
   } = params;
 
+  const shouldUseLegacyRowFallback = !isBOX && !layout.layoutAdjust;
+
   return {
     layoutAdjust: layout.layoutAdjust ?? fallbackLayoutAdjust,
-    rowPriceAdjust: layout.rowPriceAdjust ?? (isBOX ? undefined : fallbackRowPriceAdjust),
-    rowCardAdjust: layout.rowCardAdjust ?? (isBOX ? undefined : fallbackRowCardAdjust),
+    rowPriceAdjust: layout.rowPriceAdjust ?? (shouldUseLegacyRowFallback ? fallbackRowPriceAdjust : undefined),
+    rowCardAdjust: layout.rowCardAdjust ?? (shouldUseLegacyRowFallback ? fallbackRowCardAdjust : undefined),
   };
 }
 

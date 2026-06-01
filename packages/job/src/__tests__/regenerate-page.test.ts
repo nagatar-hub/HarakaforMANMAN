@@ -56,4 +56,23 @@ describe('resolveRegenerateAdjustments', () => {
       rowCardAdjust: fallbackRowCardAdjust,
     });
   });
+
+  it('DBテンプレに全体補正がある通常ページでは古い行別補正を足さない', () => {
+    const result = resolveRegenerateAdjustments({
+      layout: {
+        ...baseLayout,
+        layoutAdjust: { cardYDelta: -4, priceYDelta: -2 },
+      },
+      isBOX: false,
+      fallbackLayoutAdjust,
+      fallbackRowPriceAdjust,
+      fallbackRowCardAdjust,
+    });
+
+    expect(result).toEqual({
+      layoutAdjust: { cardYDelta: -4, priceYDelta: -2 },
+      rowPriceAdjust: undefined,
+      rowCardAdjust: undefined,
+    });
+  });
 });
