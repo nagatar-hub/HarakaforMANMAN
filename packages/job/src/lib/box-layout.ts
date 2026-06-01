@@ -3,7 +3,8 @@ import type { LayoutConfig } from '@haraka/shared';
 const BOX_CARD_WIDTH_RATIO = 0.9;
 const BOX_CARD_HEIGHT_RATIO = 0.88;
 const BOX_CARD_PRICE_GAP = 6;
-const BOX_PRICE_Y_DELTA = -6;
+const BOX_CARD_Y_LIFT = 8;
+const BOX_PRICE_Y_DELTA = -10;
 
 export function makeBoxLayout(profileLayout: LayoutConfig): LayoutConfig {
   const baseWidth = profileLayout.cardWidth;
@@ -12,7 +13,7 @@ export function makeBoxLayout(profileLayout: LayoutConfig): LayoutConfig {
   const sourceRows = profileLayout.rowsBOX ?? profileLayout.rows;
   const rows = sourceRows.map(row => ({
     ...row,
-    cardY: row.priceHighY - boxCardHeight - BOX_CARD_PRICE_GAP,
+    cardY: row.priceHighY - boxCardHeight - BOX_CARD_PRICE_GAP - BOX_CARD_Y_LIFT,
   }));
 
   return {

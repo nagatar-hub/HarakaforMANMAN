@@ -29,9 +29,9 @@ describe('makeBoxLayout', () => {
 
     expect(layout.cardWidth).toBe(150);
     expect(layout.cardHeight).toBe(185);
-    expect(layout.rows[0].cardY).toBe(250 - 185 - 6);
-    expect(layout.rows[1].cardY).toBe(500 - 185 - 6);
-    expect(layout.layoutAdjust).toEqual({ cardYDelta: 0, priceYDelta: -6 });
+    expect(layout.rows[0].cardY).toBe(250 - 185 - 6 - 8);
+    expect(layout.rows[1].cardY).toBe(500 - 185 - 6 - 8);
+    expect(layout.layoutAdjust).toEqual({ cardYDelta: 0, priceYDelta: -10 });
     expect(layout.cardFit).toBe('contain');
     expect(layout.rarityIconWidth).toBeUndefined();
   });
@@ -45,7 +45,7 @@ describe('makeBoxLayout', () => {
 
     expect(layout.rows).toHaveLength(1);
     expect(layout.rows[0]).toEqual({
-      cardY: 300 - 185 - 6,
+      cardY: 300 - 185 - 6 - 8,
       priceHighY: 300,
       priceLowY: 330,
     });
