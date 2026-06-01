@@ -18,6 +18,7 @@ import { getAccessToken } from '../lib/auth.js';
 import { composePage } from '../lib/image-composer.js';
 import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-drive.js';
 import { downloadTemplateAsset } from '../lib/asset-storage.js';
+import { makeBoxLayout } from '../lib/box-layout.js';
 import { updateProgress, clearProgress } from '../lib/progress.js';
 import { planPages, type PagePlan } from '../lib/page-planner.js';
 import { batchInsert } from '../lib/batch.js';
@@ -114,23 +115,6 @@ function makeFixedBoxPlans(cards: PreparedCardRow[], totalSlots: number): PagePl
     });
   }
   return plans;
-}
-
-function makeBoxLayout(profileLayout: LayoutConfig): LayoutConfig {
-  const baseWidth = profileLayout.cardWidth;
-  const boxCardWidth = Math.min(profileLayout.priceBoxWidth, Math.round(baseWidth * 0.9));
-  const boxCardHeight = Math.round(profileLayout.cardHeight * 0.88);
-  return {
-    ...profileLayout,
-    rows: profileLayout.rowsBOX ?? profileLayout.rows,
-    startX: profileLayout.startX + Math.round((baseWidth - boxCardWidth) / 2),
-    cardWidth: boxCardWidth,
-    cardHeight: boxCardHeight,
-    cardFit: 'contain',
-    layoutAdjust: { cardYDelta: 0, priceYDelta: -3 },
-    rarityIconWidth: undefined,
-    rarityIconHeight: undefined,
-  };
 }
 
 export async function runGenerate() {

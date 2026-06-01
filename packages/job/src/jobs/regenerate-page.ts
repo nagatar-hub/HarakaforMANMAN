@@ -12,6 +12,7 @@ import { getAccessToken } from '../lib/auth.js';
 import { composePage } from '../lib/image-composer.js';
 import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-drive.js';
 import { downloadTemplateAsset } from '../lib/asset-storage.js';
+import { makeBoxLayout } from '../lib/box-layout.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
 import { applyCurrentPsa10DiscountRates, loadPsa10DiscountRates } from '../lib/pricing-settings.js';
 import type {
@@ -63,23 +64,6 @@ function getJstDateParts(date = new Date()) {
     year: part('year'),
     month: part('month'),
     day: part('day'),
-  };
-}
-
-function makeBoxLayout(profileLayout: LayoutConfig): LayoutConfig {
-  const baseWidth = profileLayout.cardWidth;
-  const boxCardWidth = Math.min(profileLayout.priceBoxWidth, Math.round(baseWidth * 0.9));
-  const boxCardHeight = Math.round(profileLayout.cardHeight * 0.88);
-  return {
-    ...profileLayout,
-    rows: profileLayout.rowsBOX ?? profileLayout.rows,
-    startX: profileLayout.startX + Math.round((baseWidth - boxCardWidth) / 2),
-    cardWidth: boxCardWidth,
-    cardHeight: boxCardHeight,
-    cardFit: 'contain',
-    layoutAdjust: { cardYDelta: 0, priceYDelta: -3 },
-    rarityIconWidth: undefined,
-    rarityIconHeight: undefined,
   };
 }
 
