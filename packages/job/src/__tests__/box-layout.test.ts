@@ -31,7 +31,7 @@ describe('makeBoxLayout', () => {
     expect(layout.cardHeight).toBe(185);
     expect(layout.rows[0].cardY).toBe(250 - 185 - 6 - 8);
     expect(layout.rows[1].cardY).toBe(500 - 185 - 6 - 8);
-    expect(layout.layoutAdjust).toEqual({ cardYDelta: 0, priceYDelta: -10 });
+    expect(layout.layoutAdjust).toEqual({ cardYDelta: 0, priceYDelta: -16 });
     expect(layout.cardFit).toBe('contain');
     expect(layout.rarityIconWidth).toBeUndefined();
   });

@@ -4,7 +4,7 @@ const BOX_CARD_WIDTH_RATIO = 0.9;
 const BOX_CARD_HEIGHT_RATIO = 0.88;
 const BOX_CARD_PRICE_GAP = 6;
 const BOX_CARD_Y_LIFT = 8;
-const BOX_PRICE_Y_DELTA = -10;
+const BOX_PRICE_Y_DELTA = -16;
 
 export function makeBoxLayout(profileLayout: LayoutConfig): LayoutConfig {
   const baseWidth = profileLayout.cardWidth;
