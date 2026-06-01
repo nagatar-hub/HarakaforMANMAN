@@ -171,7 +171,7 @@ export async function runGenerate() {
       .filter(franchise => typeof psa10DiscountRates[franchise] === 'number')
       .map(franchise => `${franchise}=${((psa10DiscountRates[franchise] ?? 0) * 100).toFixed(0)}%`)
       .join(', ');
-    console.log(`[generate] PSA10減額率: ${psaRateSummary || '未設定（prepared_card の価格を使用）'}`);
+    console.log(`[generate] 商材別減額率: ${psaRateSummary || '未設定（prepared_card の価格を使用）'}`);
 
     // 旧 generated_page を全削除
     await supabase.from('generated_page').delete().eq('run_id', run.id);

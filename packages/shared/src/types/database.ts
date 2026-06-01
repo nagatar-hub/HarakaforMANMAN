@@ -36,7 +36,6 @@ export type RuleBehavior = 'isolate' | 'merge' | 'exclude' | 'group';
 export type StoreConfigRow = {
   store: string;
   settings: {
-    buy_price_high_discount_rate?: number;
     box_discount_rates?: {
       shrink?: number;
       no_shrink?: number;

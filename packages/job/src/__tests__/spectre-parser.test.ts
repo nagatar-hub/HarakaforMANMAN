@@ -59,30 +59,37 @@ describe('parseSpectreRows', () => {
     expect(result[0].list_no).toBe('4/102');
   });
 
-  it('price_high を BUY_PRICE（index 7）に買取上限減額率を反映して取得する', () => {
+  it('price_high を BUY_PRICE（index 7）に商材別減額率を反映して取得する', () => {
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID);
-    expect(result[0].price_high).toBe(25500);
+    expect(result[0].price_high).toBe(26400);
+  });
+
+  it('price_high に指定された商材別減額率を反映する', () => {
+    const rows = [HEADER, ROW_CHARIZARD];
+    const result = parseSpectreRows(rows, franchise, RUN_ID, { Pokemon: 0.10, 'ONE PIECE': 0.20 });
+    expect(result[0].price_high).toBe(27000);
   });
 
   it('price_high が ¥ 記号付きでも正しく数値に変換する', () => {
     const rows = [HEADER, ROW_WITH_YEN];
     const result = parseSpectreRows(rows, franchise, RUN_ID);
-    expect(result[0].price_high).toBe(5900);
+    expect(result[0].price_high).toBe(6100);
   });
 
   it('price_low が calculateBuyPriceLow で計算される', () => {
-    // 買取上限 15% 減額: 30000 -> 25500
-    // Pokemon: 25500 >= 20000 → rate=0.88 → 25500*0.88=22440 → niceLowerBound=22000
+    // 商材別 12% 減額: 30000 -> 26400
+    // Pokemon: 26400 >= 20000 → rate=0.88 → 26400*0.88=23232 → niceLowerBound=23000
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID);
-    expect(result[0].price_low).toBe(22000);
+    expect(result[0].price_low).toBe(23000);
   });
 
-  it('PSA10 の商材別減額率が指定された場合はその率で price_low を計算する', () => {
+  it('商材別減額率が指定された場合はその率で price_high を計算する', () => {
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID, { Pokemon: 0.10 });
-    expect(result[0].price_low).toBe(22000);
+    expect(result[0].price_high).toBe(27000);
+    expect(result[0].price_low).toBe(23000);
   });
 
   it('source = "spectre" が設定される', () => {

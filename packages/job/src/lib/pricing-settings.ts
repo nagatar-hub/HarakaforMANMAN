@@ -1,18 +1,12 @@
 import {
-  calculatePsa10PriceLow,
   normalizeStorePricingSettings,
   type PreparedCardRow,
-  type Franchise,
   type Psa10DiscountRates,
   type StorePricingSettings,
 } from '@haraka/shared';
 import type { createSupabaseClientFromSecrets } from './supabase.js';
 
 type SupabaseClient = Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>;
-
-function isPsa10(grade: string | null): boolean {
-  return grade?.trim().toUpperCase() === 'PSA10';
-}
 
 export async function loadPsa10DiscountRates(
   supabase: SupabaseClient,
@@ -36,17 +30,9 @@ export async function loadStorePricingSettings(
 
 export function applyCurrentPsa10DiscountRates(
   cards: PreparedCardRow[],
-  psa10DiscountRates: Psa10DiscountRates,
+  _psa10DiscountRates: Psa10DiscountRates,
 ): PreparedCardRow[] {
-  return cards.map((card) => {
-    const discountRate = psa10DiscountRates[card.franchise as Franchise];
-    if (!isPsa10(card.grade) || typeof discountRate !== 'number' || !card.price_high || card.price_high <= 0) {
-      return card;
-    }
-
-    return {
-      ...card,
-      price_low: calculatePsa10PriceLow(card.price_high, discountRate),
-    };
-  });
+  // 商材別減額率は sync 時に price_high へ反映する。
+  // generated_page からの再生成では元価格を持たないため、既存の prepared_card 価格をそのまま使う。
+  return cards;
 }

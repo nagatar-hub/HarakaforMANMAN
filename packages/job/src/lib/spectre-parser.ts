@@ -15,8 +15,7 @@ import {
   normalizeText,
   calculateBuyPriceHigh,
   calculateBuyPriceLow,
-  calculatePsa10PriceLow,
-  DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE,
+  DEFAULT_PSA10_DISCOUNT_RATES,
 } from '@haraka/shared';
 
 type PreparedCardInsert = Database['public']['Tables']['prepared_card']['Insert'];
@@ -39,22 +38,16 @@ function safeNumber(value: string | undefined): number | null {
   return isNaN(num) ? null : num;
 }
 
-function isPsa10(grade: string | null): boolean {
-  return grade?.trim().toUpperCase() === 'PSA10';
-}
-
 function calculatePriceLow(
   priceHigh: number | null,
-  grade: string | null,
   franchise: Franchise,
-  psa10DiscountRates?: Psa10DiscountRates,
 ): number | null {
   if (priceHigh == null || priceHigh <= 0) return null;
-  const psa10DiscountRate = psa10DiscountRates?.[franchise];
-  if (isPsa10(grade) && typeof psa10DiscountRate === 'number') {
-    return calculatePsa10PriceLow(priceHigh, psa10DiscountRate);
-  }
   return calculateBuyPriceLow(priceHigh, franchise);
+}
+
+function resolveNonBoxDiscountRate(franchise: Franchise, psa10DiscountRates?: Psa10DiscountRates): number {
+  return psa10DiscountRates?.[franchise] ?? DEFAULT_PSA10_DISCOUNT_RATES[franchise];
 }
 
 /**
@@ -63,7 +56,7 @@ function calculatePriceLow(
  * - 1行目（ヘッダ）はスキップ
  * - SPECTRE_NAME が空の行はスキップ
  * - source = 'spectre'
- * - price_high = BUY_PRICE（H列）に買取上限減額率を反映
+ * - price_high = BUY_PRICE（H列）に商材別減額率を反映
  * - price_low = calculateBuyPriceLow(price_high, franchise)
  */
 export function parseSpectreRows(
@@ -71,12 +64,12 @@ export function parseSpectreRows(
   franchise: Franchise,
   runId: string,
   psa10DiscountRates?: Psa10DiscountRates,
-  buyPriceHighDiscountRate: number = DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE,
 ): PreparedCardInsert[] {
   if (rows.length <= 1) return [];
 
   const dataRows = rows.slice(1); // ヘッダスキップ
   const result: PreparedCardInsert[] = [];
+  const nonBoxDiscountRate = resolveNonBoxDiscountRate(franchise, psa10DiscountRates);
 
   for (const row of dataRows) {
     const spectreName = getCell(row, SPECTRE_MAP_COLS.SPECTRE_NAME);
@@ -84,10 +77,10 @@ export function parseSpectreRows(
 
     const sourcePrice = safeNumber(getCell(row, SPECTRE_MAP_COLS.BUY_PRICE));
     const priceHigh = sourcePrice != null && sourcePrice > 0
-      ? calculateBuyPriceHigh(sourcePrice, buyPriceHighDiscountRate)
+      ? calculateBuyPriceHigh(sourcePrice, nonBoxDiscountRate)
       : sourcePrice;
     const grade = getCell(row, SPECTRE_MAP_COLS.HARAKA_TYPE) || null;
-    const priceLow = calculatePriceLow(priceHigh, grade, franchise, psa10DiscountRates);
+    const priceLow = calculatePriceLow(priceHigh, franchise);
 
     result.push({
       run_id: runId,

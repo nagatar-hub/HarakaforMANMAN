@@ -13,7 +13,6 @@ type BoxRates = {
 interface StoreConfig {
   store: string;
   settings: {
-    buy_price_high_discount_rate?: number;
     box_discount_rates?: Partial<Record<keyof BoxRates, number>>;
     psa10_discount_rates?: Partial<Record<Franchise, number>>;
   };
@@ -35,7 +34,6 @@ const DEFAULT_BOX_RATES: BoxRates = {
   shrink: 0,
   no_shrink: 15,
 };
-const DEFAULT_BUY_PRICE_HIGH_RATE = 15;
 
 function clampRate(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -46,33 +44,12 @@ function toPercent(value: number | undefined, fallback: number): number {
   return Math.round((value ?? fallback / 100) * 100);
 }
 
-function niceLowerBound(raw: number): number {
-  const steps =
-    raw < 10000 ? [500] :
-    raw < 100000 ? [1000, 2000, 5000] :
-    raw < 300000 ? [5000, 10000] :
-    [10000, 20000, 50000];
-
-  let bestValue = 0;
-  let bestDiff = Infinity;
-  let bestStep = 0;
-
-  for (const step of steps) {
-    const value = Math.floor(raw / step) * step;
-    const diff = raw - value;
-    if (diff < bestDiff || (diff === bestDiff && step > bestStep)) {
-      bestValue = value;
-      bestDiff = diff;
-      bestStep = step;
-    }
-  }
-
-  return bestValue;
+function calculatePriceHighPreview(price: number, rate: number): number {
+  return Math.floor(price * (1 - rate / 100) / 100) * 100;
 }
 
 export default function SettingsPage() {
   const [config, setConfig] = useState<StoreConfig | null>(null);
-  const [buyPriceHighRate, setBuyPriceHighRate] = useState<number>(DEFAULT_BUY_PRICE_HIGH_RATE);
   const [boxRates, setBoxRates] = useState<BoxRates>(DEFAULT_BOX_RATES);
   const [psa10Rates, setPsa10Rates] = useState<Psa10Rates>(DEFAULT_PSA10_RATES);
   const [saving, setSaving] = useState(false);
@@ -85,7 +62,6 @@ export default function SettingsPage() {
         const savedPsa10Rates = data.settings.psa10_discount_rates ?? {};
         const savedBoxRates = data.settings.box_discount_rates ?? {};
         setConfig(data);
-        setBuyPriceHighRate(toPercent(data.settings.buy_price_high_discount_rate, DEFAULT_BUY_PRICE_HIGH_RATE));
         setBoxRates({
           shrink: toPercent(savedBoxRates.shrink, DEFAULT_BOX_RATES.shrink),
           no_shrink: toPercent(savedBoxRates.no_shrink, DEFAULT_BOX_RATES.no_shrink),
@@ -122,7 +98,6 @@ export default function SettingsPage() {
         method: 'PATCH',
         body: JSON.stringify({
           settings: {
-            buy_price_high_discount_rate: buyPriceHighRate / 100,
             box_discount_rates: {
               shrink: boxRates.shrink / 100,
               no_shrink: boxRates.no_shrink / 100,
@@ -146,7 +121,6 @@ export default function SettingsPage() {
   }
 
   const previewBoxHigh = 10000;
-  const previewBuyPriceHigh = Math.floor(previewBoxHigh * (1 - buyPriceHighRate / 100) / 100) * 100;
   const previewBoxShrink = Math.floor(previewBoxHigh * (1 - boxRates.shrink / 100) / 100) * 100;
   const previewBoxNoShrink = Math.floor(previewBoxHigh * (1 - boxRates.no_shrink / 100) / 100) * 100;
   const previewPsaHigh = 30000;
@@ -167,49 +141,6 @@ export default function SettingsPage() {
 
         <div className="space-y-10">
           <section>
-            <h2 className="text-lg font-bold text-text-primary mb-6">買取上限減額率</h2>
-
-            <div>
-              <label className="block text-sm font-semibold text-text-secondary mb-2 uppercase tracking-wide">
-                減額率
-              </label>
-              <div className="grid gap-3 sm:grid-cols-[1fr_84px] sm:items-center">
-                <input
-                  type="range"
-                  min={0}
-                  max={50}
-                  step={1}
-                  value={buyPriceHighRate}
-                  onChange={(e) => setBuyPriceHighRate(clampRate(Number(e.target.value)))}
-                  className="h-2 bg-border-card rounded-full appearance-none cursor-pointer accent-text-primary"
-                />
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    min={0}
-                    max={50}
-                    value={buyPriceHighRate}
-                    onChange={(e) => setBuyPriceHighRate(clampRate(Number(e.target.value)))}
-                    className="w-14 text-right bg-transparent border border-border-card rounded-lg px-2 py-1 text-text-primary font-bold text-lg focus:outline-none"
-                  />
-                  <span className="text-text-secondary font-medium">%</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-warm-100 rounded-xl px-5 py-4 text-sm mt-6">
-              <p className="text-text-secondary font-medium mb-2">計算プレビュー（元価格: ¥10,000）</p>
-              <div className="flex justify-between items-baseline">
-                <span className="text-text-secondary">買取上限</span>
-                <span className="text-xl font-bold text-text-primary">¥{previewBuyPriceHigh.toLocaleString()}</span>
-              </div>
-              <p className="text-xs text-text-secondary mt-1">
-                元価格に減額率を適用し、100円単位で切り捨て
-              </p>
-            </div>
-          </section>
-
-          <section className="border-t border-border-card pt-8">
             <h2 className="text-lg font-bold text-text-primary mb-6">BOX 割引率</h2>
 
             <div className="space-y-5">
@@ -264,11 +195,11 @@ export default function SettingsPage() {
           </section>
 
           <section className="border-t border-border-card pt-8">
-            <h2 className="text-lg font-bold text-text-primary mb-6">PSA10 減額率</h2>
+            <h2 className="text-lg font-bold text-text-primary mb-6">商材別 減額率</h2>
 
             <div className="space-y-5">
               {FRANCHISE_OPTIONS.map(({ key, label }) => {
-                const previewLow = niceLowerBound(previewPsaHigh * (1 - psa10Rates[key] / 100));
+                const previewHigh = calculatePriceHighPreview(previewPsaHigh, psa10Rates[key]);
 
                 return (
                   <div key={key}>
@@ -298,7 +229,7 @@ export default function SettingsPage() {
                       </div>
                       <div className="text-sm sm:text-right">
                         <span className="text-text-secondary">¥30,000 → </span>
-                        <span className="font-bold text-text-primary">¥{previewLow.toLocaleString()}</span>
+                        <span className="font-bold text-text-primary">¥{previewHigh.toLocaleString()}</span>
                       </div>
                     </div>
                   </div>

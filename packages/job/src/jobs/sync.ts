@@ -151,16 +151,14 @@ export async function runSync() {
 
     // ---- 4.75. store_config から価格設定を取得 ----
     const pricingSettings = await loadStorePricingSettings(supabase, STORE_NAME);
-    const buyPriceHighDiscountRate = pricingSettings.buy_price_high_discount_rate;
     const boxDiscountRates = pricingSettings.box_discount_rates;
     const psa10DiscountRates = pricingSettings.psa10_discount_rates;
-    console.log(`[sync] 買取上限減額率: ${(buyPriceHighDiscountRate * 100).toFixed(0)}%`);
     console.log(`[sync] BOX割引率: シュリンク有り=${(boxDiscountRates.shrink * 100).toFixed(0)}%, シュリンク無し=${(boxDiscountRates.no_shrink * 100).toFixed(0)}%`);
     const psaRateSummary = FRANCHISES
       .filter(franchise => typeof psa10DiscountRates[franchise] === 'number')
       .map(franchise => `${franchise}=${((psa10DiscountRates[franchise] ?? 0) * 100).toFixed(0)}%`)
       .join(', ');
-    console.log(`[sync] PSA10減額率: ${psaRateSummary || '未設定（従来計算）'}`);
+    console.log(`[sync] 商材別減額率: ${psaRateSummary || '未設定（デフォルト値）'}`);
 
     // ---- 5. PreparedCard 変換 + 保存 ----
     await updateProgress(supabase, run.id, 30, 100, 'PreparedCard 変換中...');
@@ -173,7 +171,7 @@ export async function runSync() {
       const lookupMap = lookupMaps.get(franchise);
       if (!lookupMap) continue;
 
-      const prepared = prepareCards(rawImports, lookupMap, franchise, boxDiscountRates, psa10DiscountRates, buyPriceHighDiscountRate);
+      const prepared = prepareCards(rawImports, lookupMap, franchise, boxDiscountRates, psa10DiscountRates);
       if (prepared.length === 0) continue;
 
       await batchInsert(supabase, 'prepared_card', prepared as unknown as Record<string, unknown>[]);
@@ -199,7 +197,7 @@ export async function runSync() {
       });
 
       if (spectreRows.length > 1) {
-        const spectreCards = parseSpectreRows(spectreRows, 'Pokemon', run.id, psa10DiscountRates, buyPriceHighDiscountRate);
+        const spectreCards = parseSpectreRows(spectreRows, 'Pokemon', run.id, psa10DiscountRates);
         if (spectreCards.length > 0) {
           // spectreTagMap を構築（交差処理用）
           for (const sc of spectreCards) {

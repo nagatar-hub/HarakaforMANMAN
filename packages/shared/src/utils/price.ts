@@ -6,7 +6,6 @@ export type BoxDiscountRates = {
   no_shrink: number;
 };
 export type StorePricingSettings = {
-  buy_price_high_discount_rate: number;
   box_discount_rates: BoxDiscountRates;
   psa10_discount_rates: Record<Franchise, number>;
 };
@@ -23,7 +22,6 @@ export const DEFAULT_PSA10_DISCOUNT_RATES: Record<Franchise, number> = {
   'YU-GI-OH!': 0.15,
 };
 export const DEFAULT_STORE_PRICING_SETTINGS: StorePricingSettings = {
-  buy_price_high_discount_rate: DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE,
   box_discount_rates: DEFAULT_BOX_DISCOUNT_RATES,
   psa10_discount_rates: DEFAULT_PSA10_DISCOUNT_RATES,
 };
@@ -50,10 +48,6 @@ export function normalizeStorePricingSettings(settings: unknown): StorePricingSe
   }
 
   return {
-    buy_price_high_discount_rate: numberOrDefault(
-      source.buy_price_high_discount_rate,
-      DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE,
-    ),
     box_discount_rates: {
       shrink: numberOrDefault(boxRates.shrink, DEFAULT_BOX_DISCOUNT_RATES.shrink),
       no_shrink: numberOrDefault(boxRates.no_shrink, DEFAULT_BOX_DISCOUNT_RATES.no_shrink),
