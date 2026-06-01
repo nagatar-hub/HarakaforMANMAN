@@ -1,16 +1,24 @@
 /**
  * page-planner のユニットテスト
  *
- * TDDアプローチ: このテストが Green になる実装を src/lib/page-planner.ts に書く
+ * layout_template[] を引数に取る新仕様版。
  */
 
 import { planPages } from '../lib/page-planner';
-import type { PreparedCardRow, RuleRow } from '@haraka/shared';
+import type {
+  PreparedCardRow,
+  RuleRow,
+  LayoutTemplateRow,
+  LayoutConfig,
+} from '@haraka/shared';
 
-/** テスト用 PreparedCard を生成 */
+// ---------------------------------------------------------------------------
+// ヘルパー
+// ---------------------------------------------------------------------------
+
 function makeCard(overrides: Partial<PreparedCardRow> = {}): PreparedCardRow {
   return {
-    id: `card-${Math.random().toString(36).slice(2, 8)}`,
+    id: `card-${Math.random().toString(36).slice(2, 10)}`,
     run_id: 'run-1',
     raw_import_id: null,
     franchise: 'Pokemon',
@@ -31,11 +39,10 @@ function makeCard(overrides: Partial<PreparedCardRow> = {}): PreparedCardRow {
   };
 }
 
-/** テスト用 Rule を生成 */
 function makeRule(overrides: Partial<RuleRow> = {}): RuleRow {
   return {
     id: `rule-${Math.random().toString(36).slice(2, 8)}`,
-    store: 'oripark',
+    store: 'manman',
     franchise: 'Pokemon',
     tag_pattern: 'TOP',
     match_type: 'exact',
@@ -48,74 +55,100 @@ function makeRule(overrides: Partial<RuleRow> = {}): RuleRow {
   };
 }
 
-const TOTAL_SLOTS = 40; // 8cols × 5rows
+function makeLayout(slots: number, overrides: Partial<LayoutTemplateRow> = {}): LayoutTemplateRow {
+  const minimal: LayoutConfig = {
+    startX: 0, priceStartX: 0, colWidth: 0, cardWidth: 0, cardHeight: 0,
+    isSmallCard: false, rows: [], priceBoxWidth: 0, priceBoxHeight: 0,
+    dateX: 0, dateY: 0,
+  };
+  return {
+    id: `layout-${slots}`,
+    store: 'oripark',
+    kind: 'postal',
+    franchise: 'Pokemon',
+    name: `${slots}枠`,
+    slug: `grid_${slots}`,
+    grid_cols: 1,
+    grid_rows: slots,
+    total_slots: slots,
+    img_width: 1240,
+    img_height: 1760,
+    template_storage_path: `templates/pokemon/${slots}.png`,
+    card_back_storage_path: 'card-backs/pokemon.png',
+    layout_config: minimal,
+    skip_price_low: false,
+    is_default: slots === 40,
+    is_active: true,
+    priority: 0,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
+const LAYOUTS = [1, 2, 4, 6, 9, 15, 20, 40].map(n => makeLayout(n));
+
+// ---------------------------------------------------------------------------
 
 describe('planPages - 基本動作', () => {
-  it('カードが 0 件のとき空配列を返す', () => {
-    const result = planPages([], [], TOTAL_SLOTS);
-    expect(result).toHaveLength(0);
+  it('カード 0 件なら空配列', () => {
+    expect(planPages([], [], LAYOUTS)).toHaveLength(0);
   });
 
-  it('ルールなし: カードを price_high 降順で 40 件ずつ一般ページにまとめる', () => {
+  it('レイアウト 0 件なら空配列', () => {
+    const cards = [makeCard({ id: 'c1', tag: 'A' })];
+    expect(planPages(cards, [], [])).toHaveLength(0);
+  });
+
+  it('ルールなし: メインタグごとに単ページ最小レイアウトが選ばれる', () => {
     const cards = Array.from({ length: 5 }, (_, i) =>
-      makeCard({ id: `card-${i}`, price_high: (5 - i) * 1000 })
+      makeCard({ id: `card-${i}`, tag: 'A', price_high: (5 - i) * 1000 }),
     );
-    const result = planPages(cards, [], TOTAL_SLOTS);
+    const result = planPages(cards, [], LAYOUTS);
+    // 5 枚 → [6] で単ページ（残り 1 枠は呼び出し側でカード裏面で埋める）
     expect(result).toHaveLength(1);
-    expect(result[0].label).toBe('general-1');
-    // price_high 降順: 5000, 4000, 3000, 2000, 1000
-    expect(result[0].cardIds[0]).toBe('card-0'); // price_high=5000
-    expect(result[0].cardIds[4]).toBe('card-4'); // price_high=1000
+    expect(result[0].cardIds).toHaveLength(5);
+    expect(result[0].cardIds[0]).toBe('card-0'); // price_high=5000 が先頭
+    expect(result[0].layoutTemplateId).toBe('layout-6');
   });
 
-  it('40 件を超えるカードは複数ページに分割される', () => {
-    const cards = Array.from({ length: 45 }, (_, i) =>
-      makeCard({ id: `card-${i}`, price_high: 100000 - i })
+  it('40 枚超のタグはページ数最小で複数ページに分割される', () => {
+    // 62 枚 → [40, 40]（pc=2 最優先、余剰 18 はカード裏面で埋める）
+    const cards = Array.from({ length: 62 }, (_, i) =>
+      makeCard({ id: `p-${i}`, tag: 'ピカチュウ', price_high: 100000 - i }),
     );
-    const result = planPages(cards, [], TOTAL_SLOTS);
+    const result = planPages(cards, [], LAYOUTS);
     expect(result).toHaveLength(2);
-    expect(result[0].cardIds).toHaveLength(40);
-    expect(result[1].cardIds).toHaveLength(5);
-    expect(result[0].label).toBe('general-1');
-    expect(result[1].label).toBe('general-2');
+    const sizes = result.map(p => p.cardIds.length);
+    expect(sizes).toEqual([40, 22]);
+    // 最高額 p-0 は最初の 40 枠ページ先頭
+    expect(result[0].cardIds[0]).toBe('p-0');
+    expect(result[0].layoutTemplateId).toBe('layout-40');
+    expect(result[1].layoutTemplateId).toBe('layout-40');
   });
 });
 
 describe('planPages - isolate ルール', () => {
-  it('exact マッチ: tag が完全一致するカードを専用ページに分離する', () => {
+  it('tag exact マッチで専用ページ群に分離される', () => {
     const topCards = [
       makeCard({ id: 'top-1', tag: 'TOP', price_high: 50000 }),
       makeCard({ id: 'top-2', tag: 'TOP', price_high: 30000 }),
     ];
-    const generalCards = [
-      makeCard({ id: 'gen-1', tag: 'OTHER', price_high: 10000 }),
-    ];
+    const other = [makeCard({ id: 'gen-1', tag: 'OTHER', price_high: 10000 })];
     const rules = [makeRule({ tag_pattern: 'TOP', match_type: 'exact', behavior: 'isolate', priority: 100 })];
 
-    const result = planPages([...topCards, ...generalCards], rules, TOTAL_SLOTS);
+    const result = planPages([...topCards, ...other], rules, LAYOUTS);
 
-    // TOP ページが先（priority が高い）
-    const topPage = result.find(p => p.label === 'TOP');
-    const generalPage = result.find(p => p.label.startsWith('general'));
-    expect(topPage).toBeDefined();
-    expect(topPage!.cardIds).toHaveLength(2);
-    expect(generalPage).toBeDefined();
-    expect(generalPage!.cardIds).toHaveLength(1);
-  });
+    const top = result.find(p => p.label === 'TOP');
+    const otherPage = result.find(p => p.label === 'OTHER');
+    expect(top).toBeDefined();
+    expect(top!.cardIds).toHaveLength(2);
+    // 2 枚 → layout 2 が選ばれる
+    expect(top!.layoutTemplateId).toBe('layout-2');
 
-  it('contains マッチ: tag に部分一致するカードを分離する', () => {
-    const cards = [
-      makeCard({ id: 'c1', tag: 'リザードンex', price_high: 50000 }),
-      makeCard({ id: 'c2', tag: 'リザードンV', price_high: 30000 }),
-      makeCard({ id: 'c3', tag: 'ピカチュウ', price_high: 10000 }),
-    ];
-    const rules = [makeRule({ tag_pattern: 'リザードン', match_type: 'contains', behavior: 'isolate' })];
-
-    const result = planPages(cards, rules, TOTAL_SLOTS);
-
-    const charizardPage = result.find(p => p.label === 'リザードン');
-    expect(charizardPage).toBeDefined();
-    expect(charizardPage!.cardIds).toHaveLength(2);
+    expect(otherPage).toBeDefined();
+    expect(otherPage!.cardIds).toHaveLength(1);
+    expect(otherPage!.layoutTemplateId).toBe('layout-1');
   });
 
   it('isolate ページ内のカードは price_high 降順', () => {
@@ -124,82 +157,106 @@ describe('planPages - isolate ルール', () => {
       makeCard({ id: 'high', tag: 'TOP', price_high: 50000 }),
       makeCard({ id: 'mid', tag: 'TOP', price_high: 20000 }),
     ];
-    const rules = [makeRule({ tag_pattern: 'TOP', match_type: 'exact', behavior: 'isolate' })];
+    const rules = [makeRule({ tag_pattern: 'TOP', behavior: 'isolate' })];
 
-    const result = planPages(cards, rules, TOTAL_SLOTS);
-    const topPage = result.find(p => p.label === 'TOP')!;
-    expect(topPage.cardIds[0]).toBe('high');
-    expect(topPage.cardIds[1]).toBe('mid');
-    expect(topPage.cardIds[2]).toBe('low');
+    const result = planPages(cards, rules, LAYOUTS);
+    // 3 枚 → [4]（単ページ、余剰 1 はカード裏面）
+    const pages = result.filter(p => p.label.startsWith('TOP'));
+    expect(pages).toHaveLength(1);
+    expect(pages[0].layoutTemplateId).toBe('layout-4');
+    expect(pages[0].cardIds).toEqual(['high', 'mid', 'low']);
   });
 
-  it('isolate で 40 件超えは複数ページに分割される', () => {
-    const cards = Array.from({ length: 45 }, (_, i) =>
-      makeCard({ id: `top-${i}`, tag: 'TOP', price_high: 100000 - i })
-    );
-    const rules = [makeRule({ tag_pattern: 'TOP', match_type: 'exact', behavior: 'isolate' })];
+  it('contains マッチで tag 部分一致のカードを分離する', () => {
+    const cards = [
+      makeCard({ id: 'c1', tag: 'リザードンex', price_high: 50000 }),
+      makeCard({ id: 'c2', tag: 'リザードンV', price_high: 30000 }),
+      makeCard({ id: 'c3', tag: 'ピカチュウ', price_high: 10000 }),
+    ];
+    const rules = [makeRule({ tag_pattern: 'リザードン', match_type: 'contains', behavior: 'isolate' })];
 
-    const result = planPages(cards, rules, TOTAL_SLOTS);
-    const topPages = result.filter(p => p.label.startsWith('TOP'));
-    expect(topPages).toHaveLength(2);
-    expect(topPages[0].cardIds).toHaveLength(40);
-    expect(topPages[1].cardIds).toHaveLength(5);
+    const result = planPages(cards, rules, LAYOUTS);
+    const page = result.find(p => p.label === 'リザードン')!;
+    expect(page.cardIds).toHaveLength(2);
   });
 });
 
 describe('planPages - exclude ルール', () => {
-  it('exclude: マッチしたカードをページから除外する', () => {
+  it('exclude でマッチしたカードはページに含まれない', () => {
     const cards = [
       makeCard({ id: 'keep-1', tag: 'TOP', price_high: 50000 }),
-      makeCard({ id: 'exclude-1', tag: 'サンプル', price_high: 100 }),
+      makeCard({ id: 'drop-1', tag: 'サンプル', price_high: 100 }),
       makeCard({ id: 'keep-2', tag: 'OTHER', price_high: 10000 }),
     ];
-    const rules = [makeRule({ tag_pattern: 'サンプル', match_type: 'exact', behavior: 'exclude', priority: 100 })];
+    const rules = [makeRule({ tag_pattern: 'サンプル', behavior: 'exclude', priority: 100 })];
 
-    const result = planPages(cards, rules, TOTAL_SLOTS);
-    const allCardIds = result.flatMap(p => p.cardIds);
-    expect(allCardIds).not.toContain('exclude-1');
-    expect(allCardIds).toHaveLength(2);
+    const result = planPages(cards, rules, LAYOUTS);
+    const ids = result.flatMap(p => p.cardIds);
+    expect(ids).not.toContain('drop-1');
+    expect(ids).toHaveLength(2);
+  });
+});
+
+describe('planPages - group ルール（タグ跨ぎ集約）', () => {
+  it('group_key が同じ rule 群のカードを 1 グループとして扱う', () => {
+    const cards = [
+      makeCard({ id: 'a', tag: '25th', price_high: 100000 }),
+      makeCard({ id: 'b', tag: 'XY', price_high: 80000 }),
+      makeCard({ id: 'c', tag: 'BWR', price_high: 60000 }),
+    ];
+    const rules = [
+      makeRule({ tag_pattern: '25th', behavior: 'group', group_key: '25th_XY_BWR', priority: 80 }),
+      makeRule({ tag_pattern: 'XY', behavior: 'group', group_key: '25th_XY_BWR', priority: 80 }),
+      makeRule({ tag_pattern: 'BWR', behavior: 'group', group_key: '25th_XY_BWR', priority: 80 }),
+    ];
+
+    const result = planPages(cards, rules, LAYOUTS);
+    const group = result.filter(p => p.label.startsWith('25th_XY_BWR'));
+    expect(group.length).toBeGreaterThanOrEqual(1);
+    // 3 枚 → [4]（単ページ、余剰 1）
+    expect(group).toHaveLength(1);
+    expect(group[0].layoutTemplateId).toBe('layout-4');
+    // rule 順 (25th, XY, BWR) かつ各タグ内で価格降順 → a, b, c
+    expect(group[0].cardIds).toEqual(['a', 'b', 'c']);
   });
 });
 
 describe('planPages - priority 順序', () => {
-  it('priority が高いルールが先に処理される', () => {
+  it('priority が高いルールが先に適用される', () => {
     const cards = [
       makeCard({ id: 'c1', tag: 'TOP', price_high: 50000 }),
       makeCard({ id: 'c2', tag: 'BOX', price_high: 30000 }),
       makeCard({ id: 'c3', tag: 'OTHER', price_high: 10000 }),
     ];
     const rules = [
-      makeRule({ tag_pattern: 'BOX', match_type: 'exact', behavior: 'isolate', priority: 90 }),
-      makeRule({ tag_pattern: 'TOP', match_type: 'exact', behavior: 'isolate', priority: 100 }),
+      makeRule({ tag_pattern: 'BOX', behavior: 'isolate', priority: 90 }),
+      makeRule({ tag_pattern: 'TOP', behavior: 'isolate', priority: 100 }),
     ];
 
-    const result = planPages(cards, rules, TOTAL_SLOTS);
-    // TOP (priority 100) が先に処理 → ページ順も TOP → BOX → general
+    const result = planPages(cards, rules, LAYOUTS);
     expect(result[0].label).toBe('TOP');
     expect(result[1].label).toBe('BOX');
-    expect(result[2].label).toBe('general-1');
+    expect(result[2].label).toBe('OTHER');
   });
 });
 
-describe('planPages - tag が null のカード', () => {
-  it('tag が null のカードはルールにマッチせず一般ページに入る', () => {
+describe('planPages - タグなしカード', () => {
+  it('tag null のカードは「その他」ラベルでページ化される', () => {
     const cards = [
       makeCard({ id: 'tagged', tag: 'TOP', price_high: 50000 }),
       makeCard({ id: 'untagged', tag: null, price_high: 10000 }),
     ];
-    const rules = [makeRule({ tag_pattern: 'TOP', match_type: 'exact', behavior: 'isolate' })];
+    const rules = [makeRule({ tag_pattern: 'TOP', behavior: 'isolate' })];
 
-    const result = planPages(cards, rules, TOTAL_SLOTS);
-    const generalPage = result.find(p => p.label.startsWith('general'));
-    expect(generalPage).toBeDefined();
-    expect(generalPage!.cardIds).toContain('untagged');
+    const result = planPages(cards, rules, LAYOUTS);
+    const other = result.find(p => p.label === 'その他');
+    expect(other).toBeDefined();
+    expect(other!.cardIds).toContain('untagged');
   });
 });
 
 describe('planPages - regex マッチ', () => {
-  it('regex: 正規表現でマッチするカードを分離する', () => {
+  it('regex マッチのカードを isolate', () => {
     const cards = [
       makeCard({ id: 'c1', tag: '青眼の白龍', price_high: 50000 }),
       makeCard({ id: 'c2', tag: '青眼の究極竜', price_high: 30000 }),
@@ -207,9 +264,8 @@ describe('planPages - regex マッチ', () => {
     ];
     const rules = [makeRule({ tag_pattern: '^青眼', match_type: 'regex', behavior: 'isolate' })];
 
-    const result = planPages(cards, rules, TOTAL_SLOTS);
-    const blueEyesPage = result.find(p => p.label === '^青眼');
-    expect(blueEyesPage).toBeDefined();
-    expect(blueEyesPage!.cardIds).toHaveLength(2);
+    const result = planPages(cards, rules, LAYOUTS);
+    const page = result.find(p => p.label === '^青眼')!;
+    expect(page.cardIds).toHaveLength(2);
   });
 });

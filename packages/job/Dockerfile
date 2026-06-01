@@ -12,12 +12,10 @@ COPY package.json package-lock.json tsconfig.base.json ./
 
 # Copy every package manifest so npm can resolve workspace topology
 COPY packages/shared/package.json ./packages/shared/package.json
-COPY packages/api/package.json    ./packages/api/package.json
 COPY packages/job/package.json    ./packages/job/package.json
-COPY packages/web/package.json    ./packages/web/package.json
 
 # Install all deps (devDependencies are required for tsc)
-RUN npm ci
+RUN npm ci --workspace=packages/shared --workspace=packages/job
 
 # Copy TypeScript source
 COPY packages/shared ./packages/shared
@@ -46,14 +44,12 @@ COPY package.json package-lock.json tsconfig.base.json ./
 
 # Copy every package manifest (npm needs these to wire up workspaces)
 COPY packages/shared/package.json ./packages/shared/package.json
-COPY packages/api/package.json    ./packages/api/package.json
 COPY packages/job/package.json    ./packages/job/package.json
-COPY packages/web/package.json    ./packages/web/package.json
 
 # Install production deps only.
 # npm will create the workspace symlink node_modules/@haraka/shared ->
 # packages/shared automatically because it is listed in workspaces[].
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --workspace=packages/shared --workspace=packages/job
 
 # Copy compiled output from builder.
 # The symlink at node_modules/@haraka/shared points into packages/shared,

@@ -49,12 +49,12 @@ describe('buildAuthorizationUrl', () => {
     expect(parsed.searchParams.get('response_type')).toBe('code');
   });
 
-  it('spreadsheets.readonly と drive.readonly スコープが設定される', () => {
+  it('spreadsheets と drive.readonly スコープが設定される', () => {
     const url = buildAuthorizationUrl(baseParams);
     const parsed = new URL(url);
 
     const scope = parsed.searchParams.get('scope')!;
-    expect(scope).toContain('https://www.googleapis.com/auth/spreadsheets.readonly');
+    expect(scope).toContain('https://www.googleapis.com/auth/spreadsheets');
     expect(scope).toContain('https://www.googleapis.com/auth/drive.readonly');
   });
 
@@ -102,7 +102,7 @@ describe('extractRefreshToken', () => {
       refresh_token: 'refresh-token-abc',
       expires_in: 3600,
       token_type: 'Bearer',
-      scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
     };
 
     expect(extractRefreshToken(tokenResponse)).toBe('refresh-token-abc');
@@ -113,7 +113,7 @@ describe('extractRefreshToken', () => {
       access_token: 'access-token-xyz',
       expires_in: 3600,
       token_type: 'Bearer',
-      scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
     };
 
     expect(extractRefreshToken(tokenResponse)).toBeNull();

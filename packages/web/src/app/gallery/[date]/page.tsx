@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import Image from 'next/image';
 import { FranchiseTabs } from '@/components/franchise-tabs';
 import { ImageModal } from '@/components/image-modal';
 import { PageDetailModal } from './page-detail-modal';
@@ -99,8 +100,17 @@ export default function GalleryDatePage() {
     });
   }
 
-  // 全filtered画像のフラット配列（モーダル用）
-  const allFiltered = runGroups.flatMap(([, g]) => g.pages);
+  // 全filtered画像のフラット配列（モーダル用）— 描画順と一致させる
+  const allFiltered = runGroups.flatMap(([, group]) => {
+    const franchiseGroups = new Map<string, PageImage[]>();
+    for (const img of group.pages) {
+      const list = franchiseGroups.get(img.franchise) || [];
+      list.push(img);
+      franchiseGroups.set(img.franchise, list);
+    }
+    return Array.from(franchiseGroups.values()).flat();
+  });
+  const indexById = new Map(allFiltered.map((p, i) => [p.id, i]));
 
   function buildDownloadList(pages: PageImage[]): DownloadableImage[] {
     return pages
@@ -283,10 +293,6 @@ export default function GalleryDatePage() {
         <>
           {runGroups.map(([runId, group], runIdx) => {
             const isCollapsed = collapsedRuns.has(runId);
-            // runGroupsのstartIdxを計算（モーダルナビ用）
-            let startIdx = 0;
-            for (let i = 0; i < runIdx; i++) startIdx += runGroups[i][1].pages.length;
-
             // franchise別にグループ化
             const franchiseGroups = new Map<string, PageImage[]>();
             for (const img of group.pages) {
@@ -318,16 +324,14 @@ export default function GalleryDatePage() {
                   </button>
                 )}
 
-                {!isCollapsed && Array.from(franchiseGroups.entries()).map(([franchise, pages]) => {
-                  const franchiseStart = startIdx + group.pages.indexOf(pages[0]);
-                  return (
+                {!isCollapsed && Array.from(franchiseGroups.entries()).map(([franchise, pages]) => (
                     <div key={`${runId}-${franchise}`} className="mb-12">
                       <h2 className="text-2xl font-bold text-text-primary mb-5">
                         {FRANCHISE_JA[franchise] || franchise}
                         <span className="text-base text-text-secondary font-normal ml-3">{pages.length}ページ</span>
                       </h2>
                       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-6">
-                        {pages.map((page, i) => (
+                        {pages.map((page) => (
                           <div key={page.id} className={`bg-card-bg border rounded-xl overflow-hidden hover:scale-[1.03] transition-all duration-300 relative ${selectMode && selectedIds.has(page.id) ? 'border-text-primary ring-2 ring-text-primary/30' : 'border-border-card'}`}>
                             {selectMode && (
                               <button
@@ -339,11 +343,19 @@ export default function GalleryDatePage() {
                               </button>
                             )}
                             <button
-                              onClick={() => selectMode ? toggleSelect(page.id) : setModalIndex(franchiseStart + i)}
+                              onClick={() => selectMode ? toggleSelect(page.id) : setModalIndex(indexById.get(page.id) ?? 0)}
                               className="w-full text-left"
                             >
                               {page.image_url && (
-                                <img src={`${page.image_url}?t=${Date.now()}`} alt={page.page_label || ''} className="w-full h-auto" loading="lazy" />
+                                <Image
+                                  src={`${page.image_url}?v=${Date.parse(page.run_started_at)}`}
+                                  alt={page.page_label || ''}
+                                  width={1080}
+                                  height={1920}
+                                  sizes="(max-width: 768px) 50vw, (max-width: 1024px) 33vw, 25vw"
+                                  className="w-full h-auto"
+                                  loading="lazy"
+                                />
                               )}
                             </button>
                             <div className="px-4 py-3 flex items-center justify-between">
@@ -363,8 +375,7 @@ export default function GalleryDatePage() {
                         ))}
                       </div>
                     </div>
-                  );
-                })}
+                ))}
               </div>
             );
           })}

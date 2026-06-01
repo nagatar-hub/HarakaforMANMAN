@@ -14,6 +14,13 @@ export type LayoutConfig = {
   rarityIconOffsetY?: number;
   rarityIconWidth?: number;
   rarityIconHeight?: number;
+  layoutAdjust?: { cardYDelta: number; priceYDelta: number };
+  rowPriceAdjust?: Record<number, { priceHighYDelta?: number; priceLowYDelta?: number }>;
+  rowCardAdjust?: Record<number, number>;
+  rowsBOX?: RowConfig[];
+  templateFileId_BOX?: string | null;
+  cardBackId_BOX?: string | null;
+  cardFit?: 'cover' | 'contain' | 'fill';
 };
 
 export type RowConfig = {
@@ -29,7 +36,16 @@ export type RuleBehavior = 'isolate' | 'merge' | 'exclude' | 'group';
 export type StoreConfigRow = {
   store: string;
   settings: {
-    box_shrink_discount_rate?: number;
+    buy_price_high_discount_rate?: number;
+    box_discount_rates?: {
+      shrink?: number;
+      no_shrink?: number;
+    };
+    psa10_discount_rates?: {
+      Pokemon?: number;
+      'ONE PIECE'?: number;
+      'YU-GI-OH!'?: number;
+    };
     [key: string]: unknown;
   };
   updated_at: string;
@@ -88,7 +104,34 @@ export type AssetProfileRow = {
   price_format: string;
   layout_config: LayoutConfig | null;
   rarity_icons: Record<string, string> | null;
+  template_storage_path: string | null;
+  card_back_storage_path: string | null;
+  template_box_storage_path: string | null;
+  card_back_box_storage_path: string | null;
   created_at: string;
+};
+
+export type LayoutTemplateRow = {
+  id: string;
+  store: string;
+  franchise: 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
+  name: string;
+  slug: string;
+  grid_cols: number;
+  grid_rows: number;
+  total_slots: number;
+  img_width: number;
+  img_height: number;
+  template_storage_path: string;
+  card_back_storage_path: string;
+  layout_config: LayoutConfig;
+  skip_price_low: boolean;
+  is_default: boolean;
+  is_active: boolean;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+  kind: 'postal' | 'store';
 };
 
 export type ImageStatus = 'unchecked' | 'ok' | 'fallback' | 'dead';
@@ -236,6 +279,9 @@ export type GeneratedPageRow = {
   image_url: string | null;
   status: PageStatus;
   error_message: string | null;
+  layout_template_id: string | null;
+  kind: 'postal' | 'store';
+  display_name: string | null;
   created_at: string;
 };
 
@@ -290,12 +336,26 @@ export type Database = {
       };
       generated_page: {
         Row: GeneratedPageRow;
-        Insert: Omit<GeneratedPageRow, 'id' | 'created_at' | 'image_key' | 'image_url' | 'status' | 'error_message'> & {
+        Insert: Omit<GeneratedPageRow, 'id' | 'created_at' | 'image_key' | 'image_url' | 'status' | 'error_message' | 'layout_template_id' | 'kind' | 'display_name'> & {
           id?: string; created_at?: string;
           image_key?: string | null; image_url?: string | null; status?: PageStatus;
           error_message?: string | null;
+          layout_template_id?: string | null;
+          kind?: 'postal' | 'store';
+          display_name?: string | null;
         };
         Update: Partial<Omit<GeneratedPageRow, 'id' | 'created_at'>>;
+        Relationships: [];
+      };
+      layout_template: {
+        Row: LayoutTemplateRow;
+        Insert: Omit<LayoutTemplateRow, 'id' | 'created_at' | 'updated_at' | 'store' | 'img_width' | 'img_height' | 'skip_price_low' | 'is_default' | 'is_active' | 'priority' | 'kind'> & {
+          id?: string; created_at?: string; updated_at?: string;
+          store?: string; img_width?: number; img_height?: number;
+          skip_price_low?: boolean; is_default?: boolean; is_active?: boolean; priority?: number;
+          kind?: 'postal' | 'store';
+        };
+        Update: Partial<Omit<LayoutTemplateRow, 'id' | 'created_at'>>;
         Relationships: [];
       };
       store_config: {

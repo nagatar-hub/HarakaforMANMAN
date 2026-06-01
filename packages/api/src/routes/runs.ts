@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { createSupabaseClient } from '../lib/supabase.js';
 import { updateDbSheetCell } from '../lib/haraka-db-sheet.js';
+import { executeCloudRunJob } from '../lib/cloud-run-jobs.js';
 import { fork } from 'child_process';
 import path from 'path';
 
@@ -73,10 +74,83 @@ runRoutes.post('/jobs/sync', async (c) => {
 });
 
 runRoutes.post('/jobs/generate', async (c) => {
+  const supabase = createSupabaseClient();
+  let claimedRunId: string | null = null;
+
   try {
-    const pid = triggerJob('generate');
-    return c.json({ status: 'triggered', job: 'generate', pid });
+    const { data: runningRun, error: runningError } = await supabase
+      .from('run')
+      .select('id')
+      .eq('store', STORE_NAME)
+      .eq('status', 'running')
+      .limit(1)
+      .maybeSingle();
+    if (runningError) {
+      return c.json({ error: `Running run lookup failed: ${runningError.message}` }, 500);
+    }
+    if (runningRun) {
+      return c.json({ error: 'すでに画像生成または同期が起動中です。', run_id: runningRun.id }, 409);
+    }
+
+    const { data: latestRun, error: lookupError } = await supabase
+      .from('run')
+      .select('id')
+      .eq('store', STORE_NAME)
+      .eq('status', 'completed')
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (lookupError) {
+      return c.json({ error: `Run lookup failed: ${lookupError.message}` }, 500);
+    }
+    if (!latestRun) {
+      return c.json({ error: 'completed Run が見つかりません。先に sync を実行してください。' }, 400);
+    }
+
+    const { data: claimedRun, error: claimError } = await supabase
+      .from('run')
+      .update({
+        status: 'running',
+        error_message: null,
+        generate_done_at: null,
+        completed_at: null,
+        progress_current: 0,
+        progress_total: 0,
+        progress_message: '画像生成ジョブ起動中...',
+      })
+      .eq('id', latestRun.id)
+      .eq('status', 'completed')
+      .select('id')
+      .maybeSingle();
+    if (claimError) {
+      return c.json({ error: `Run claim failed: ${claimError.message}` }, 500);
+    }
+    if (!claimedRun) {
+      return c.json({ error: 'すでに画像生成または同期が起動中です。', run_id: latestRun.id }, 409);
+    }
+    claimedRunId = claimedRun.id;
+
+    const { operationName, executionName } = await executeCloudRunJob('haraka-manman-generate', {
+      env: { RUN_ID: claimedRunId, TRIGGER: 'web-ui', STORE_NAME },
+    });
+    return c.json({
+      status: 'triggered',
+      job: 'generate',
+      run_id: claimedRunId,
+      operation: operationName,
+      execution: executionName,
+    });
   } catch (err) {
+    if (claimedRunId) {
+      await supabase.from('run').update({
+        status: 'failed',
+        error_message: `画像生成ジョブ起動失敗: ${err instanceof Error ? err.message : String(err)}`,
+        completed_at: new Date().toISOString(),
+        progress_current: 0,
+        progress_total: 0,
+        progress_message: null,
+      }).eq('id', claimedRunId);
+    }
     return c.json({ error: `Failed to trigger: ${(err as Error).message}` }, 500);
   }
 });

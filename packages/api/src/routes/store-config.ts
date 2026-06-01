@@ -1,9 +1,19 @@
 import { Hono } from 'hono';
+import {
+  DEFAULT_STORE_PRICING_SETTINGS,
+  mergeStorePricingSettings,
+  normalizeStorePricingSettings,
+} from '@haraka/shared';
 import { createSupabaseClient } from '../lib/supabase.js';
 
 export const storeConfigRoutes = new Hono();
 
 const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+type StoreConfigResult = {
+  store?: string;
+  settings?: unknown;
+  updated_at?: string;
+};
 
 storeConfigRoutes.get('/store-config', async (c) => {
   const supabase = createSupabaseClient();
@@ -15,9 +25,10 @@ storeConfigRoutes.get('/store-config', async (c) => {
 
   if (error) {
     // レコードが存在しない場合はデフォルト値を返す
-    return c.json({ store: STORE_NAME, settings: { box_shrink_discount_rate: 0.15 } });
+    return c.json({ store: STORE_NAME, settings: DEFAULT_STORE_PRICING_SETTINGS });
   }
-  return c.json(data);
+  const config = data as StoreConfigResult;
+  return c.json({ ...config, settings: normalizeStorePricingSettings(config.settings) });
 });
 
 storeConfigRoutes.patch('/store-config', async (c) => {
@@ -30,7 +41,7 @@ storeConfigRoutes.patch('/store-config', async (c) => {
     .eq('store', STORE_NAME)
     .single();
 
-  const mergedSettings = { ...(existing?.settings ?? {}), ...body.settings };
+  const mergedSettings = mergeStorePricingSettings(existing?.settings, body.settings);
 
   const { data, error } = await supabase
     .from('store_config')

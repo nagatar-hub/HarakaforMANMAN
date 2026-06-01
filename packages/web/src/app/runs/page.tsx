@@ -197,12 +197,29 @@ export default function RunsPage() {
   async function triggerJob(jobName: string) {
     setTriggering(jobName);
     try {
-      await fetch(`${API_URL}/api/jobs/${jobName}`, { method: 'POST' });
+      const res = await fetch(`${API_URL}/api/jobs/${jobName}`, { method: 'POST' });
+      const body = await res.json().catch(() => null) as { error?: string } | null;
+      if (res.status === 409) {
+        addToast({ type: 'warning', message: body?.error || 'すでに起動中です。履歴を更新しました。' });
+        await fetchRuns();
+        return;
+      }
+      if (!res.ok) {
+        addToast({ type: 'warning', message: body?.error || 'ジョブの起動に失敗しました。' });
+        await fetchRuns();
+        return;
+      }
+      addToast({
+        type: 'success',
+        message: jobName === 'generate' ? '画像生成ジョブを起動しました。' : '同期ジョブを起動しました。',
+      });
+      await fetchRuns();
       setTimeout(fetchRuns, 1000);
     } catch {
-      // ignore
+      addToast({ type: 'warning', message: 'ジョブの起動に失敗しました。' });
+    } finally {
+      setTriggering(null);
     }
-    setTriggering(null);
   }
 
   async function handleGenerateClick() {
@@ -220,7 +237,7 @@ export default function RunsPage() {
       const total = excluded.untagged.length + excluded.price_missing.length + excluded.image_ng.length;
       if (total === 0) {
         // 除外カードなし → そのまま生成
-        triggerJob('generate');
+        await triggerJob('generate');
       } else {
         // 除外カードあり → 確認モーダル表示
         setGenerateConfirm(excluded);
@@ -544,14 +561,14 @@ export default function RunsPage() {
                     setGenerateConfirm(null);
                     triggerJob('generate');
                   }}
-                  disabled={!generateConfirmChecked}
+                  disabled={!generateConfirmChecked || triggering !== null}
                   className={`px-5 py-2 rounded-full text-sm font-semibold transition-all ${
-                    generateConfirmChecked
+                    generateConfirmChecked && triggering === null
                       ? 'bg-text-primary text-white hover:bg-warm-800 active:scale-95'
                       : 'bg-text-primary/30 text-white/50 cursor-not-allowed'
                   }`}
                 >
-                  生成する
+                  {triggering === 'generate' ? '起動中...' : '生成する'}
                 </button>
               </div>
             </div>

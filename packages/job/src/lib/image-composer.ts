@@ -28,6 +28,8 @@ export interface ComposePageParams {
   layout: LayoutConfig;
   /** アセットプロファイル */
   assetProfile: AssetProfileRow;
+  /** このページのグリッド列数（省略時は assetProfile.grid_cols にフォールバック） */
+  gridCols?: number;
   /** レアリティアイコン: rarity_icon_url → Buffer */
   rarityIconBuffers?: Map<string, Buffer>;
   /** カード画像: card.id → Buffer */
@@ -124,6 +126,7 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
     cards,
     layout,
     assetProfile,
+    gridCols,
     rarityIconBuffers,
     cardImageBuffers,
     dateText,
@@ -134,7 +137,7 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
     totalSlots,
   } = params;
 
-  const cols = assetProfile.grid_cols;
+  const cols = gridCols ?? assetProfile.grid_cols;
   const composites: OverlayOptions[] = [];
 
   // カード裏面をリサイズしておく
@@ -164,10 +167,11 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
     if (imageBuffer) {
       // カード画像が取得できた
       try {
+        const fit = layout.cardFit ?? 'cover';
         cardBuffer = await sharp(imageBuffer)
           .resize(layout.cardWidth, layout.cardHeight, {
-            fit: 'contain',
-            background: { r: 255, g: 255, b: 255, alpha: 1 },
+            fit,
+            background: { r: 255, g: 255, b: 255, alpha: fit === 'contain' ? 1 : 0 },
           })
           .png()
           .toBuffer();
@@ -212,11 +216,18 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
 
     // ---- 価格テキスト ----
     const priceX = layout.priceStartX + col * layout.colWidth;
-    const fontSize = layout.isSmallCard ? 14 : 16;
+    // 価格ボックスの高さに比例してフォントを拡大。40 枠（priceBoxHeight=30）時に 16px 相当、
+    // 少枠レイアウトで priceBoxHeight が大きいときは自動で大きくなる。
+    const smallBias = layout.isSmallCard ? 0.53 : 0.57;
+    const fontSize = Math.max(14, Math.round(layout.priceBoxHeight * smallBias));
 
-    if (card.price_high && card.price_high > 0) {
-      // price_high（赤）
-      const priceHighText = formatPrice(card.price_high, assetProfile.price_format);
+    const primaryPrice = skipPriceLow && card.price_low && card.price_low > 0
+      ? card.price_low
+      : card.price_high;
+
+    if (primaryPrice && primaryPrice > 0) {
+      // price_high 表示枠（赤）。1価格テンプレートでは減額後の price_low をここに表示する。
+      const priceHighText = formatPrice(primaryPrice, assetProfile.price_format);
       const priceHighSvg = createPriceTextSvg({
         text: priceHighText,
         width: layout.priceBoxWidth,

@@ -67,49 +67,103 @@ describe('prepareCards', () => {
       expect(result[0].rarity_icon_url).toBe('1');
     });
 
-    it('price_high = kecak_price が設定される', () => {
+    it('非BOXカードは price_high に買取上限減額率が反映される', () => {
+      const rawImport = makeRawImport({ kecak_price: 10000 });
+      mockLookupCard.mockReturnValue(makeLookupResult());
+
+      const result = prepareCards(
+        [rawImport],
+        { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap,
+        'Pokemon',
+        undefined,
+        undefined,
+        0.12,
+      );
+
+      expect(result[0].price_high).toBe(8800);
+    });
+
+    it('price_low は減額後の price_high から内部計算される', () => {
+      // デフォルト 15% 減額: 10000 -> price_high 8500
+      // 8500 * 0.75 = 6375 -> niceLowerBound(6375) = 6000
       const rawImport = makeRawImport({ kecak_price: 10000 });
       mockLookupCard.mockReturnValue(makeLookupResult());
 
       const result = prepareCards([rawImport], { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap, 'Pokemon');
 
-      expect(result[0].price_high).toBe(10000);
+      expect(result[0].price_low).toBe(6000);
     });
 
-    it('price_low = calculateBuyPriceLow(10000, Pokemon) = 8000', () => {
-      // 10000 は 9999 以下ではないため rate=0.80 適用
-      // 10000 * 0.80 = 8000 → niceLowerBound(8000): raw=8000 < 10000, steps=[500], v=8000 → 8000
-      const rawImport = makeRawImport({ kecak_price: 10000 });
-      mockLookupCard.mockReturnValue(makeLookupResult());
-
-      const result = prepareCards([rawImport], { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap, 'Pokemon');
-
-      expect(result[0].price_low).toBe(8000);
-    });
-
-    it('price_low = calculateBuyPriceLow(15000, Pokemon) = 12000', () => {
-      // 15000 * 0.80 = 12000 → niceLowerBound(12000) = 12000（1000刻み）
+    it('price_low = calculateBuyPriceLow(12700, Pokemon) = 10000', () => {
+      // デフォルト 15% 減額: 15000 -> price_high 12700
+      // 12700 * 0.80 = 10160 → niceLowerBound(10160) = 10000
       const rawImport = makeRawImport({ kecak_price: 15000 });
       mockLookupCard.mockReturnValue(makeLookupResult());
 
       const result = prepareCards([rawImport], { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap, 'Pokemon');
 
-      expect(result[0].price_low).toBe(12000);
+      expect(result[0].price_low).toBe(10000);
     });
 
-    it('price_low = calculateBuyPriceLow(50000, YU-GI-OH!) = 42000', () => {
-      // 50000 * 0.85 = 42500
-      // niceLowerBound(42500): 10000 <= 42500 < 100000 → steps=[1000,2000,5000]
-      //   s=1000: v=42000, diff=500
-      //   s=2000: v=42000, diff=500, step大 → bestV=42000
-      //   s=5000: v=40000, diff=2500 → no update
-      // 結果: 42000
+    it('price_low = calculateBuyPriceLow(42500, YU-GI-OH!) = 36000', () => {
+      // デフォルト 15% 減額: 50000 -> price_high 42500
+      // 42500 * 0.85 = 36125 → niceLowerBound(36125) = 36000
       const rawImport = makeRawImport({ kecak_price: 50000, franchise: 'YU-GI-OH!' });
       mockLookupCard.mockReturnValue(makeLookupResult());
 
       const result = prepareCards([rawImport], { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap, 'YU-GI-OH!');
 
-      expect(result[0].price_low).toBe(42000);
+      expect(result[0].price_low).toBe(36000);
+    });
+
+    it('PSA10 の商材別減額率が指定された場合はその率で price_low を計算する', () => {
+      const rawImport = makeRawImport({ kecak_price: 30000, grade: 'PSA10' });
+      mockLookupCard.mockReturnValue(makeLookupResult());
+
+      const result = prepareCards(
+        [rawImport],
+        { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap,
+        'Pokemon',
+        0.15,
+        { Pokemon: 0.10 },
+      );
+
+      expect(result[0].price_low).toBe(22000);
+    });
+
+    it('PSA10 以外は PSA10 減額率を指定しても従来計算を使う', () => {
+      const rawImport = makeRawImport({ kecak_price: 30000, grade: 'PSA9' });
+      mockLookupCard.mockReturnValue(makeLookupResult());
+
+      const result = prepareCards(
+        [rawImport],
+        { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap,
+        'Pokemon',
+        0.15,
+        { Pokemon: 0.10 },
+      );
+
+      expect(result[0].price_low).toBe(22000);
+    });
+
+    it('BOX は買取上限減額率を使わず、シュリンク有りとシュリンク無しの割引率を別々に適用する', () => {
+      const rawImport = makeRawImport({
+        card_name: '【BOX】テストBOX',
+        kecak_price: 10000,
+      });
+      mockLookupCard.mockReturnValue(makeLookupResult());
+
+      const result = prepareCards(
+        [rawImport],
+        { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap,
+        'Pokemon',
+        { shrink: 0.05, no_shrink: 0.15 },
+        undefined,
+        0.50,
+      );
+
+      expect(result[0].price_high).toBe(9500);
+      expect(result[0].price_low).toBe(8500);
     });
   });
 

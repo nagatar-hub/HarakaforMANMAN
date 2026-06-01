@@ -1,4 +1,86 @@
-import type { Franchise } from '../types/franchise.js';
+import { FRANCHISES, type Franchise } from '../types/franchise.js';
+
+export type Psa10DiscountRates = Partial<Record<Franchise, number>>;
+export type BoxDiscountRates = {
+  shrink: number;
+  no_shrink: number;
+};
+export type StorePricingSettings = {
+  buy_price_high_discount_rate: number;
+  box_discount_rates: BoxDiscountRates;
+  psa10_discount_rates: Record<Franchise, number>;
+};
+
+export const DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE = 0.15;
+export const DEFAULT_BOX_SHRINK_DISCOUNT_RATE = 0.15;
+export const DEFAULT_BOX_DISCOUNT_RATES: BoxDiscountRates = {
+  shrink: 0,
+  no_shrink: DEFAULT_BOX_SHRINK_DISCOUNT_RATE,
+};
+export const DEFAULT_PSA10_DISCOUNT_RATES: Record<Franchise, number> = {
+  Pokemon: 0.12,
+  'ONE PIECE': 0.12,
+  'YU-GI-OH!': 0.15,
+};
+export const DEFAULT_STORE_PRICING_SETTINGS: StorePricingSettings = {
+  buy_price_high_discount_rate: DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE,
+  box_discount_rates: DEFAULT_BOX_DISCOUNT_RATES,
+  psa10_discount_rates: DEFAULT_PSA10_DISCOUNT_RATES,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function numberOrDefault(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+export function normalizeStorePricingSettings(settings: unknown): StorePricingSettings {
+  const source = isRecord(settings) ? settings : {};
+  const boxRates = isRecord(source.box_discount_rates) ? source.box_discount_rates : {};
+  const psa10Rates = isRecord(source.psa10_discount_rates) ? source.psa10_discount_rates : {};
+  const normalizedPsa10Rates = { ...DEFAULT_PSA10_DISCOUNT_RATES };
+
+  for (const franchise of FRANCHISES) {
+    normalizedPsa10Rates[franchise] = numberOrDefault(
+      psa10Rates[franchise],
+      DEFAULT_PSA10_DISCOUNT_RATES[franchise],
+    );
+  }
+
+  return {
+    buy_price_high_discount_rate: numberOrDefault(
+      source.buy_price_high_discount_rate,
+      DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE,
+    ),
+    box_discount_rates: {
+      shrink: numberOrDefault(boxRates.shrink, DEFAULT_BOX_DISCOUNT_RATES.shrink),
+      no_shrink: numberOrDefault(boxRates.no_shrink, DEFAULT_BOX_DISCOUNT_RATES.no_shrink),
+    },
+    psa10_discount_rates: normalizedPsa10Rates,
+  };
+}
+
+export function mergeStorePricingSettings(base: unknown, overrides: unknown): StorePricingSettings {
+  const normalizedBase = normalizeStorePricingSettings(base);
+  const overrideRecord = isRecord(overrides) ? overrides : {};
+  const boxOverrides = isRecord(overrideRecord.box_discount_rates) ? overrideRecord.box_discount_rates : {};
+  const psa10Overrides = isRecord(overrideRecord.psa10_discount_rates) ? overrideRecord.psa10_discount_rates : {};
+
+  return normalizeStorePricingSettings({
+    ...normalizedBase,
+    ...overrideRecord,
+    box_discount_rates: {
+      ...normalizedBase.box_discount_rates,
+      ...boxOverrides,
+    },
+    psa10_discount_rates: {
+      ...normalizedBase.psa10_discount_rates,
+      ...psa10Overrides,
+    },
+  });
+}
 
 /**
  * 端数処理 - GAS v3.15.0 niceLowerBound() の移植
@@ -51,12 +133,26 @@ export function calculateBuyPriceLow(priceHigh: number, franchise: Franchise): n
   return niceLowerBound(raw);
 }
 
+export function calculatePsa10PriceLow(priceHigh: number, discountRate: number): number {
+  if (!priceHigh || priceHigh <= 0) return 0;
+  return niceLowerBound(priceHigh * (1 - discountRate));
+}
+
+export function calculateBuyPriceHigh(basePrice: number, discountRate: number = DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE): number {
+  if (!basePrice || basePrice <= 0) return 0;
+  return Math.floor(basePrice * (1 - discountRate) / 100) * 100;
+}
+
 /**
- * BOX シュリンク無価格を計算
+ * BOX 価格を計算
  * discountRate: 0.15 = 15% OFF（設定画面で変更可能）
  * 端数は100円単位で切り捨て
  */
-export function calculateBoxPriceLow(priceHigh: number, discountRate: number = 0.15): number {
-  if (!priceHigh || priceHigh <= 0) return 0;
-  return Math.floor(priceHigh * (1 - discountRate) / 100) * 100;
+export function calculateBoxPrice(price: number, discountRate: number = 0): number {
+  if (!price || price <= 0) return 0;
+  return Math.floor(price * (1 - discountRate) / 100) * 100;
+}
+
+export function calculateBoxPriceLow(priceHigh: number, discountRate: number = DEFAULT_BOX_SHRINK_DISCOUNT_RATE): number {
+  return calculateBoxPrice(priceHigh, discountRate);
 }

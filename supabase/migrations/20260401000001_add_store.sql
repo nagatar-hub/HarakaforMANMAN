@@ -15,7 +15,14 @@ CREATE TABLE IF NOT EXISTS store_config (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- manman の初期設定（BOXシュリンク無: 15% OFF）
+-- manman の初期価格設定
 INSERT INTO store_config(store, settings)
-VALUES ('manman', '{"box_shrink_discount_rate": 0.15}')
+VALUES (
+  'manman',
+  '{
+    "buy_price_high_discount_rate": 0.15,
+    "box_discount_rates": { "shrink": 0, "no_shrink": 0.15 },
+    "psa10_discount_rates": { "Pokemon": 0.12, "ONE PIECE": 0.12, "YU-GI-OH!": 0.15 }
+  }'
+)
 ON CONFLICT (store) DO NOTHING;

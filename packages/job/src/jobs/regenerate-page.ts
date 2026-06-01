@@ -11,12 +11,15 @@ import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { getAccessToken } from '../lib/auth.js';
 import { composePage } from '../lib/image-composer.js';
 import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-drive.js';
+import { downloadTemplateAsset } from '../lib/asset-storage.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
+import { applyCurrentPsa10DiscountRates, loadPsa10DiscountRates } from '../lib/pricing-settings.js';
 import type {
   PreparedCardRow,
   AssetProfileRow,
   LayoutConfig,
   GeneratedPageRow,
+  LayoutTemplateRow,
 } from '@haraka/shared';
 
 const LABEL_MAP: Record<string, string> = {
@@ -34,6 +37,50 @@ function romanizeLabel(label: string): string {
     label = label.replace(jp, en);
   }
   return label.replace(/[^a-zA-Z0-9._-]/g, '') || 'page';
+}
+
+const FRANCHISE_STORAGE_SLUG: Record<string, string> = {
+  Pokemon: 'pokemon',
+  'ONE PIECE': 'onepiece',
+  'YU-GI-OH!': 'yugioh',
+};
+
+const BOX_TEMPLATE_DRIVE_ID: Record<string, string> = {
+  Pokemon: '1ZiS1Xci3Dlc5i9SJrYoEEUUwiRuCzjZk',
+  'ONE PIECE': '1RiAdjVUyDhpJyb8YxmZsZdSh6PxxEeHy',
+  'YU-GI-OH!': '1uhJt5rFJyZgOX9wMvl4vLAckotKpmC_n',
+};
+
+function getJstDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const part = (type: string) => parts.find(p => p.type === type)?.value ?? '';
+  return {
+    year: part('year'),
+    month: part('month'),
+    day: part('day'),
+  };
+}
+
+function makeBoxLayout(profileLayout: LayoutConfig): LayoutConfig {
+  const baseWidth = profileLayout.cardWidth;
+  const boxCardWidth = Math.min(profileLayout.priceBoxWidth, Math.round(baseWidth * 0.9));
+  const boxCardHeight = Math.round(profileLayout.cardHeight * 0.88);
+  return {
+    ...profileLayout,
+    rows: profileLayout.rowsBOX ?? profileLayout.rows,
+    startX: profileLayout.startX + Math.round((baseWidth - boxCardWidth) / 2),
+    cardWidth: boxCardWidth,
+    cardHeight: boxCardHeight,
+    cardFit: 'contain',
+    layoutAdjust: { cardYDelta: 0, priceYDelta: -3 },
+    rarityIconWidth: undefined,
+    rarityIconHeight: undefined,
+  };
 }
 
 export async function runRegeneratePage() {
@@ -57,6 +104,7 @@ export async function runRegeneratePage() {
 }
 
 async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>, pageId: string) {
+  const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
 
   // ---- 1. ページ情報取得 ----
   const { data: page, error: pageErr } = await supabase
@@ -79,11 +127,12 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
   // card_ids の順序を保持
   const cardMap = new Map((cards || []).map(c => [c.id, c]));
   const orderedCards = page.card_ids.map(id => cardMap.get(id)!).filter(Boolean);
+  const psa10DiscountRates = await loadPsa10DiscountRates(supabase, STORE_NAME);
+  const orderedCardsWithCurrentPrices = applyCurrentPsa10DiscountRates(orderedCards, psa10DiscountRates);
 
-  console.log(`[regenerate-page] カード数: ${orderedCards.length}`);
+  console.log(`[regenerate-page] カード数: ${orderedCardsWithCurrentPrices.length}`);
 
   // ---- 3. アセットプロファイル取得 ----
-  const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
   const { data: profileArr, error: profileErr } = await supabase
     .from('asset_profile')
     .select('*')
@@ -95,39 +144,65 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
 
   if (profileErr || !profile) throw new Error(`プロファイルが見つかりません: ${profileErr?.message}`);
 
-  const layout: LayoutConfig = profile.layout_config as LayoutConfig;
+  let layoutTemplate: LayoutTemplateRow | null = null;
+  if (page.layout_template_id) {
+    const { data: layoutRow, error: layoutErr } = await supabase
+      .from('layout_template')
+      .select('*')
+      .eq('id', page.layout_template_id)
+      .single<LayoutTemplateRow>();
+    if (layoutErr || !layoutRow) throw new Error(`layout_template 取得失敗: ${layoutErr?.message ?? '該当なし'}`);
+    layoutTemplate = layoutRow;
+  }
+
+  const profileLayout = profile.layout_config as LayoutConfig;
 
   // ---- 4. アセットダウンロード ----
   const accessToken = await getAccessToken();
 
-  // テンプレート
   const label = page.page_label ?? '';
   const isBOX = label === 'BOX' || label.startsWith('BOX-');
+  const layout: LayoutConfig = layoutTemplate?.layout_config ?? (isBOX ? makeBoxLayout(profileLayout) : profileLayout);
 
   // layout_config に BOX用テンプレートID が埋め込まれている場合がある
-  const extendedLayout = layout as LayoutConfig & {
-    templateFileId_BOX?: string;
-    cardBackId_BOX?: string;
-  };
+  const extendedLayout = profileLayout;
 
   let templateBuffer: Buffer;
   let cardBackBuffer: Buffer;
 
-  if (isBOX && extendedLayout.templateFileId_BOX) {
-    try {
-      const results = await Promise.all([
-        downloadDriveFile(accessToken, extendedLayout.templateFileId_BOX),
-        extendedLayout.cardBackId_BOX
-          ? downloadDriveFile(accessToken, extendedLayout.cardBackId_BOX)
-          : downloadDriveFile(accessToken, profile.card_back_image!),
-      ]);
-      templateBuffer = results[0];
-      cardBackBuffer = results[1];
-    } catch {
-      // BOXテンプレDL失敗時は通常テンプレート
-      templateBuffer = await downloadDriveFile(accessToken, profile.template_image!);
-      cardBackBuffer = await downloadDriveFile(accessToken, profile.card_back_image!);
-    }
+  if (layoutTemplate) {
+    templateBuffer = await downloadTemplateAsset({
+      supabase,
+      storagePath: layoutTemplate.template_storage_path,
+      driveId: null,
+      accessToken,
+      label: `${page.franchise}/${layoutTemplate.slug} テンプレ`,
+    });
+    cardBackBuffer = await downloadTemplateAsset({
+      supabase,
+      storagePath: layoutTemplate.card_back_storage_path,
+      driveId: profile.card_back_image,
+      accessToken,
+      label: `${page.franchise}/${layoutTemplate.slug} カード裏`,
+    });
+  } else if (isBOX) {
+    const franchiseSlug = FRANCHISE_STORAGE_SLUG[page.franchise] ?? page.franchise.toLowerCase();
+    [templateBuffer, cardBackBuffer] = await Promise.all([
+      downloadTemplateAsset({
+        supabase,
+        storagePath: profile.template_box_storage_path,
+        driveId: BOX_TEMPLATE_DRIVE_ID[page.franchise] ?? extendedLayout.templateFileId_BOX,
+        accessToken,
+        label: `${page.franchise}/BOX テンプレ`,
+      }),
+      downloadTemplateAsset({
+        supabase,
+        storagePath: profile.card_back_box_storage_path ?? extendedLayout.cardBackId_BOX ?? `card-backs/${STORE_NAME}/${franchiseSlug}_box.png`,
+        driveId: profile.card_back_image,
+        accessToken,
+        label: `${page.franchise}/BOX カード裏`,
+      }),
+    ]);
   } else {
     templateBuffer = await downloadDriveFile(accessToken, profile.template_image!);
     cardBackBuffer = await downloadDriveFile(accessToken, profile.card_back_image!);
@@ -142,7 +217,7 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
   if (harakaDbSpreadsheetId && profile.rarity_icons) {
     const rarityIcons = profile.rarity_icons as Record<string, string>;
     const neededRarities = new Set<string>();
-    for (const card of orderedCards) {
+    for (const card of orderedCardsWithCurrentPrices) {
       if (card.rarity_icon_url) neededRarities.add(card.rarity_icon_url);
     }
     for (const iconUrl of neededRarities) {
@@ -162,21 +237,21 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
   }
 
   // ---- 5. カード画像ダウンロード（alt_image_url バリデーション付きフォールバック） ----
-  const primaryUrls = orderedCards.map(c => c.image_url || c.alt_image_url || null);
+  const primaryUrls = orderedCardsWithCurrentPrices.map(c => c.image_url || c.alt_image_url || null);
   const primaryBuffers = await downloadImagesWithConcurrency(accessToken, primaryUrls, 8);
 
   // DL成功でも sharp で読めなければ alt_image_url でリトライ
   const altRetryIndices: number[] = [];
-  for (let ci = 0; ci < orderedCards.length; ci++) {
+  for (let ci = 0; ci < orderedCardsWithCurrentPrices.length; ci++) {
     const buf = primaryBuffers[ci];
-    if (!buf && orderedCards[ci].alt_image_url && orderedCards[ci].image_url) {
+    if (!buf && orderedCardsWithCurrentPrices[ci].alt_image_url && orderedCardsWithCurrentPrices[ci].image_url) {
       altRetryIndices.push(ci);
     } else if (buf) {
       try {
         await sharp(buf).metadata();
       } catch {
         primaryBuffers[ci] = null;
-        if (orderedCards[ci].alt_image_url) {
+        if (orderedCardsWithCurrentPrices[ci].alt_image_url) {
           altRetryIndices.push(ci);
         }
       }
@@ -184,23 +259,23 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
   }
 
   if (altRetryIndices.length > 0) {
-    const altUrls = altRetryIndices.map(ci => orderedCards[ci].alt_image_url!);
+    const altUrls = altRetryIndices.map(ci => orderedCardsWithCurrentPrices[ci].alt_image_url!);
     const altBuffers = await downloadImagesWithConcurrency(accessToken, altUrls, 8);
     altRetryIndices.forEach((ci, ai) => {
       if (altBuffers[ai]) {
         primaryBuffers[ci] = altBuffers[ai];
-        console.log(`[regenerate-page] alt_image_url で復旧: ${orderedCards[ci].card_name}`);
+        console.log(`[regenerate-page] alt_image_url で復旧: ${orderedCardsWithCurrentPrices[ci].card_name}`);
       }
     });
   }
 
   const cardImageBuffers = new Map<string, Buffer>();
-  orderedCards.forEach((card, i) => {
+  orderedCardsWithCurrentPrices.forEach((card, i) => {
     const buf = primaryBuffers[i];
     if (buf) cardImageBuffers.set(card.id, buf);
   });
 
-  console.log(`[regenerate-page] カード画像: ${cardImageBuffers.size}/${orderedCards.length}枚ダウンロード`);
+  console.log(`[regenerate-page] カード画像: ${cardImageBuffers.size}/${orderedCardsWithCurrentPrices.length}枚ダウンロード`);
 
   // ---- 6. レイアウト微調整 ----
   const layoutAdjust = page.franchise === 'YU-GI-OH!'
@@ -218,33 +293,34 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
     ? { 1: 8, 2: 3, 3: 3, 4: 3 } as Record<number, number>
     : undefined;
 
-  const today = new Date();
-  const dateText = `${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
+  const jstDate = getJstDateParts();
+  const dateText = `${jstDate.month}/${jstDate.day}`;
 
   // ---- 7. 画像合成 ----
   console.log(`[regenerate-page] 画像合成開始...`);
   const imageBuffer = await composePage({
     templateBuffer,
     cardBackBuffer,
-    cards: orderedCards,
+    cards: orderedCardsWithCurrentPrices,
     layout,
     assetProfile: profile,
+    gridCols: layoutTemplate?.grid_cols,
     rarityIconBuffers,
     cardImageBuffers,
     dateText,
-    skipPriceLow: isBOX,
-    layoutAdjust,
-    rowPriceAdjust,
-    rowCardAdjust,
-    totalSlots: profile.total_slots,
+    skipPriceLow: isBOX ? false : layoutTemplate?.skip_price_low ?? false,
+    layoutAdjust: layout.layoutAdjust ?? layoutAdjust,
+    rowPriceAdjust: layout.rowPriceAdjust ?? rowPriceAdjust,
+    rowCardAdjust: layout.rowCardAdjust ?? rowCardAdjust,
+    totalSlots: layoutTemplate?.total_slots ?? profile.total_slots,
   });
 
   // ---- 8. Storage アップロード ----
   // 既存のimage_keyがあればそのまま上書き、なければ新規作成
-  const datePath = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
+  const datePath = `${jstDate.year}/${jstDate.month}/${jstDate.day}`;
   const safeFranchise = page.franchise.replace(/[^a-zA-Z0-9._-]/g, '') || 'franchise';
   const safeLabel = romanizeLabel(label);
-  const storageKey = page.image_key || `generated/${datePath}/${safeFranchise}/page_${page.page_index}_${safeLabel}.png`;
+  const storageKey = `generated/${STORE_NAME}/${datePath}/${safeFranchise}/page_${page.page_index}_${safeLabel}_${Date.now()}.png`;
 
   const { error: uploadError } = await supabase.storage
     .from('haraka-images')
@@ -254,6 +330,9 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
     });
 
   if (uploadError) throw new Error(`Storage アップロード失敗: ${uploadError.message}`);
+  if (page.image_key && page.image_key !== storageKey) {
+    await supabase.storage.from('haraka-images').remove([page.image_key]);
+  }
 
   const { data: publicUrl } = supabase.storage
     .from('haraka-images')

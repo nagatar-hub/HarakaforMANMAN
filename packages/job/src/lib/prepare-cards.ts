@@ -1,31 +1,76 @@
 import type { Franchise, Database } from '@haraka/shared';
-import { calculateBuyPriceLow, calculateBoxPriceLow } from '@haraka/shared';
+import {
+  calculateBuyPriceHigh,
+  calculateBuyPriceLow,
+  calculateBoxPrice,
+  calculatePsa10PriceLow,
+  DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE,
+  DEFAULT_BOX_DISCOUNT_RATES,
+  type BoxDiscountRates,
+  type Psa10DiscountRates,
+} from '@haraka/shared';
 import type { LookupMap, LookupResult } from './db-lookup.js';
 import { lookupCard } from './db-lookup.js';
 
 type RawImportRow = Database['public']['Tables']['raw_import']['Row'];
 type PreparedCardInsert = Database['public']['Tables']['prepared_card']['Insert'];
 
+function isPsa10(grade: string | null): boolean {
+  return grade?.trim().toUpperCase() === 'PSA10';
+}
+
+function calculateNonBoxPriceLow(
+  priceHigh: number,
+  grade: string | null,
+  franchise: Franchise,
+  psa10DiscountRates?: Psa10DiscountRates,
+): number {
+  const psa10DiscountRate = psa10DiscountRates?.[franchise];
+  if (isPsa10(grade) && typeof psa10DiscountRate === 'number') {
+    return calculatePsa10PriceLow(priceHigh, psa10DiscountRate);
+  }
+  return calculateBuyPriceLow(priceHigh, franchise);
+}
+
+function normalizeBoxDiscountRates(ratesOrLegacyRate: BoxDiscountRates | number | undefined): BoxDiscountRates {
+  if (typeof ratesOrLegacyRate === 'number') {
+    return {
+      shrink: DEFAULT_BOX_DISCOUNT_RATES.shrink,
+      no_shrink: ratesOrLegacyRate,
+    };
+  }
+  return {
+    shrink: ratesOrLegacyRate?.shrink ?? DEFAULT_BOX_DISCOUNT_RATES.shrink,
+    no_shrink: ratesOrLegacyRate?.no_shrink ?? DEFAULT_BOX_DISCOUNT_RATES.no_shrink,
+  };
+}
+
 /**
  * RawImport 配列を PreparedCard の Insert 配列に変換
  *
  * 1. DB 照合（lookupCard）で tag / imageUrl / rarityIcon を付与
- * 2. BOXカード（card_name に【BOX】を含む）は calculateBoxPriceLow() で price_low を計算
- * 3. PSAカードは calculateBuyPriceLow() で price_low を計算
- * 4. price_high = kecak_price
+ * 2. 非BOXカードは買取上限減額率を price_high に反映
+ * 3. BOXカード（card_name に【BOX】を含む）は BOX 用の割引率を使う
+ * 4. price_low は price_high から内部計算（BOXはシュリンク無し価格）
  * 5. DB 照合でマッチしなかった場合は tag = null
  *
  * @param rawImports - raw_import テーブルのレコード
  * @param lookupMap - buildLookupMap() で構築したマップ
  * @param franchise - 商材
- * @param boxDiscountRate - BOXシュリンク無の割引率（デフォルト 0.15 = 15%OFF）
+ * @param boxDiscountRates - BOXの割引率。shrink=シュリンク有り、no_shrink=シュリンク無し
+ * @param psa10DiscountRates - PSA10 の商材別減額率。未指定の場合は従来の calculateBuyPriceLow() を使用
+ * @param buyPriceHighDiscountRate - 非BOXカードの買取上限減額率
  */
 export function prepareCards(
   rawImports: RawImportRow[],
   lookupMap: LookupMap,
   franchise: Franchise,
-  boxDiscountRate: number = 0.15,
+  boxDiscountRates: BoxDiscountRates | number = DEFAULT_BOX_DISCOUNT_RATES,
+  psa10DiscountRates?: Psa10DiscountRates,
+  buyPriceHighDiscountRate: number = DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE,
 ): PreparedCardInsert[] {
+  const normalizedBoxDiscountRates = normalizeBoxDiscountRates(boxDiscountRates);
+
   return rawImports.map((rawImport) => {
     const matched: LookupResult | null = lookupCard(lookupMap, {
       card_name: rawImport.card_name,
@@ -34,12 +79,17 @@ export function prepareCards(
     });
 
     // kecak_price が null または 0 の場合は price_high / price_low ともに 0
-    const priceHigh = rawImport.kecak_price ?? 0;
+    const sourcePrice = rawImport.kecak_price ?? 0;
     const isBox = rawImport.card_name?.includes('【BOX】') ?? false;
-    const priceLow = priceHigh > 0
+    const priceHigh = sourcePrice > 0
       ? isBox
-        ? calculateBoxPriceLow(priceHigh, boxDiscountRate)
-        : calculateBuyPriceLow(priceHigh, franchise)
+        ? calculateBoxPrice(sourcePrice, normalizedBoxDiscountRates.shrink)
+        : calculateBuyPriceHigh(sourcePrice, buyPriceHighDiscountRate)
+      : 0;
+    const priceLow = sourcePrice > 0
+      ? isBox
+        ? calculateBoxPrice(sourcePrice, normalizedBoxDiscountRates.no_shrink)
+        : calculateNonBoxPriceLow(priceHigh, rawImport.grade, franchise, psa10DiscountRates)
       : 0;
 
     return {

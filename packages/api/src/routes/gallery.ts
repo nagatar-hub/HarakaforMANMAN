@@ -7,27 +7,85 @@ export const galleryRoutes = new Hono();
 
 const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
 
-/** 日付一覧: generated_page の created_at から DISTINCT 日付を抽出 */
+function jstDateString(iso: string): string {
+  return new Date(iso).toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
+}
+
+function utcRangeForJstDate(date: string): { from: string; to: string } {
+  const from = new Date(`${date}T00:00:00+09:00`);
+  const to = new Date(from.getTime() + 24 * 60 * 60 * 1000);
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
+type GalleryDatePageRow = {
+  run_id: string;
+  franchise: string;
+};
+
+async function fetchGeneratedPageRowsForRuns(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  runIds: string[],
+): Promise<{ rows: GalleryDatePageRow[]; error?: string }> {
+  const rows: GalleryDatePageRow[] = [];
+  const pageSize = 1000;
+
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from('generated_page')
+      .select('run_id, franchise')
+      .in('status', ['generated', 'pending', 'failed'])
+      .in('run_id', runIds)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1);
+
+    if (error) return { rows, error: error.message };
+
+    const chunk = (data || []) as GalleryDatePageRow[];
+    rows.push(...chunk);
+    if (chunk.length < pageSize) break;
+  }
+
+  return { rows };
+}
+
+/** 日付一覧: 最新 run ごとに generated_page のフランチャイズ数を集計 */
 galleryRoutes.get('/gallery/dates', async (c) => {
   const supabase = createSupabaseClient();
 
-  // generated_page から run_id ごとの日付と件数を取得（storeフィルタ: image_key prefix）
-  const { data: pages, error } = await supabase
-    .from('generated_page')
-    .select('run_id, franchise, image_key, created_at')
-    .in('status', ['generated', 'pending', 'failed'])
-    .like('image_key', `generated/${STORE_NAME}/%`)
-    .order('created_at', { ascending: false });
+  const { data: runs, error: runError } = await supabase
+    .from('run')
+    .select('id, started_at')
+    .eq('store', STORE_NAME)
+    .eq('status', 'completed')
+    .not('generate_done_at', 'is', null)
+    .order('started_at', { ascending: false })
+    .limit(50);
 
-  if (error) return c.json({ error: error.message }, 500);
+  if (runError) return c.json({ error: runError.message }, 500);
+  if (!runs || runs.length === 0) return c.json([]);
 
-  // image_key から日付を抽出: generated/YYYY/MM/DD/...
+  const latestRunByDate = new Map<string, { id: string; started_at: string }>();
+  for (const run of runs) {
+    const dateStr = jstDateString(run.started_at);
+    if (!latestRunByDate.has(dateStr)) latestRunByDate.set(dateStr, run);
+  }
+  const targetRuns = [...latestRunByDate.values()];
+  const runStartedAt = new Map(targetRuns.map(r => [r.id, r.started_at]));
+
+  const { rows: pages, error } = await fetchGeneratedPageRowsForRuns(
+    supabase,
+    targetRuns.map(r => r.id),
+  );
+  if (error) return c.json({ error }, 500);
+
+  // run の JST 日付で集計する。Storage パスは UTC 日付になることがあるため使わない。
   const dateMap = new Map<string, Record<string, number>>();
 
   for (const p of pages || []) {
-    const match = p.image_key?.match(/^generated\/[^/]+\/(\d{4})\/(\d{2})\/(\d{2})\//);
-    if (!match) continue;
-    const dateStr = `${match[1]}-${match[2]}-${match[3]}`;
+    const startedAt = runStartedAt.get(p.run_id);
+    if (!startedAt) continue;
+    const dateStr = jstDateString(startedAt);
     if (!dateMap.has(dateStr)) dateMap.set(dateStr, {});
     const counts = dateMap.get(dateStr)!;
     counts[p.franchise] = (counts[p.franchise] || 0) + 1;
@@ -48,20 +106,35 @@ galleryRoutes.get('/gallery/images', async (c) => {
   if (!date) return c.json({ error: 'date is required' }, 400);
 
   const supabase = createSupabaseClient();
-  const [year, month, day] = date.split('-');
-  const prefix = `generated/${STORE_NAME}/${year}/${month}/${day}/`;
+  const { from, to } = utcRangeForJstDate(date);
+
+  const { data: runs, error: runError } = await supabase
+    .from('run')
+    .select('id, started_at')
+    .eq('store', STORE_NAME)
+    .eq('status', 'completed')
+    .not('generate_done_at', 'is', null)
+    .gte('started_at', from)
+    .lt('started_at', to)
+    .order('started_at', { ascending: false })
+    .limit(1);
+
+  if (runError) return c.json({ error: runError.message }, 500);
+  if (!runs || runs.length === 0) return c.json([]);
+
+  const runStartedAt = new Map(runs.map(r => [r.id, r.started_at]));
 
   let query = supabase
     .from('generated_page')
     .select('id, run_id, franchise, page_index, page_label, card_ids, image_key, image_url, status, error_message, created_at, run:run_id(started_at)')
     .in('status', ['generated', 'pending', 'failed'])
-    .like('image_key', `${prefix}%`)
+    .in('run_id', runs.map(r => r.id))
     .order('created_at', { ascending: false })
     .order('franchise')
     .order('page_index');
 
   if (franchise) {
-    query = query.like('image_key', `${prefix}${franchise}%`);
+    query = query.eq('franchise', franchise);
   }
 
   const { data, error } = await query;
@@ -72,7 +145,7 @@ galleryRoutes.get('/gallery/images', async (c) => {
     const run = p.run as { started_at: string } | null;
     return {
       ...p,
-      run_started_at: run?.started_at || p.created_at,
+      run_started_at: runStartedAt.get(p.run_id as string) || run?.started_at || p.created_at,
       run: undefined,
     };
   });

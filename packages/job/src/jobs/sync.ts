@@ -28,6 +28,8 @@ import { checkImageHealth } from '../lib/image-health-check.js';
 import { updateProgress, clearProgress } from '../lib/progress.js';
 import { planPages } from '../lib/page-planner.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
+import { getRequiredEnvOrSecret } from '../lib/env.js';
+import { loadStorePricingSettings } from '../lib/pricing-settings.js';
 import type {
   Database,
   Franchise,
@@ -65,10 +67,8 @@ export async function runSync() {
     const accessToken = await getAccessToken();
     console.log('[sync] Access token 取得完了');
 
-    const kecakSpreadsheetId = process.env.KECAK_SPREADSHEET_ID;
-    const harakaDbSpreadsheetId = process.env.HARAKA_DB_SPREADSHEET_ID;
-    if (!kecakSpreadsheetId) throw new Error('KECAK_SPREADSHEET_ID が未設定です');
-    if (!harakaDbSpreadsheetId) throw new Error('HARAKA_DB_SPREADSHEET_ID が未設定です');
+    const kecakSpreadsheetId = await getRequiredEnvOrSecret('KECAK_SPREADSHEET_ID');
+    const harakaDbSpreadsheetId = await getRequiredEnvOrSecret('HARAKA_DB_SPREADSHEET_ID');
 
     // ---- 3. KECAK 取得 + raw_import 保存 ----
     await updateProgress(supabase, run.id, 5, 100, 'KECAK インポート中...');
@@ -149,22 +149,18 @@ export async function runSync() {
       console.log(`[sync] db_card upsert 完了: ${dbCardRows.length}件`);
     }
 
-    // ---- 4.75. store_config から BOX割引率を取得 ----
-    let boxDiscountRate = 0.15;
-    try {
-      const { data: storeConfig } = await supabase
-        .from('store_config')
-        .select('settings')
-        .eq('store', STORE_NAME)
-        .single();
-      if (storeConfig?.settings && typeof storeConfig.settings === 'object') {
-        const rate = (storeConfig.settings as Record<string, unknown>).box_shrink_discount_rate;
-        if (typeof rate === 'number') boxDiscountRate = rate;
-      }
-    } catch {
-      console.log('[sync] store_config 取得スキップ（デフォルト割引率 15% 使用）');
-    }
-    console.log(`[sync] BOX割引率: ${(boxDiscountRate * 100).toFixed(0)}%`);
+    // ---- 4.75. store_config から価格設定を取得 ----
+    const pricingSettings = await loadStorePricingSettings(supabase, STORE_NAME);
+    const buyPriceHighDiscountRate = pricingSettings.buy_price_high_discount_rate;
+    const boxDiscountRates = pricingSettings.box_discount_rates;
+    const psa10DiscountRates = pricingSettings.psa10_discount_rates;
+    console.log(`[sync] 買取上限減額率: ${(buyPriceHighDiscountRate * 100).toFixed(0)}%`);
+    console.log(`[sync] BOX割引率: シュリンク有り=${(boxDiscountRates.shrink * 100).toFixed(0)}%, シュリンク無し=${(boxDiscountRates.no_shrink * 100).toFixed(0)}%`);
+    const psaRateSummary = FRANCHISES
+      .filter(franchise => typeof psa10DiscountRates[franchise] === 'number')
+      .map(franchise => `${franchise}=${((psa10DiscountRates[franchise] ?? 0) * 100).toFixed(0)}%`)
+      .join(', ');
+    console.log(`[sync] PSA10減額率: ${psaRateSummary || '未設定（従来計算）'}`);
 
     // ---- 5. PreparedCard 変換 + 保存 ----
     await updateProgress(supabase, run.id, 30, 100, 'PreparedCard 変換中...');
@@ -177,7 +173,7 @@ export async function runSync() {
       const lookupMap = lookupMaps.get(franchise);
       if (!lookupMap) continue;
 
-      const prepared = prepareCards(rawImports, lookupMap, franchise, boxDiscountRate);
+      const prepared = prepareCards(rawImports, lookupMap, franchise, boxDiscountRates, psa10DiscountRates, buyPriceHighDiscountRate);
       if (prepared.length === 0) continue;
 
       await batchInsert(supabase, 'prepared_card', prepared as unknown as Record<string, unknown>[]);
@@ -203,7 +199,7 @@ export async function runSync() {
       });
 
       if (spectreRows.length > 1) {
-        const spectreCards = parseSpectreRows(spectreRows, 'Pokemon', run.id);
+        const spectreCards = parseSpectreRows(spectreRows, 'Pokemon', run.id, psa10DiscountRates, buyPriceHighDiscountRate);
         if (spectreCards.length > 0) {
           // spectreTagMap を構築（交差処理用）
           for (const sc of spectreCards) {
