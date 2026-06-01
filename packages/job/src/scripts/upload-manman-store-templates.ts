@@ -12,6 +12,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { detectLayoutFromBuffer, renderDetectionDebugImage } from '../lib/layout-detector.js';
+import { scaleManmanStoreLayout } from '../lib/manman-store-layout.js';
 import { FRANCHISES } from '@haraka/shared';
 import type { Franchise, LayoutConfig, LayoutTemplateRow } from '@haraka/shared';
 
@@ -45,17 +46,6 @@ function storagePathFor(franchise: Franchise, slots: number): string {
 
 function cardBackPathFor(franchise: Franchise): string {
   return `card-backs/${STORE_NAME}/${FRANCHISE_SLUG[franchise]}.png`;
-}
-
-function scaleRarityIcon(layout: LayoutConfig): LayoutConfig {
-  const iconSize = Math.max(20, Math.round(layout.cardWidth * 0.45));
-  return {
-    ...layout,
-    rarityIconWidth: iconSize,
-    rarityIconHeight: iconSize,
-    rarityIconOffsetY: Math.round(layout.cardHeight * (-10 / 170)),
-    layoutAdjust: { cardYDelta: -4, priceYDelta: -5 },
-  };
 }
 
 async function main() {
@@ -109,7 +99,7 @@ async function main() {
         img_height: detected.imgHeight,
         template_storage_path: templateStoragePath,
         card_back_storage_path: cardBackPathFor(franchise),
-        layout_config: scaleRarityIcon(detected.layoutConfig),
+        layout_config: scaleManmanStoreLayout(detected.layoutConfig),
         skip_price_low: true,
         is_default: slots === 40,
         is_active: true,
