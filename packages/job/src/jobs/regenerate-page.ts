@@ -52,6 +52,28 @@ const BOX_TEMPLATE_DRIVE_ID: Record<string, string> = {
   'YU-GI-OH!': '1uhJt5rFJyZgOX9wMvl4vLAckotKpmC_n',
 };
 
+export function resolveRegenerateAdjustments(params: {
+  layout: LayoutConfig;
+  isBOX: boolean;
+  fallbackLayoutAdjust: { cardYDelta: number; priceYDelta: number };
+  fallbackRowPriceAdjust: Record<number, { priceHighYDelta?: number; priceLowYDelta?: number }>;
+  fallbackRowCardAdjust?: Record<number, number>;
+}) {
+  const {
+    layout,
+    isBOX,
+    fallbackLayoutAdjust,
+    fallbackRowPriceAdjust,
+    fallbackRowCardAdjust,
+  } = params;
+
+  return {
+    layoutAdjust: layout.layoutAdjust ?? fallbackLayoutAdjust,
+    rowPriceAdjust: layout.rowPriceAdjust ?? (isBOX ? undefined : fallbackRowPriceAdjust),
+    rowCardAdjust: layout.rowCardAdjust ?? (isBOX ? undefined : fallbackRowCardAdjust),
+  };
+}
+
 function getJstDateParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Tokyo',
@@ -279,6 +301,13 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
 
   const jstDate = getJstDateParts();
   const dateText = `${jstDate.month}/${jstDate.day}`;
+  const adjustments = resolveRegenerateAdjustments({
+    layout,
+    isBOX,
+    fallbackLayoutAdjust: layoutAdjust,
+    fallbackRowPriceAdjust: rowPriceAdjust,
+    fallbackRowCardAdjust: rowCardAdjust,
+  });
 
   // ---- 7. 画像合成 ----
   console.log(`[regenerate-page] 画像合成開始...`);
@@ -293,9 +322,9 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
     cardImageBuffers,
     dateText,
     skipPriceLow: isBOX ? false : layoutTemplate?.skip_price_low ?? false,
-    layoutAdjust: layout.layoutAdjust ?? layoutAdjust,
-    rowPriceAdjust: layout.rowPriceAdjust ?? rowPriceAdjust,
-    rowCardAdjust: layout.rowCardAdjust ?? rowCardAdjust,
+    layoutAdjust: adjustments.layoutAdjust,
+    rowPriceAdjust: adjustments.rowPriceAdjust,
+    rowCardAdjust: adjustments.rowCardAdjust,
     totalSlots: layoutTemplate?.total_slots ?? profile.total_slots,
   });
 

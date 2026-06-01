@@ -50,4 +50,16 @@ describe('makeBoxLayout', () => {
       priceLowY: 330,
     });
   });
+
+  it('BOXレイアウトは行別の価格補正を持たない', () => {
+    const layout = makeBoxLayout(makeProfileLayout({
+      rowsBOX: [
+        { cardY: 268, priceHighY: 488, priceLowY: 520 },
+        { cardY: 533, priceHighY: 753, priceLowY: 785 },
+        { cardY: 803, priceHighY: 1023, priceLowY: 1056 },
+      ],
+    }));
+
+    expect(layout.rowPriceAdjust).toBeUndefined();
+  });
 });
