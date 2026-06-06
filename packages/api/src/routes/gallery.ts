@@ -2,25 +2,16 @@ import { Hono } from 'hono';
 import { fork } from 'child_process';
 import path from 'path';
 import { createSupabaseClient } from '../lib/supabase.js';
+import {
+  summarizeGalleryDates,
+  utcRangeForJstDate,
+  type GalleryDatePageRow,
+  type GalleryRunRow,
+} from '../lib/gallery-utils.js';
 
 export const galleryRoutes = new Hono();
 
 const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
-
-function jstDateString(iso: string): string {
-  return new Date(iso).toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
-}
-
-function utcRangeForJstDate(date: string): { from: string; to: string } {
-  const from = new Date(`${date}T00:00:00+09:00`);
-  const to = new Date(from.getTime() + 24 * 60 * 60 * 1000);
-  return { from: from.toISOString(), to: to.toISOString() };
-}
-
-type GalleryDatePageRow = {
-  run_id: string;
-  franchise: string;
-};
 
 async function fetchGeneratedPageRowsForRuns(
   supabase: ReturnType<typeof createSupabaseClient>,
@@ -49,7 +40,7 @@ async function fetchGeneratedPageRowsForRuns(
   return { rows };
 }
 
-/** 日付一覧: 最新 run ごとに generated_page のフランチャイズ数を集計 */
+/** 日付一覧: 日付内の全 run を対象に generated_page のフランチャイズ数を集計 */
 galleryRoutes.get('/gallery/dates', async (c) => {
   const supabase = createSupabaseClient();
 
@@ -65,13 +56,7 @@ galleryRoutes.get('/gallery/dates', async (c) => {
   if (runError) return c.json({ error: runError.message }, 500);
   if (!runs || runs.length === 0) return c.json([]);
 
-  const latestRunByDate = new Map<string, { id: string; started_at: string }>();
-  for (const run of runs) {
-    const dateStr = jstDateString(run.started_at);
-    if (!latestRunByDate.has(dateStr)) latestRunByDate.set(dateStr, run);
-  }
-  const targetRuns = [...latestRunByDate.values()];
-  const runStartedAt = new Map(targetRuns.map(r => [r.id, r.started_at]));
+  const targetRuns = runs as GalleryRunRow[];
 
   const { rows: pages, error } = await fetchGeneratedPageRowsForRuns(
     supabase,
@@ -80,22 +65,7 @@ galleryRoutes.get('/gallery/dates', async (c) => {
   if (error) return c.json({ error }, 500);
 
   // run の JST 日付で集計する。Storage パスは UTC 日付になることがあるため使わない。
-  const dateMap = new Map<string, Record<string, number>>();
-
-  for (const p of pages || []) {
-    const startedAt = runStartedAt.get(p.run_id);
-    if (!startedAt) continue;
-    const dateStr = jstDateString(startedAt);
-    if (!dateMap.has(dateStr)) dateMap.set(dateStr, {});
-    const counts = dateMap.get(dateStr)!;
-    counts[p.franchise] = (counts[p.franchise] || 0) + 1;
-  }
-
-  const dates = Array.from(dateMap.entries())
-    .map(([date, franchises]) => ({ date, franchises }))
-    .sort((a, b) => b.date.localeCompare(a.date));
-
-  return c.json(dates);
+  return c.json(summarizeGalleryDates(targetRuns, pages || []));
 });
 
 /** 特定日の画像一覧（run情報付き） */
@@ -116,8 +86,7 @@ galleryRoutes.get('/gallery/images', async (c) => {
     .not('generate_done_at', 'is', null)
     .gte('started_at', from)
     .lt('started_at', to)
-    .order('started_at', { ascending: false })
-    .limit(1);
+    .order('started_at', { ascending: false });
 
   if (runError) return c.json({ error: runError.message }, 500);
   if (!runs || runs.length === 0) return c.json([]);

@@ -221,12 +221,10 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
     const smallBias = layout.isSmallCard ? 0.53 : 0.57;
     const fontSize = Math.max(14, Math.round(layout.priceBoxHeight * smallBias));
 
-    const primaryPrice = skipPriceLow && card.price_low && card.price_low > 0
-      ? card.price_low
-      : card.price_high;
+    const primaryPrice = card.price_high;
 
     if (primaryPrice && primaryPrice > 0) {
-      // price_high 表示枠（赤）。1価格テンプレートでは減額後の price_low をここに表示する。
+      // price_high 表示枠（赤）。1価格テンプレートでも商材別減額率を反映した price_high を表示する。
       const priceHighText = formatPrice(primaryPrice, assetProfile.price_format);
       const priceHighSvg = createPriceTextSvg({
         text: priceHighText,

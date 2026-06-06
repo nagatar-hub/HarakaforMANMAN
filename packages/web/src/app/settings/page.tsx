@@ -2,6 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api-client';
+import {
+  calculateHundredYenDiscountPreview,
+  calculateSteppedDiscountPreview,
+  normalizePreviewBasePrice,
+} from '@/lib/settings-preview';
 
 type Franchise = 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
 type Psa10Rates = Record<Franchise, number>;
@@ -44,14 +49,11 @@ function toPercent(value: number | undefined, fallback: number): number {
   return Math.round((value ?? fallback / 100) * 100);
 }
 
-function calculatePriceHighPreview(price: number, rate: number): number {
-  return Math.floor(price * (1 - rate / 100) / 100) * 100;
-}
-
 export default function SettingsPage() {
   const [config, setConfig] = useState<StoreConfig | null>(null);
   const [boxRates, setBoxRates] = useState<BoxRates>(DEFAULT_BOX_RATES);
   const [psa10Rates, setPsa10Rates] = useState<Psa10Rates>(DEFAULT_PSA10_RATES);
+  const [psaPreviewBasePrice, setPsaPreviewBasePrice] = useState('30000');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,9 +123,9 @@ export default function SettingsPage() {
   }
 
   const previewBoxHigh = 10000;
-  const previewBoxShrink = Math.floor(previewBoxHigh * (1 - boxRates.shrink / 100) / 100) * 100;
-  const previewBoxNoShrink = Math.floor(previewBoxHigh * (1 - boxRates.no_shrink / 100) / 100) * 100;
-  const previewPsaHigh = 30000;
+  const previewBoxShrink = calculateHundredYenDiscountPreview(previewBoxHigh, boxRates.shrink);
+  const previewBoxNoShrink = calculateHundredYenDiscountPreview(previewBoxHigh, boxRates.no_shrink);
+  const normalizedPsaPreviewBasePrice = normalizePreviewBasePrice(psaPreviewBasePrice);
 
   return (
     <div>
@@ -195,11 +197,29 @@ export default function SettingsPage() {
           </section>
 
           <section className="border-t border-border-card pt-8">
-            <h2 className="text-lg font-bold text-text-primary mb-6">商材別 減額率</h2>
+            <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <h2 className="text-lg font-bold text-text-primary">商材別 減額率</h2>
+              <label className="block sm:w-48">
+                <span className="block text-xs font-semibold text-text-secondary mb-1 uppercase tracking-wide">
+                  プレビュー元価格
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-text-secondary font-medium">¥</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={100}
+                    value={psaPreviewBasePrice}
+                    onChange={(e) => setPsaPreviewBasePrice(e.target.value)}
+                    className="w-full text-right bg-transparent border border-border-card rounded-lg px-3 py-2 text-text-primary font-bold text-base focus:outline-none"
+                  />
+                </div>
+              </label>
+            </div>
 
             <div className="space-y-5">
               {FRANCHISE_OPTIONS.map(({ key, label }) => {
-                const previewHigh = calculatePriceHighPreview(previewPsaHigh, psa10Rates[key]);
+                const previewHigh = calculateSteppedDiscountPreview(psaPreviewBasePrice, psa10Rates[key]);
 
                 return (
                   <div key={key}>
@@ -228,7 +248,9 @@ export default function SettingsPage() {
                         <span className="text-text-secondary font-medium">%</span>
                       </div>
                       <div className="text-sm sm:text-right">
-                        <span className="text-text-secondary">¥30,000 → </span>
+                        <span className="text-text-secondary">
+                          ¥{normalizedPsaPreviewBasePrice.toLocaleString()} →{' '}
+                        </span>
                         <span className="font-bold text-text-primary">¥{previewHigh.toLocaleString()}</span>
                       </div>
                     </div>

@@ -79,7 +79,7 @@ describe('prepareCards', () => {
         { Pokemon: 0.12 },
       );
 
-      expect(result[0].price_high).toBe(8800);
+      expect(result[0].price_high).toBe(9000);
     });
 
     it('非BOXカードは指定された商材別減額率を price_high に反映する', () => {
@@ -94,12 +94,12 @@ describe('prepareCards', () => {
         { Pokemon: 0.10, 'ONE PIECE': 0.20 },
       );
 
-      expect(result[0].price_high).toBe(27000);
+      expect(result[0].price_high).toBe(27500);
     });
 
     it('price_low は減額後の price_high から内部計算される', () => {
-      // デフォルト 12% 減額: 10000 -> price_high 8800
-      // 8800 * 0.75 = 6600 -> niceLowerBound(6600) = 6500
+      // デフォルト 12% 減額: 10000 -> 8800 -> price_high 9000
+      // 9000 * 0.75 = 6750 -> niceLowerBound(6750) = 6500
       const rawImport = makeRawImport({ kecak_price: 10000 });
       mockLookupCard.mockReturnValue(makeLookupResult());
 
@@ -108,9 +108,9 @@ describe('prepareCards', () => {
       expect(result[0].price_low).toBe(6500);
     });
 
-    it('price_low = calculateBuyPriceLow(13200, Pokemon) = 10000', () => {
-      // デフォルト 12% 減額: 15000 -> price_high 13200
-      // 13200 * 0.80 = 10560 → niceLowerBound(10560) = 10000
+    it('price_low = calculateBuyPriceLow(13500, Pokemon) = 10000', () => {
+      // デフォルト 12% 減額: 15000 -> 13200 -> price_high 13500
+      // 13500 * 0.80 = 10800 → niceLowerBound(10800) = 10000
       const rawImport = makeRawImport({ kecak_price: 15000 });
       mockLookupCard.mockReturnValue(makeLookupResult());
 
@@ -142,8 +142,23 @@ describe('prepareCards', () => {
         { Pokemon: 0.10 },
       );
 
-      expect(result[0].price_high).toBe(27000);
-      expect(result[0].price_low).toBe(23000);
+      expect(result[0].price_high).toBe(27500);
+      expect(result[0].price_low).toBe(24000);
+    });
+
+    it('price_high は商材別減額率を適用後に500円または1000円へ切り上げる', () => {
+      const rawImport = makeRawImport({ kecak_price: 30090, grade: 'PSA10' });
+      mockLookupCard.mockReturnValue(makeLookupResult());
+
+      const result = prepareCards(
+        [rawImport],
+        { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap,
+        'ONE PIECE',
+        0.15,
+        { 'ONE PIECE': 0.06 },
+      );
+
+      expect(result[0].price_high).toBe(28500);
     });
 
     it('PSA10 以外も商材別減額率を price_high に使う', () => {
@@ -158,8 +173,8 @@ describe('prepareCards', () => {
         { Pokemon: 0.10 },
       );
 
-      expect(result[0].price_high).toBe(27000);
-      expect(result[0].price_low).toBe(23000);
+      expect(result[0].price_high).toBe(27500);
+      expect(result[0].price_low).toBe(24000);
     });
 
     it('BOX は商材別減額率を使わず、シュリンク有りとシュリンク無しの割引率を別々に適用する', () => {

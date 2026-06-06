@@ -132,9 +132,17 @@ export function calculatePsa10PriceLow(priceHigh: number, discountRate: number):
   return niceLowerBound(priceHigh * (1 - discountRate));
 }
 
+function roundDiscountedPriceHigh(raw: number): number {
+  if (!raw || raw <= 0) return 0;
+
+  const base = Math.floor(raw / 1000) * 1000;
+  const remainder = raw - base;
+  return remainder <= 500 ? base + 500 : base + 1000;
+}
+
 export function calculateBuyPriceHigh(basePrice: number, discountRate: number = DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE): number {
   if (!basePrice || basePrice <= 0) return 0;
-  return Math.floor(basePrice * (1 - discountRate) / 100) * 100;
+  return roundDiscountedPriceHigh(basePrice * (1 - discountRate));
 }
 
 /**

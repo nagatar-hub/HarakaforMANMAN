@@ -62,24 +62,24 @@ describe('parseSpectreRows', () => {
   it('price_high を BUY_PRICE（index 7）に商材別減額率を反映して取得する', () => {
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID);
-    expect(result[0].price_high).toBe(26400);
+    expect(result[0].price_high).toBe(26500);
   });
 
   it('price_high に指定された商材別減額率を反映する', () => {
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID, { Pokemon: 0.10, 'ONE PIECE': 0.20 });
-    expect(result[0].price_high).toBe(27000);
+    expect(result[0].price_high).toBe(27500);
   });
 
   it('price_high が ¥ 記号付きでも正しく数値に変換する', () => {
     const rows = [HEADER, ROW_WITH_YEN];
     const result = parseSpectreRows(rows, franchise, RUN_ID);
-    expect(result[0].price_high).toBe(6100);
+    expect(result[0].price_high).toBe(6500);
   });
 
   it('price_low が calculateBuyPriceLow で計算される', () => {
-    // 商材別 12% 減額: 30000 -> 26400
-    // Pokemon: 26400 >= 20000 → rate=0.88 → 26400*0.88=23232 → niceLowerBound=23000
+    // 商材別 12% 減額: 30000 -> 26400 -> price_high 26500
+    // Pokemon: 26500 >= 20000 → rate=0.88 → 26500*0.88=23320 → niceLowerBound=23000
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID);
     expect(result[0].price_low).toBe(23000);
@@ -88,8 +88,14 @@ describe('parseSpectreRows', () => {
   it('商材別減額率が指定された場合はその率で price_high を計算する', () => {
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID, { Pokemon: 0.10 });
-    expect(result[0].price_high).toBe(27000);
-    expect(result[0].price_low).toBe(23000);
+    expect(result[0].price_high).toBe(27500);
+    expect(result[0].price_low).toBe(24000);
+  });
+
+  it('price_high は商材別減額率を適用後に500円または1000円へ切り上げる', () => {
+    const rows = [HEADER, ['TOP', 'ナミ', '¥30,090', 'https://img/nami.jpg', 'ナミ', 'PSA10', 'OP00-001', '30090']];
+    const result = parseSpectreRows(rows, 'ONE PIECE', RUN_ID, { 'ONE PIECE': 0.06 });
+    expect(result[0].price_high).toBe(28500);
   });
 
   it('source = "spectre" が設定される', () => {
