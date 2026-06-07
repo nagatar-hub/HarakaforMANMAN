@@ -37,8 +37,18 @@ export type StoreConfigRow = {
   store: string;
   settings: {
     box_discount_rates?: {
-      shrink?: number;
-      no_shrink?: number;
+      Pokemon?: {
+        shrink?: number;
+        no_shrink?: number;
+      };
+      'ONE PIECE'?: {
+        shrink?: number;
+        no_shrink?: number;
+      };
+      'YU-GI-OH!'?: {
+        shrink?: number;
+        no_shrink?: number;
+      };
     };
     psa10_discount_rates?: {
       Pokemon?: number;

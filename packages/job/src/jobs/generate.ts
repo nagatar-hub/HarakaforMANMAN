@@ -25,6 +25,7 @@ import { batchInsert } from '../lib/batch.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import { getOptionalEnvOrSecret } from '../lib/env.js';
 import { applyCurrentPsa10DiscountRates, loadPsa10DiscountRates } from '../lib/pricing-settings.js';
+import { isBoxRow } from '../lib/box-row.js';
 import type {
   Database,
   PreparedCardRow,
@@ -98,7 +99,7 @@ function isBoxLabel(label: string | null): boolean {
 }
 
 function isBoxCard(card: PreparedCardRow): boolean {
-  return card.card_name?.includes('【BOX】') === true || card.tag === 'BOX';
+  return card.tag === 'BOX' || isBoxRow(card);
 }
 
 function makeFixedBoxPlans(cards: PreparedCardRow[], totalSlots: number): PagePlan[] {

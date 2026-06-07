@@ -3,13 +3,16 @@ import {
   calculateBuyPriceHigh,
   calculateBuyPriceLow,
   calculateBoxPrice,
+  DEFAULT_BOX_CONDITION_DISCOUNT_RATES,
   DEFAULT_BOX_DISCOUNT_RATES,
   DEFAULT_PSA10_DISCOUNT_RATES,
   type BoxDiscountRates,
+  type BoxConditionDiscountRates,
   type Psa10DiscountRates,
 } from '@haraka/shared';
 import type { LookupMap, LookupResult } from './db-lookup.js';
 import { lookupCard } from './db-lookup.js';
+import { isBoxRow } from './box-row.js';
 
 type RawImportRow = Database['public']['Tables']['raw_import']['Row'];
 type PreparedCardInsert = Database['public']['Tables']['prepared_card']['Insert'];
@@ -22,16 +25,36 @@ function resolveNonBoxDiscountRate(franchise: Franchise, psa10DiscountRates?: Ps
   return psa10DiscountRates?.[franchise] ?? DEFAULT_PSA10_DISCOUNT_RATES[franchise];
 }
 
-function normalizeBoxDiscountRates(ratesOrLegacyRate: BoxDiscountRates | number | undefined): BoxDiscountRates {
+type LegacyBoxDiscountRates = Partial<BoxConditionDiscountRates>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeBoxDiscountRates(
+  ratesOrLegacyRate: BoxDiscountRates | LegacyBoxDiscountRates | number | undefined,
+  franchise: Franchise,
+): BoxConditionDiscountRates {
   if (typeof ratesOrLegacyRate === 'number') {
     return {
-      shrink: DEFAULT_BOX_DISCOUNT_RATES.shrink,
+      shrink: DEFAULT_BOX_CONDITION_DISCOUNT_RATES.shrink,
       no_shrink: ratesOrLegacyRate,
     };
   }
+  const rateRecord: Record<string, unknown> = isRecord(ratesOrLegacyRate)
+    ? ratesOrLegacyRate as Record<string, unknown>
+    : {};
+  if (isRecord(rateRecord[franchise])) {
+    const franchiseRates = rateRecord[franchise] as Partial<BoxConditionDiscountRates>;
+    return {
+      shrink: franchiseRates.shrink ?? DEFAULT_BOX_DISCOUNT_RATES[franchise].shrink,
+      no_shrink: franchiseRates.no_shrink ?? DEFAULT_BOX_DISCOUNT_RATES[franchise].no_shrink,
+    };
+  }
+  const legacyRates = rateRecord as LegacyBoxDiscountRates;
   return {
-    shrink: ratesOrLegacyRate?.shrink ?? DEFAULT_BOX_DISCOUNT_RATES.shrink,
-    no_shrink: ratesOrLegacyRate?.no_shrink ?? DEFAULT_BOX_DISCOUNT_RATES.no_shrink,
+    shrink: legacyRates.shrink ?? DEFAULT_BOX_DISCOUNT_RATES[franchise].shrink,
+    no_shrink: legacyRates.no_shrink ?? DEFAULT_BOX_DISCOUNT_RATES[franchise].no_shrink,
   };
 }
 
@@ -40,7 +63,7 @@ function normalizeBoxDiscountRates(ratesOrLegacyRate: BoxDiscountRates | number 
  *
  * 1. DB 照合（lookupCard）で tag / imageUrl / rarityIcon を付与
  * 2. 非BOXカードは商材別減額率を price_high に反映
- * 3. BOXカード（card_name に【BOX】を含む）は BOX 用の割引率を使う
+ * 3. BOXカード（grade=BOX / BOX接頭辞）は BOX 用の割引率を使う
  * 4. price_low は price_high から内部計算（BOXはシュリンク無し価格）
  * 5. DB 照合でマッチしなかった場合は tag = null
  *
@@ -54,10 +77,10 @@ export function prepareCards(
   rawImports: RawImportRow[],
   lookupMap: LookupMap,
   franchise: Franchise,
-  boxDiscountRates: BoxDiscountRates | number = DEFAULT_BOX_DISCOUNT_RATES,
+  boxDiscountRates: BoxDiscountRates | LegacyBoxDiscountRates | number = DEFAULT_BOX_DISCOUNT_RATES,
   psa10DiscountRates?: Psa10DiscountRates,
 ): PreparedCardInsert[] {
-  const normalizedBoxDiscountRates = normalizeBoxDiscountRates(boxDiscountRates);
+  const normalizedBoxDiscountRates = normalizeBoxDiscountRates(boxDiscountRates, franchise);
   const nonBoxDiscountRate = resolveNonBoxDiscountRate(franchise, psa10DiscountRates);
 
   return rawImports.map((rawImport) => {
@@ -69,7 +92,7 @@ export function prepareCards(
 
     // kecak_price が null または 0 の場合は price_high / price_low ともに 0
     const sourcePrice = rawImport.kecak_price ?? 0;
-    const isBox = rawImport.card_name?.includes('【BOX】') ?? false;
+    const isBox = isBoxRow(rawImport);
     const priceHigh = sourcePrice > 0
       ? isBox
         ? calculateBoxPrice(sourcePrice, normalizedBoxDiscountRates.shrink)
@@ -92,7 +115,7 @@ export function prepareCards(
       alt_image_url: matched?.imageUrl ?? null,
       rarity: rawImport.rarity,
       rarity_icon_url: matched?.rarityIcon ?? null,
-      tag: matched?.tag ?? null,
+      tag: matched?.tag ?? (isBox ? 'BOX' : null),
       price_high: priceHigh,
       price_low: priceLow,
       image_status: 'unchecked',

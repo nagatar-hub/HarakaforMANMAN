@@ -1,5 +1,4 @@
 import {
-  calculateHundredYenDiscountPreview,
   calculateSteppedDiscountPreview,
   normalizePreviewBasePrice,
 } from '@/lib/settings-preview';
@@ -12,8 +11,9 @@ describe('settings preview helpers', () => {
     expect(calculateSteppedDiscountPreview(1417800, 6)).toBe(1333000);
   });
 
-  it('keeps BOX preview on 100 yen floor rounding', () => {
-    expect(calculateHundredYenDiscountPreview(10000, 6)).toBe(9400);
+  it('calculates BOX preview with the same 500/1000 yen stepped rounding', () => {
+    expect(calculateSteppedDiscountPreview(12800, 5)).toBe(12500);
+    expect(calculateSteppedDiscountPreview(19000, 15)).toBe(16500);
   });
 
   it('normalizes invalid preview input to zero', () => {

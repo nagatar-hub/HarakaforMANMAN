@@ -3,6 +3,7 @@ import { getSecret } from './secret-manager.js';
 const SECRET_BY_ENV: Record<string, string> = {
   KECAK_SPREADSHEET_ID: 'haraka-kecak-spreadsheet-id',
   HARAKA_DB_SPREADSHEET_ID: 'haraka-db-spreadsheet-id',
+  POKEMON_BOX_SPREADSHEET_ID: 'haraka-pokemon-box-spreadsheet-id',
 };
 
 export async function getRequiredEnvOrSecret(envName: keyof typeof SECRET_BY_ENV): Promise<string> {

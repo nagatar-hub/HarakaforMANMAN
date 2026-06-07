@@ -177,9 +177,10 @@ describe('prepareCards', () => {
       expect(result[0].price_low).toBe(24000);
     });
 
-    it('BOX は商材別減額率を使わず、シュリンク有りとシュリンク無しの割引率を別々に適用する', () => {
+    it('BOX は商材別減額率を使わず、商材別BOX割引率を適用する', () => {
       const rawImport = makeRawImport({
         card_name: '【BOX】テストBOX',
+        franchise: 'Pokemon',
         kecak_price: 10000,
       });
       mockLookupCard.mockReturnValue(makeLookupResult());
@@ -188,11 +189,58 @@ describe('prepareCards', () => {
         [rawImport],
         { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap,
         'Pokemon',
-        { shrink: 0.05, no_shrink: 0.15 },
+        {
+          Pokemon: { shrink: 0.05, no_shrink: 0.15 },
+          'ONE PIECE': { shrink: 0.10, no_shrink: 0.20 },
+          'YU-GI-OH!': { shrink: 0.12, no_shrink: 0.25 },
+        },
       );
 
       expect(result[0].price_high).toBe(9500);
       expect(result[0].price_low).toBe(8500);
+    });
+
+    it('KECAKのgrade=BOX行もBOX割引率を適用する', () => {
+      const rawImport = makeRawImport({
+        card_name: '[1BOX]ホワイトフレア',
+        grade: 'BOX',
+        franchise: 'Pokemon',
+        kecak_price: 19000,
+      });
+      mockLookupCard.mockReturnValue(makeLookupResult());
+
+      const result = prepareCards(
+        [rawImport],
+        { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap,
+        'Pokemon',
+        {
+          Pokemon: { shrink: 0.05, no_shrink: 0.15 },
+          'ONE PIECE': { shrink: 0.10, no_shrink: 0.20 },
+          'YU-GI-OH!': { shrink: 0.12, no_shrink: 0.25 },
+        },
+        { Pokemon: 0.30 },
+      );
+
+      expect(result[0].price_high).toBe(18500);
+      expect(result[0].price_low).toBe(16500);
+    });
+
+    it('KECAKのBOX行はDB照合が外れてもBOXタグで生成対象にする', () => {
+      const rawImport = makeRawImport({
+        card_name: '[1BOX]ムニキスゼロ',
+        grade: 'BOX',
+        franchise: 'Pokemon',
+        kecak_price: 8000,
+      });
+      mockLookupCard.mockReturnValue(null);
+
+      const result = prepareCards(
+        [rawImport],
+        { exact: new Map(), nameGrade: new Map(), nameOnly: new Map() } as LookupMap,
+        'Pokemon',
+      );
+
+      expect(result[0].tag).toBe('BOX');
     });
   });
 

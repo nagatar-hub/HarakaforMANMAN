@@ -23,12 +23,16 @@ import { buildLookupMap } from '../lib/db-lookup.js';
 import { buildDbCardRows } from '../lib/db-card-sync.js';
 import { prepareCards } from '../lib/prepare-cards.js';
 import { parseSpectreRows } from '../lib/spectre-parser.js';
+import {
+  applyPokemonBoxPriceOverrides,
+  parsePokemonBoxPriceRows,
+} from '../lib/pokemon-box-price-source.js';
 import { deduplicateByListNo } from '../lib/dedup.js';
 import { checkImageHealth } from '../lib/image-health-check.js';
 import { updateProgress, clearProgress } from '../lib/progress.js';
 import { planPages } from '../lib/page-planner.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
-import { getRequiredEnvOrSecret } from '../lib/env.js';
+import { getOptionalEnvOrSecret, getRequiredEnvOrSecret } from '../lib/env.js';
 import { loadStorePricingSettings } from '../lib/pricing-settings.js';
 import type {
   Database,
@@ -48,6 +52,8 @@ type GeneratedPageInsert = Database['public']['Tables']['generated_page']['Inser
 // ---------------------------------------------------------------------------
 
 const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+const DEFAULT_POKEMON_BOX_SPREADSHEET_ID = '1xxIJ0Rbi90I_Bd2FhGVcu3cdlAcVAxl0x6wk5913vWw';
+const POKEMON_BOX_PRICE_RANGE = 'Database';
 
 export async function runSync() {
   const supabase = await createSupabaseClientFromSecrets();
@@ -69,6 +75,17 @@ export async function runSync() {
 
     const kecakSpreadsheetId = await getRequiredEnvOrSecret('KECAK_SPREADSHEET_ID');
     const harakaDbSpreadsheetId = await getRequiredEnvOrSecret('HARAKA_DB_SPREADSHEET_ID');
+    const pokemonBoxSpreadsheetId =
+      (await getOptionalEnvOrSecret('POKEMON_BOX_SPREADSHEET_ID')) ?? DEFAULT_POKEMON_BOX_SPREADSHEET_ID;
+
+    console.log('[sync] Pokemon BOX価格DB 取得: Database');
+    const pokemonBoxPriceRows = await fetchSheetValues({
+      accessToken,
+      spreadsheetId: pokemonBoxSpreadsheetId,
+      range: POKEMON_BOX_PRICE_RANGE,
+    });
+    const pokemonBoxPriceMap = parsePokemonBoxPriceRows(pokemonBoxPriceRows);
+    console.log(`[sync] Pokemon BOX価格DB: ${pokemonBoxPriceMap.size}件`);
 
     // ---- 3. KECAK 取得 + raw_import 保存 ----
     await updateProgress(supabase, run.id, 5, 100, 'KECAK インポート中...');
@@ -87,7 +104,15 @@ export async function runSync() {
         range: `${sheetName}`,
       });
 
-      const parsed = parseKecakRows(rows, franchise, run.id);
+      let parsed = parseKecakRows(rows, franchise, run.id);
+      if (franchise === 'Pokemon') {
+        const result = applyPokemonBoxPriceOverrides(parsed, pokemonBoxPriceMap);
+        parsed = result.rows;
+        if (result.missingNames.length > 0) {
+          const sample = result.missingNames.slice(0, 10).join(', ');
+          console.warn(`[sync] Pokemon BOX価格DB 未マッチ: ${result.missingNames.length}件 (${sample})`);
+        }
+      }
       if (parsed.length === 0) {
         console.log(`[sync]   → 0件（スキップ）`);
         continue;
@@ -153,7 +178,13 @@ export async function runSync() {
     const pricingSettings = await loadStorePricingSettings(supabase, STORE_NAME);
     const boxDiscountRates = pricingSettings.box_discount_rates;
     const psa10DiscountRates = pricingSettings.psa10_discount_rates;
-    console.log(`[sync] BOX割引率: シュリンク有り=${(boxDiscountRates.shrink * 100).toFixed(0)}%, シュリンク無し=${(boxDiscountRates.no_shrink * 100).toFixed(0)}%`);
+    const boxRateSummary = FRANCHISES
+      .map(franchise => {
+        const rates = boxDiscountRates[franchise];
+        return `${franchise}=有${(rates.shrink * 100).toFixed(0)}%/無${(rates.no_shrink * 100).toFixed(0)}%`;
+      })
+      .join(', ');
+    console.log(`[sync] BOX割引率: ${boxRateSummary}`);
     const psaRateSummary = FRANCHISES
       .filter(franchise => typeof psa10DiscountRates[franchise] === 'number')
       .map(franchise => `${franchise}=${((psa10DiscountRates[franchise] ?? 0) * 100).toFixed(0)}%`)

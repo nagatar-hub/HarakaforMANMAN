@@ -1,10 +1,11 @@
 import { FRANCHISES, type Franchise } from '../types/franchise.js';
 
 export type Psa10DiscountRates = Partial<Record<Franchise, number>>;
-export type BoxDiscountRates = {
+export type BoxConditionDiscountRates = {
   shrink: number;
   no_shrink: number;
 };
+export type BoxDiscountRates = Record<Franchise, BoxConditionDiscountRates>;
 export type StorePricingSettings = {
   box_discount_rates: BoxDiscountRates;
   psa10_discount_rates: Record<Franchise, number>;
@@ -12,9 +13,14 @@ export type StorePricingSettings = {
 
 export const DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE = 0.15;
 export const DEFAULT_BOX_SHRINK_DISCOUNT_RATE = 0.15;
-export const DEFAULT_BOX_DISCOUNT_RATES: BoxDiscountRates = {
+export const DEFAULT_BOX_CONDITION_DISCOUNT_RATES: BoxConditionDiscountRates = {
   shrink: 0,
   no_shrink: DEFAULT_BOX_SHRINK_DISCOUNT_RATE,
+};
+export const DEFAULT_BOX_DISCOUNT_RATES: BoxDiscountRates = {
+  Pokemon: { ...DEFAULT_BOX_CONDITION_DISCOUNT_RATES },
+  'ONE PIECE': { ...DEFAULT_BOX_CONDITION_DISCOUNT_RATES },
+  'YU-GI-OH!': { ...DEFAULT_BOX_CONDITION_DISCOUNT_RATES },
 };
 export const DEFAULT_PSA10_DISCOUNT_RATES: Record<Franchise, number> = {
   Pokemon: 0.12,
@@ -34,24 +40,38 @@ function numberOrDefault(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+function normalizeBoxConditionDiscountRates(
+  source: unknown,
+  fallback: BoxConditionDiscountRates = DEFAULT_BOX_CONDITION_DISCOUNT_RATES,
+): BoxConditionDiscountRates {
+  const record = isRecord(source) ? source : {};
+  return {
+    shrink: numberOrDefault(record.shrink, fallback.shrink),
+    no_shrink: numberOrDefault(record.no_shrink, fallback.no_shrink),
+  };
+}
+
 export function normalizeStorePricingSettings(settings: unknown): StorePricingSettings {
   const source = isRecord(settings) ? settings : {};
   const boxRates = isRecord(source.box_discount_rates) ? source.box_discount_rates : {};
   const psa10Rates = isRecord(source.psa10_discount_rates) ? source.psa10_discount_rates : {};
   const normalizedPsa10Rates = { ...DEFAULT_PSA10_DISCOUNT_RATES };
+  const legacyBoxRates = normalizeBoxConditionDiscountRates(boxRates);
+  const normalizedBoxRates = {} as BoxDiscountRates;
 
   for (const franchise of FRANCHISES) {
     normalizedPsa10Rates[franchise] = numberOrDefault(
       psa10Rates[franchise],
       DEFAULT_PSA10_DISCOUNT_RATES[franchise],
     );
+    normalizedBoxRates[franchise] = normalizeBoxConditionDiscountRates(
+      boxRates[franchise],
+      legacyBoxRates,
+    );
   }
 
   return {
-    box_discount_rates: {
-      shrink: numberOrDefault(boxRates.shrink, DEFAULT_BOX_DISCOUNT_RATES.shrink),
-      no_shrink: numberOrDefault(boxRates.no_shrink, DEFAULT_BOX_DISCOUNT_RATES.no_shrink),
-    },
+    box_discount_rates: normalizedBoxRates,
     psa10_discount_rates: normalizedPsa10Rates,
   };
 }
@@ -61,14 +81,30 @@ export function mergeStorePricingSettings(base: unknown, overrides: unknown): St
   const overrideRecord = isRecord(overrides) ? overrides : {};
   const boxOverrides = isRecord(overrideRecord.box_discount_rates) ? overrideRecord.box_discount_rates : {};
   const psa10Overrides = isRecord(overrideRecord.psa10_discount_rates) ? overrideRecord.psa10_discount_rates : {};
+  const legacyBoxOverrides = isRecord(boxOverrides)
+    ? normalizeBoxConditionDiscountRates(boxOverrides, DEFAULT_BOX_CONDITION_DISCOUNT_RATES)
+    : DEFAULT_BOX_CONDITION_DISCOUNT_RATES;
+  const mergedBoxRates = {} as BoxDiscountRates;
+
+  for (const franchise of FRANCHISES) {
+    const franchiseOverrides = isRecord(boxOverrides[franchise]) ? boxOverrides[franchise] : {};
+    const hasLegacyBoxOverride =
+      Object.prototype.hasOwnProperty.call(boxOverrides, 'shrink') ||
+      Object.prototype.hasOwnProperty.call(boxOverrides, 'no_shrink');
+    mergedBoxRates[franchise] = normalizeBoxConditionDiscountRates(
+      {
+        ...normalizedBase.box_discount_rates[franchise],
+        ...(hasLegacyBoxOverride ? legacyBoxOverrides : {}),
+        ...franchiseOverrides,
+      },
+      normalizedBase.box_discount_rates[franchise],
+    );
+  }
 
   return normalizeStorePricingSettings({
     ...normalizedBase,
     ...overrideRecord,
-    box_discount_rates: {
-      ...normalizedBase.box_discount_rates,
-      ...boxOverrides,
-    },
+    box_discount_rates: mergedBoxRates,
     psa10_discount_rates: {
       ...normalizedBase.psa10_discount_rates,
       ...psa10Overrides,
@@ -148,11 +184,11 @@ export function calculateBuyPriceHigh(basePrice: number, discountRate: number = 
 /**
  * BOX 価格を計算
  * discountRate: 0.15 = 15% OFF（設定画面で変更可能）
- * 端数は100円単位で切り捨て
+ * PSA の price_high と同じ 500/1000 円境界へ丸める
  */
 export function calculateBoxPrice(price: number, discountRate: number = 0): number {
   if (!price || price <= 0) return 0;
-  return Math.floor(price * (1 - discountRate) / 100) * 100;
+  return roundDiscountedPriceHigh(price * (1 - discountRate));
 }
 
 export function calculateBoxPriceLow(priceHigh: number, discountRate: number = DEFAULT_BOX_SHRINK_DISCOUNT_RATE): number {

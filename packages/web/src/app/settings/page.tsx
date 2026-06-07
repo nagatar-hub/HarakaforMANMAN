@@ -3,22 +3,22 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api-client';
 import {
-  calculateHundredYenDiscountPreview,
   calculateSteppedDiscountPreview,
   normalizePreviewBasePrice,
 } from '@/lib/settings-preview';
 
 type Franchise = 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
 type Psa10Rates = Record<Franchise, number>;
-type BoxRates = {
+type BoxConditionRates = {
   shrink: number;
   no_shrink: number;
 };
+type BoxRates = Record<Franchise, BoxConditionRates>;
 
 interface StoreConfig {
   store: string;
   settings: {
-    box_discount_rates?: Partial<Record<keyof BoxRates, number>>;
+    box_discount_rates?: Partial<Record<Franchise, Partial<BoxConditionRates>>>;
     psa10_discount_rates?: Partial<Record<Franchise, number>>;
   };
 }
@@ -35,9 +35,14 @@ const DEFAULT_PSA10_RATES: Psa10Rates = {
   'YU-GI-OH!': 15,
 };
 
-const DEFAULT_BOX_RATES: BoxRates = {
+const DEFAULT_BOX_CONDITION_RATES: BoxConditionRates = {
   shrink: 0,
   no_shrink: 15,
+};
+const DEFAULT_BOX_RATES: BoxRates = {
+  Pokemon: { ...DEFAULT_BOX_CONDITION_RATES },
+  'ONE PIECE': { ...DEFAULT_BOX_CONDITION_RATES },
+  'YU-GI-OH!': { ...DEFAULT_BOX_CONDITION_RATES },
 };
 
 function clampRate(value: number): number {
@@ -47,6 +52,17 @@ function clampRate(value: number): number {
 
 function toPercent(value: number | undefined, fallback: number): number {
   return Math.round((value ?? fallback / 100) * 100);
+}
+
+function normalizeBoxRates(savedBoxRates: StoreConfig['settings']['box_discount_rates']): BoxRates {
+  return FRANCHISE_OPTIONS.reduce((acc, { key }) => {
+    const savedRates = savedBoxRates?.[key] ?? {};
+    acc[key] = {
+      shrink: toPercent(savedRates.shrink, DEFAULT_BOX_RATES[key].shrink),
+      no_shrink: toPercent(savedRates.no_shrink, DEFAULT_BOX_RATES[key].no_shrink),
+    };
+    return acc;
+  }, {} as BoxRates);
 }
 
 export default function SettingsPage() {
@@ -64,10 +80,7 @@ export default function SettingsPage() {
         const savedPsa10Rates = data.settings.psa10_discount_rates ?? {};
         const savedBoxRates = data.settings.box_discount_rates ?? {};
         setConfig(data);
-        setBoxRates({
-          shrink: toPercent(savedBoxRates.shrink, DEFAULT_BOX_RATES.shrink),
-          no_shrink: toPercent(savedBoxRates.no_shrink, DEFAULT_BOX_RATES.no_shrink),
-        });
+        setBoxRates(normalizeBoxRates(savedBoxRates));
         setPsa10Rates({
           Pokemon: toPercent(savedPsa10Rates.Pokemon, DEFAULT_PSA10_RATES.Pokemon),
           'ONE PIECE': toPercent(savedPsa10Rates['ONE PIECE'], DEFAULT_PSA10_RATES['ONE PIECE']),
@@ -84,10 +97,13 @@ export default function SettingsPage() {
     }));
   }
 
-  function updateBoxRate(key: keyof BoxRates, value: number) {
+  function updateBoxRate(franchise: Franchise, key: keyof BoxConditionRates, value: number) {
     setBoxRates((current) => ({
       ...current,
-      [key]: clampRate(value),
+      [franchise]: {
+        ...current[franchise],
+        [key]: clampRate(value),
+      },
     }));
   }
 
@@ -101,8 +117,18 @@ export default function SettingsPage() {
         body: JSON.stringify({
           settings: {
             box_discount_rates: {
-              shrink: boxRates.shrink / 100,
-              no_shrink: boxRates.no_shrink / 100,
+              Pokemon: {
+                shrink: boxRates.Pokemon.shrink / 100,
+                no_shrink: boxRates.Pokemon.no_shrink / 100,
+              },
+              'ONE PIECE': {
+                shrink: boxRates['ONE PIECE'].shrink / 100,
+                no_shrink: boxRates['ONE PIECE'].no_shrink / 100,
+              },
+              'YU-GI-OH!': {
+                shrink: boxRates['YU-GI-OH!'].shrink / 100,
+                no_shrink: boxRates['YU-GI-OH!'].no_shrink / 100,
+              },
             },
             psa10_discount_rates: {
               Pokemon: psa10Rates.Pokemon / 100,
@@ -123,8 +149,6 @@ export default function SettingsPage() {
   }
 
   const previewBoxHigh = 10000;
-  const previewBoxShrink = calculateHundredYenDiscountPreview(previewBoxHigh, boxRates.shrink);
-  const previewBoxNoShrink = calculateHundredYenDiscountPreview(previewBoxHigh, boxRates.no_shrink);
   const normalizedPsaPreviewBasePrice = normalizePreviewBasePrice(psaPreviewBasePrice);
 
   return (
@@ -145,54 +169,67 @@ export default function SettingsPage() {
           <section>
             <h2 className="text-lg font-bold text-text-primary mb-6">BOX 割引率</h2>
 
-            <div className="space-y-5">
-              {[
-                { key: 'shrink' as const, label: 'シュリンク有り' },
-                { key: 'no_shrink' as const, label: 'シュリンク無し' },
-              ].map(({ key, label }) => (
-                <div key={key}>
-                  <label className="block text-sm font-semibold text-text-secondary mb-2 uppercase tracking-wide">
-                    {label}
-                  </label>
-                  <div className="grid gap-3 sm:grid-cols-[1fr_84px] sm:items-center">
-                    <input
-                      type="range"
-                      min={0}
-                      max={50}
-                      step={1}
-                      value={boxRates[key]}
-                      onChange={(e) => updateBoxRate(key, Number(e.target.value))}
-                      className="h-2 bg-border-card rounded-full appearance-none cursor-pointer accent-text-primary"
-                    />
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        min={0}
-                        max={50}
-                        value={boxRates[key]}
-                        onChange={(e) => updateBoxRate(key, Number(e.target.value))}
-                        className="w-14 text-right bg-transparent border border-border-card rounded-lg px-2 py-1 text-text-primary font-bold text-lg focus:outline-none"
-                      />
-                      <span className="text-text-secondary font-medium">%</span>
+            <div className="space-y-8">
+              {FRANCHISE_OPTIONS.map(({ key: franchise, label: franchiseLabel }) => {
+                const previewBoxShrink = calculateSteppedDiscountPreview(previewBoxHigh, boxRates[franchise].shrink);
+                const previewBoxNoShrink = calculateSteppedDiscountPreview(previewBoxHigh, boxRates[franchise].no_shrink);
+
+                return (
+                  <div key={franchise} className="border-b border-border-card pb-7 last:border-b-0 last:pb-0">
+                    <h3 className="text-sm font-bold text-text-primary mb-4">{franchiseLabel}</h3>
+
+                    <div className="space-y-5">
+                      {[
+                        { key: 'shrink' as const, label: 'シュリンク有り price_high' },
+                        { key: 'no_shrink' as const, label: 'シュリンク無し price_low' },
+                      ].map(({ key, label }) => (
+                        <div key={key}>
+                          <label className="block text-sm font-semibold text-text-secondary mb-2 uppercase tracking-wide">
+                            {label}
+                          </label>
+                          <div className="grid gap-3 sm:grid-cols-[1fr_84px] sm:items-center">
+                            <input
+                              type="range"
+                              min={0}
+                              max={50}
+                              step={1}
+                              value={boxRates[franchise][key]}
+                              onChange={(e) => updateBoxRate(franchise, key, Number(e.target.value))}
+                              className="h-2 bg-border-card rounded-full appearance-none cursor-pointer accent-text-primary"
+                            />
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={0}
+                                max={50}
+                                value={boxRates[franchise][key]}
+                                onChange={(e) => updateBoxRate(franchise, key, Number(e.target.value))}
+                                className="w-14 text-right bg-transparent border border-border-card rounded-lg px-2 py-1 text-text-primary font-bold text-lg focus:outline-none"
+                              />
+                              <span className="text-text-secondary font-medium">%</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="bg-warm-100 rounded-xl px-5 py-4 text-sm mt-6">
+                      <p className="text-text-secondary font-medium mb-2">計算プレビュー（元価格: ¥10,000）</p>
+                      <div className="flex justify-between items-baseline">
+                        <span className="text-text-secondary">シュリンク有り</span>
+                        <span className="text-xl font-bold text-text-primary">¥{previewBoxShrink.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between items-baseline mt-2">
+                        <span className="text-text-secondary">シュリンク無し</span>
+                        <span className="text-xl font-bold text-text-primary">¥{previewBoxNoShrink.toLocaleString()}</span>
+                      </div>
+                      <p className="text-xs text-text-secondary mt-1">
+                        それぞれ元価格に割引率を適用し、100円単位で切り捨て
+                      </p>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="bg-warm-100 rounded-xl px-5 py-4 text-sm mt-6">
-              <p className="text-text-secondary font-medium mb-2">計算プレビュー（元価格: ¥10,000）</p>
-              <div className="flex justify-between items-baseline">
-                <span className="text-text-secondary">シュリンク有り</span>
-                <span className="text-xl font-bold text-text-primary">¥{previewBoxShrink.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between items-baseline mt-2">
-                <span className="text-text-secondary">シュリンク無し</span>
-                <span className="text-xl font-bold text-text-primary">¥{previewBoxNoShrink.toLocaleString()}</span>
-              </div>
-              <p className="text-xs text-text-secondary mt-1">
-                それぞれ元価格に割引率を適用し、100円単位で切り捨て
-              </p>
+                );
+              })}
             </div>
           </section>
 

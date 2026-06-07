@@ -15,13 +15,6 @@ function roundDiscountedPriceHigh(raw: number): number {
   return remainder <= 500 ? base + 500 : base + 1000;
 }
 
-export function calculateHundredYenDiscountPreview(basePrice: string | number, ratePercent: number): number {
-  const price = normalizePreviewBasePrice(basePrice);
-  if (!price || !Number.isFinite(ratePercent)) return 0;
-
-  return Math.floor(price * (1 - ratePercent / 100) / 100) * 100;
-}
-
 export function calculateSteppedDiscountPreview(basePrice: string | number, ratePercent: number): number {
   const price = normalizePreviewBasePrice(basePrice);
   if (!price || !Number.isFinite(ratePercent)) return 0;

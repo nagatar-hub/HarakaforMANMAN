@@ -10,8 +10,18 @@ describe('normalizeStorePricingSettings', () => {
     const settings = normalizeStorePricingSettings({
       buy_price_high_discount_rate: 0.18,
       box_discount_rates: {
-        shrink: 0.03,
-        no_shrink: 0.22,
+        Pokemon: {
+          shrink: 0.03,
+          no_shrink: 0.22,
+        },
+        'ONE PIECE': {
+          shrink: 0.04,
+          no_shrink: 0.23,
+        },
+        'YU-GI-OH!': {
+          shrink: 0.05,
+          no_shrink: 0.24,
+        },
       },
       psa10_discount_rates: {
         Pokemon: 0.11,
@@ -23,8 +33,18 @@ describe('normalizeStorePricingSettings', () => {
 
     expect(settings).toEqual({
       box_discount_rates: {
-        shrink: 0.03,
-        no_shrink: 0.22,
+        Pokemon: {
+          shrink: 0.03,
+          no_shrink: 0.22,
+        },
+        'ONE PIECE': {
+          shrink: 0.04,
+          no_shrink: 0.23,
+        },
+        'YU-GI-OH!': {
+          shrink: 0.05,
+          no_shrink: 0.24,
+        },
       },
       psa10_discount_rates: {
         Pokemon: 0.11,
@@ -55,8 +75,18 @@ describe('normalizeStorePricingSettings', () => {
     const settings = mergeStorePricingSettings(
       {
         box_discount_rates: {
-          shrink: 0.03,
-          no_shrink: 0.22,
+          Pokemon: {
+            shrink: 0.03,
+            no_shrink: 0.22,
+          },
+          'ONE PIECE': {
+            shrink: 0.04,
+            no_shrink: 0.23,
+          },
+          'YU-GI-OH!': {
+            shrink: 0.05,
+            no_shrink: 0.24,
+          },
         },
         psa10_discount_rates: {
           Pokemon: 0.11,
@@ -66,20 +96,56 @@ describe('normalizeStorePricingSettings', () => {
       },
       {
         box_discount_rates: {
-          no_shrink: 0.24,
+          Pokemon: {
+            no_shrink: 0.24,
+          },
         },
       },
     );
 
     expect(settings).toEqual({
       box_discount_rates: {
-        shrink: 0.03,
-        no_shrink: 0.24,
+        Pokemon: {
+          shrink: 0.03,
+          no_shrink: 0.24,
+        },
+        'ONE PIECE': {
+          shrink: 0.04,
+          no_shrink: 0.23,
+        },
+        'YU-GI-OH!': {
+          shrink: 0.05,
+          no_shrink: 0.24,
+        },
       },
       psa10_discount_rates: {
         Pokemon: 0.11,
         'ONE PIECE': 0.12,
         'YU-GI-OH!': 0.13,
+      },
+    });
+  });
+
+  it('旧グローバルBOX割引率は全商材のBOX割引率として読み替える', () => {
+    const settings = normalizeStorePricingSettings({
+      box_discount_rates: {
+        shrink: 0.05,
+        no_shrink: 0.18,
+      },
+    });
+
+    expect(settings.box_discount_rates).toEqual({
+      Pokemon: {
+        shrink: 0.05,
+        no_shrink: 0.18,
+      },
+      'ONE PIECE': {
+        shrink: 0.05,
+        no_shrink: 0.18,
+      },
+      'YU-GI-OH!': {
+        shrink: 0.05,
+        no_shrink: 0.18,
       },
     });
   });
