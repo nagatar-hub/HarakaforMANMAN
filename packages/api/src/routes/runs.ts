@@ -2,15 +2,22 @@ import { Hono } from 'hono';
 import { createSupabaseClient } from '../lib/supabase.js';
 import { updateDbSheetCell } from '../lib/haraka-db-sheet.js';
 import { executeCloudRunJob } from '../lib/cloud-run-jobs.js';
-import { fork } from 'child_process';
-import path from 'path';
 
 export const runRoutes = new Hono();
 
-const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
 
-/** 実行中ジョブのPID管理（インスタンス内メモリ） */
-const runningJobs: { jobName: string; pid: number; startedAt: Date }[] = [];
+async function findRunInStore(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  runId: string,
+) {
+  return supabase
+    .from('run')
+    .select('id')
+    .eq('id', runId)
+    .eq('store', STORE_NAME)
+    .maybeSingle();
+}
 
 /** 実行履歴一覧 */
 runRoutes.get('/runs', async (c) => {
@@ -30,8 +37,14 @@ runRoutes.get('/runs', async (c) => {
 runRoutes.get('/runs/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = createSupabaseClient();
-  const { data, error } = await supabase.from('run').select('*').eq('id', id).single();
+  const { data, error } = await supabase
+    .from('run')
+    .select('*')
+    .eq('id', id)
+    .eq('store', STORE_NAME)
+    .maybeSingle();
   if (error) return c.json({ error: error.message }, 500);
+  if (!data) return c.json({ error: 'Run not found' }, 404);
 
   // ページ数も取得
   const { count } = await supabase
@@ -43,35 +56,9 @@ runRoutes.get('/runs/:id', async (c) => {
   return c.json({ ...data, generated_page_count: count });
 });
 
-/** ジョブトリガー (sync / generate) */
-function triggerJob(jobName: string) {
-  // packages/api/dist/routes/ → packages/job/dist/index.js
-  const jobEntry = path.resolve(__dirname, '..', '..', '..', 'job', 'dist', 'index.js');
-  const child = fork(jobEntry, [], {
-    env: { ...process.env, JOB_NAME: jobName, TRIGGER: 'web-ui' },
-    stdio: 'inherit',
-    detached: true,
-  });
-  child.unref();
-  const pid = child.pid;
-  if (pid) {
-    runningJobs.push({ jobName, pid, startedAt: new Date() });
-    child.on('exit', () => {
-      const idx = runningJobs.findIndex(j => j.pid === pid);
-      if (idx !== -1) runningJobs.splice(idx, 1);
-    });
-  }
-  return pid;
-}
-
-runRoutes.post('/jobs/sync', async (c) => {
-  try {
-    const pid = triggerJob('sync');
-    return c.json({ status: 'triggered', job: 'sync', pid });
-  } catch (err) {
-    return c.json({ error: `Failed to trigger: ${(err as Error).message}` }, 500);
-  }
-});
+runRoutes.post('/jobs/sync', (c) => c.json({
+  error: '直接同期は廃止されました。保護されたオーダーリスト読み込み画面から確認・反映してください。',
+}, 410));
 
 runRoutes.post('/jobs/generate', async (c) => {
   const supabase = createSupabaseClient();
@@ -119,6 +106,7 @@ runRoutes.post('/jobs/generate', async (c) => {
         progress_message: '画像生成ジョブ起動中...',
       })
       .eq('id', latestRun.id)
+      .eq('store', STORE_NAME)
       .eq('status', 'completed')
       .select('id')
       .maybeSingle();
@@ -149,7 +137,9 @@ runRoutes.post('/jobs/generate', async (c) => {
         progress_current: 0,
         progress_total: 0,
         progress_message: null,
-      }).eq('id', claimedRunId);
+      })
+        .eq('id', claimedRunId)
+        .eq('store', STORE_NAME);
     }
     return c.json({ error: `Failed to trigger: ${(err as Error).message}` }, 500);
   }
@@ -159,6 +149,10 @@ runRoutes.post('/jobs/generate', async (c) => {
 runRoutes.get('/runs/:id/untagged-cards', async (c) => {
   const id = c.req.param('id');
   const supabase = createSupabaseClient();
+  const { data: scopedRun, error: scopedRunError } = await findRunInStore(supabase, id);
+  if (scopedRunError) return c.json({ error: scopedRunError.message }, 500);
+  if (!scopedRun) return c.json({ error: 'Run not found' }, 404);
+
   const { data, error } = await supabase
     .from('prepared_card')
     .select('id, franchise, card_name, grade, list_no, price_high, source')
@@ -174,6 +168,10 @@ runRoutes.get('/runs/:id/untagged-cards', async (c) => {
 runRoutes.get('/runs/:id/image-issues', async (c) => {
   const id = c.req.param('id');
   const supabase = createSupabaseClient();
+  const { data: scopedRun, error: scopedRunError } = await findRunInStore(supabase, id);
+  if (scopedRunError) return c.json({ error: scopedRunError.message }, 500);
+  if (!scopedRun) return c.json({ error: 'Run not found' }, 404);
+
   const { data, error } = await supabase
     .from('prepared_card')
     .select('id, franchise, card_name, grade, list_no, image_url, alt_image_url, image_status')
@@ -189,6 +187,10 @@ runRoutes.get('/runs/:id/image-issues', async (c) => {
 runRoutes.get('/runs/:id/price-missing', async (c) => {
   const id = c.req.param('id');
   const supabase = createSupabaseClient();
+  const { data: scopedRun, error: scopedRunError } = await findRunInStore(supabase, id);
+  if (scopedRunError) return c.json({ error: scopedRunError.message }, 500);
+  if (!scopedRun) return c.json({ error: 'Run not found' }, 404);
+
   const { data, error } = await supabase
     .from('prepared_card')
     .select('id, franchise, card_name, grade, list_no, tag, price_high, price_low, source')
@@ -204,6 +206,9 @@ runRoutes.get('/runs/:id/price-missing', async (c) => {
 runRoutes.get('/runs/:id/excluded-cards', async (c) => {
   const id = c.req.param('id');
   const supabase = createSupabaseClient();
+  const { data: scopedRun, error: scopedRunError } = await findRunInStore(supabase, id);
+  if (scopedRunError) return c.json({ error: scopedRunError.message }, 500);
+  if (!scopedRun) return c.json({ error: 'Run not found' }, 404);
 
   // タグなし
   const { data: untagged } = await supabase
@@ -244,6 +249,10 @@ runRoutes.get('/runs/:id/excluded-cards', async (c) => {
 runRoutes.get('/runs/:id/failed-pages', async (c) => {
   const id = c.req.param('id');
   const supabase = createSupabaseClient();
+  const { data: scopedRun, error: scopedRunError } = await findRunInStore(supabase, id);
+  if (scopedRunError) return c.json({ error: scopedRunError.message }, 500);
+  if (!scopedRun) return c.json({ error: 'Run not found' }, 404);
+
   const { data, error } = await supabase
     .from('generated_page')
     .select('id, franchise, page_index, page_label, status, error_message, created_at')
@@ -259,74 +268,18 @@ runRoutes.get('/runs/:id/failed-pages', async (c) => {
 runRoutes.post('/runs/:id/reset', async (c) => {
   const id = c.req.param('id');
   const supabase = createSupabaseClient();
-  const { data: run } = await supabase.from('run').select('status').eq('id', id).single();
+  const { data: run, error } = await supabase
+    .from('run')
+    .select('status')
+    .eq('id', id)
+    .eq('store', STORE_NAME)
+    .maybeSingle();
+  if (error) return c.json({ error: error.message }, 500);
   if (!run) return c.json({ error: 'Run not found' }, 404);
   if (run.status !== 'running') return c.json({ error: `Run is ${run.status}, not running` }, 400);
-
-  // 実行中のジョブプロセスをkill
-  let killed = 0;
-  for (let i = runningJobs.length - 1; i >= 0; i--) {
-    const job = runningJobs[i];
-    try {
-      process.kill(job.pid, 'SIGTERM');
-      killed++;
-      console.log(`[reset] プロセス ${job.pid} (${job.jobName}) にSIGTERM送信`);
-    } catch {
-      // プロセスが既に終了している場合
-      console.log(`[reset] プロセス ${job.pid} は既に終了`);
-    }
-    runningJobs.splice(i, 1);
-  }
-
-  const { error } = await supabase.from('run').update({
-    status: 'failed',
-    error_message: `手動で強制停止されました (${killed}プロセス停止)`,
-    completed_at: new Date().toISOString(),
-  }).eq('id', id);
-  if (error) return c.json({ error: error.message }, 500);
-  return c.json({ status: 'reset', id, killed });
-});
-
-/** KECAKデータCSVエクスポート */
-runRoutes.get('/runs/:id/kecak-csv', async (c) => {
-  const id = c.req.param('id');
-  const supabase = createSupabaseClient();
-
-  const { data, error } = await supabase
-    .from('raw_import')
-    .select('franchise, card_name, grade, list_no, rarity, kecak_price, demand, image_url')
-    .eq('run_id', id)
-    .order('franchise')
-    .order('kecak_price', { ascending: false });
-
-  if (error) return c.json({ error: error.message }, 500);
-  if (!data || data.length === 0) return c.json({ error: 'データがありません' }, 404);
-
-  // BOM + CSV生成
-  const headers = ['フランチャイズ', 'カード名', 'グレード', '品番', 'レアリティ', 'KECAK価格', '需要', '画像URL'];
-  const rows = data.map(r => [
-    r.franchise,
-    r.card_name,
-    r.grade || '',
-    r.list_no || '',
-    r.rarity || '',
-    r.kecak_price != null ? String(r.kecak_price) : '',
-    r.demand != null ? String(r.demand) : '',
-    r.image_url || '',
-  ].map(v => `"${v.replace(/"/g, '""')}"`).join(','));
-
-  const csv = '\uFEFF' + [headers.join(','), ...rows].join('\n');
-
-  // run の日時を取得してファイル名に
-  const { data: run } = await supabase.from('run').select('started_at').eq('id', id).single();
-  const dateStr = run?.started_at ? new Date(run.started_at).toISOString().slice(0, 10) : 'unknown';
-
-  return new Response(csv, {
-    headers: {
-      'Content-Type': 'text/csv; charset=utf-8',
-      'Content-Disposition': `attachment; filename="kecak_${dateStr}.csv"`,
-    },
-  });
+  return c.json({
+    error: 'Cloud Run JobはこのAPIから安全に停止できません。実行完了を待つかCloud Run側で停止してください。',
+  }, 409);
 });
 
 /** 画像NG修正: 新URLをチェックし、OKならDB+シートに反映 */
@@ -337,6 +290,11 @@ runRoutes.post('/runs/:id/fix-image', async (c) => {
   if (!prepared_card_id || !new_url) {
     return c.json({ error: 'prepared_card_id and new_url are required' }, 400);
   }
+
+  const supabase = createSupabaseClient();
+  const { data: scopedRun, error: scopedRunError } = await findRunInStore(supabase, runId);
+  if (scopedRunError) return c.json({ error: scopedRunError.message }, 500);
+  if (!scopedRun) return c.json({ error: 'Run not found' }, 404);
 
   // 1. URL チェック (HEAD → GET フォールバック、ブラウザ UA 付き)
   const browserHeaders = {
@@ -366,13 +324,12 @@ runRoutes.post('/runs/:id/fix-image', async (c) => {
     return c.json({ success: false, status: 'dead', message: 'URL is not accessible' });
   }
 
-  const supabase = createSupabaseClient();
-
   // 2. prepared_card を更新
   const { data: card, error: cardErr } = await supabase
     .from('prepared_card')
     .update({ alt_image_url: new_url, image_status: 'fallback' as const })
     .eq('id', prepared_card_id)
+    .eq('run_id', runId)
     .select('franchise, card_name, grade, list_no')
     .single();
 
@@ -381,9 +338,18 @@ runRoutes.post('/runs/:id/fix-image', async (c) => {
   }
 
   // 3. run の total_image_ng をデクリメント
-  const { data: run } = await supabase.from('run').select('total_image_ng').eq('id', runId).single();
+  const { data: run } = await supabase
+    .from('run')
+    .select('total_image_ng')
+    .eq('id', runId)
+    .eq('store', STORE_NAME)
+    .single();
   if (run && run.total_image_ng > 0) {
-    await supabase.from('run').update({ total_image_ng: run.total_image_ng - 1 }).eq('id', runId);
+    await supabase
+      .from('run')
+      .update({ total_image_ng: run.total_image_ng - 1 })
+      .eq('id', runId)
+      .eq('store', STORE_NAME);
   }
 
   // 4. db_card を検索して alt_image_url を更新 + シート書き戻し

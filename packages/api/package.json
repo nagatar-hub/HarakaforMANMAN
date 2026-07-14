@@ -6,13 +6,18 @@
     "dev": "tsx watch --env-file=../../.env src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/lib/order-list-parser.test.ts src/__tests__/order-list-matcher.test.ts src/__tests__/order-list-auth.test.ts",
+    "test:order-list-parser": "tsx --test src/lib/order-list-parser.test.ts",
+    "dry-run:order-list-match": "tsx src/scripts/order-list-match-dry-run.ts",
+    "dry-run:order-list": "tsx src/scripts/order-list-dry-run.ts"
   },
   "dependencies": {
     "@google-cloud/run": "^3.2.0",
     "@haraka/shared": "*",
     "@hono/node-server": "^1.14.0",
     "@supabase/supabase-js": "^2.49.0",
+    "exceljs": "^4.4.0",
     "hono": "^4.7.0"
   },
   "devDependencies": {

@@ -21,6 +21,9 @@ function makeCard(overrides: Partial<PreparedCardRow> = {}): PreparedCardRow {
     id: `card-${Math.random().toString(36).slice(2, 10)}`,
     run_id: 'run-1',
     raw_import_id: null,
+    order_list_item_id: null,
+    excel_product_id: null,
+    db_card_id: null,
     franchise: 'Pokemon',
     card_name: 'テストカード',
     grade: 'PSA10',
@@ -34,6 +37,8 @@ function makeCard(overrides: Partial<PreparedCardRow> = {}): PreparedCardRow {
     price_low: 8000,
     image_status: 'unchecked',
     source: 'kecak',
+    price_source: 'kecak',
+    price_source_date: null,
     created_at: '2024-01-01T00:00:00Z',
     ...overrides,
   };

@@ -4,9 +4,11 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { fetchImagesAsFiles, shareFiles, downloadFilesAsZip, isShareSupported } from '@/lib/download-images';
 import type { DownloadableImage } from '@/lib/download-images';
+import OrderListImportPanel from './order-list-import-panel';
 
 type Run = {
   id: string;
+  order_list_import_id?: string | null;
   triggered_by: string;
   status: string;
   total_imported: number;
@@ -118,6 +120,7 @@ export default function RunsPage() {
     }
   }, [generateConfirm]);
   const [downloadingRunId, setDownloadingRunId] = useState<string | null>(null);
+  const [downloadingCsvRunId, setDownloadingCsvRunId] = useState<string | null>(null);
   const [dlProgress, setDlProgress] = useState({ current: 0, total: 0 });
   const [readyFiles, setReadyFiles] = useState<File[] | null>(null);
   const [readyZipName, setReadyZipName] = useState('');
@@ -340,6 +343,46 @@ export default function RunsPage() {
       setDetailCards([]);
     }
     setDetailLoading(false);
+  }
+
+  async function handleOrderListCsvDownload(run: Run): Promise<void> {
+    if (downloadingCsvRunId) return;
+
+
+    setDownloadingCsvRunId(run.id);
+    try {
+      const response = await fetch(`/api/order-list/runs/${encodeURIComponent(run.id)}/csv`, {
+        headers: {
+          Accept: 'text/csv',
+        },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error || `CSVの取得に失敗しました（${response.status}）`);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const dateStr = new Date(run.started_at).toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
+      anchor.href = objectUrl;
+      anchor.download = `order_list_${dateStr}.csv`;
+      anchor.style.display = 'none';
+      try {
+        document.body.appendChild(anchor);
+        anchor.click();
+      } finally {
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      }
+    } catch (downloadError) {
+      addToast({
+        type: 'warning',
+        message: downloadError instanceof Error ? downloadError.message : 'CSVの取得に失敗しました。',
+      });
+    } finally {
+      setDownloadingCsvRunId(null);
+    }
   }
 
   async function handleRunDownload(run: Run) {
@@ -628,6 +671,19 @@ export default function RunsPage() {
                   </span>
                 ) : '同期実行 →'}
               </button>
+              <OrderListImportPanel
+                apiBaseUrl=""
+                disabled={triggering !== null}
+                onTriggered={(result) => {
+                  addToast({
+                    type: 'success',
+                    message: result.sync_started
+                      ? 'オーダーリストの反映を開始しました。'
+                      : 'この取込はすでに確定済みです。実行履歴を確認してください。',
+                  });
+                  setTimeout(fetchRuns, 1000);
+                }}
+              />
               <button
                 onClick={() => handleGenerateClick()}
                 disabled={triggering !== null || generateConfirmLoading || !hasCompletedSync}
@@ -759,6 +815,16 @@ export default function RunsPage() {
                         画像DL
                       </button>
                     </>
+                  )}
+                  {run.order_list_import_id && (
+                    <button
+                      type="button"
+                      onClick={() => { void handleOrderListCsvDownload(run); }}
+                      disabled={downloadingCsvRunId !== null}
+                      className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-full border border-border-card text-text-primary hover:bg-warm-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {downloadingCsvRunId === run.id ? 'CSV取得中...' : 'オーダーリストCSV'}
+                    </button>
                   )}
                   {run.import_done_at && (
                     <a

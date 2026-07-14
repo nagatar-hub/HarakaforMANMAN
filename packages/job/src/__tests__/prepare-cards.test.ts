@@ -24,6 +24,9 @@ function makeRawImport(overrides: Partial<RawImportRow> = {}): RawImportRow {
   return {
     id: 'raw-1',
     run_id: 'run-1',
+    order_list_item_id: null,
+    excel_product_id: null,
+    db_card_id: null,
     franchise: 'Pokemon',
     card_name: 'リザードン',
     grade: null,
@@ -32,6 +35,8 @@ function makeRawImport(overrides: Partial<RawImportRow> = {}): RawImportRow {
     rarity: null,
     demand: null,
     kecak_price: 10000,
+    source_price: null,
+    price_source: 'kecak',
     raw_row: null,
     created_at: '2024-01-01T00:00:00Z',
     ...overrides,

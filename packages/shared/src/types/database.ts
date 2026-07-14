@@ -32,6 +32,12 @@ export type RowConfig = {
 export type RunStatus = 'running' | 'completed' | 'failed';
 export type RuleMatchType = 'exact' | 'contains' | 'regex';
 export type RuleBehavior = 'isolate' | 'merge' | 'exclude' | 'group';
+export type OrderListFranchise = 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
+export type OrderListImportStatus = 'parsed' | 'confirmed' | 'processing' | 'applied' | 'failed';
+export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'invalid';
+export type OrderListMatchMethod = 'existing_mapping' | 'exact_image' | 'exact_identity' | 'manual';
+export type ExcelProductMappingStatus = 'active' | 'disabled';
+export type PriceSource = 'order_list' | 'kecak' | 'spectre' | 'manual';
 
 export type StoreConfigRow = {
   store: string;
@@ -65,6 +71,7 @@ export type RunRow = {
   store: string;
   triggered_by: string;
   status: RunStatus;
+  order_list_import_id: string | null;
   total_imported: number;
   total_prepared: number;
   total_image_ng: number;
@@ -144,11 +151,14 @@ export type LayoutTemplateRow = {
 };
 
 export type ImageStatus = 'unchecked' | 'ok' | 'fallback' | 'dead';
-export type CardSource = 'kecak' | 'spectre' | 'manual';
+export type CardSource = 'order_list' | 'kecak' | 'spectre' | 'manual';
 
 export type RawImportRow = {
   id: string;
   run_id: string;
+  order_list_item_id: string | null;
+  excel_product_id: string | null;
+  db_card_id: string | null;
   franchise: string;
   card_name: string;
   grade: string | null;
@@ -157,6 +167,8 @@ export type RawImportRow = {
   rarity: string | null;
   demand: number | null;
   kecak_price: number | null;
+  source_price: number | null;
+  price_source: PriceSource;
   raw_row: Record<string, unknown> | null;
   created_at: string;
 };
@@ -165,6 +177,9 @@ export type PreparedCardRow = {
   id: string;
   run_id: string;
   raw_import_id: string | null;
+  order_list_item_id: string | null;
+  excel_product_id: string | null;
+  db_card_id: string | null;
   franchise: string;
   card_name: string;
   grade: string | null;
@@ -178,6 +193,8 @@ export type PreparedCardRow = {
   price_low: number | null;
   image_status: ImageStatus;
   source: CardSource;
+  price_source: PriceSource;
+  price_source_date: string | null;
   created_at: string;
 };
 
@@ -310,6 +327,87 @@ export type DbCardRow = {
   updated_at: string;
 };
 
+export type OrderListImportRow = {
+  id: string;
+  store: string;
+  business_date: string;
+  status: OrderListImportStatus;
+  original_filename: string;
+  original_mime_type: string | null;
+  original_size_bytes: number;
+  sha256: string;
+  storage_bucket: string;
+  storage_path: string;
+  parser_version: string;
+  structural_valid: boolean;
+  persistence_complete: boolean;
+  sheet_counts: Record<string, unknown>;
+  applied_summary: Record<string, unknown> | null;
+  total_rows: number;
+  valid_rows: number;
+  matched_rows: number;
+  unmatched_rows: number;
+  ambiguous_rows: number;
+  invalid_rows: number;
+  duplicate_rows: number;
+  error_summary: unknown;
+  uploaded_by: string | null;
+  confirmed_by: string | null;
+  confirmed_at: string | null;
+  processing_started_at: string | null;
+  heartbeat_at: string | null;
+  activated_at: string | null;
+  failed_at: string | null;
+  failure_message: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExcelProductMappingRow = {
+  id: string;
+  franchise: OrderListFranchise;
+  excel_product_id: string;
+  excel_product_key: string;
+  db_card_id: string | null;
+  status: ExcelProductMappingStatus;
+  match_method: OrderListMatchMethod | null;
+  first_seen_import_id: string | null;
+  last_seen_import_id: string | null;
+  confirmed_by: string | null;
+  confirmed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OrderListItemRow = {
+  id: string;
+  import_id: string;
+  franchise: OrderListFranchise;
+  excel_product_id: string;
+  sheet_name: string;
+  sheet_row_number: number;
+  row_hash: string;
+  card_name: string;
+  grade: string | null;
+  expansion: string | null;
+  list_no: string | null;
+  rarity: string | null;
+  image_url: string | null;
+  demand: number | null;
+  source_price: number | null;
+  raw_row: Record<string, unknown>;
+  validation_issues: unknown[];
+  mapping_id: string | null;
+  db_card_id: string | null;
+  match_status: OrderListMatchStatus;
+  match_method: OrderListMatchMethod | null;
+  match_candidates: unknown[];
+  match_note: string | null;
+  matched_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -331,15 +429,61 @@ export type Database = {
         Update: Partial<Omit<AssetProfileRow, 'id' | 'created_at'>>;
         Relationships: [];
       };
+      order_list_import: {
+        Row: OrderListImportRow;
+        Insert: Pick<OrderListImportRow, 'store' | 'business_date' | 'original_filename' | 'original_size_bytes' | 'sha256' | 'storage_path'> &
+          Partial<Omit<OrderListImportRow, 'id' | 'created_at' | 'store' | 'business_date' | 'original_filename' | 'original_size_bytes' | 'sha256' | 'storage_path'>> & {
+            id?: string;
+            created_at?: string;
+          };
+        Update: Partial<Omit<OrderListImportRow, 'id' | 'created_at'>>;
+        Relationships: [];
+      };
+      excel_product_mapping: {
+        Row: ExcelProductMappingRow;
+        Insert: Pick<ExcelProductMappingRow, 'franchise' | 'excel_product_id'> &
+          Partial<Omit<ExcelProductMappingRow, 'id' | 'created_at' | 'franchise' | 'excel_product_id' | 'excel_product_key'>> & {
+            id?: string;
+            created_at?: string;
+          };
+        Update: Partial<Omit<ExcelProductMappingRow, 'id' | 'created_at' | 'excel_product_key'>>;
+        Relationships: [];
+      };
+      order_list_item: {
+        Row: OrderListItemRow;
+        Insert: Pick<OrderListItemRow, 'import_id' | 'franchise' | 'excel_product_id' | 'sheet_name' | 'sheet_row_number' | 'row_hash' | 'card_name'> &
+          Partial<Omit<OrderListItemRow, 'id' | 'created_at' | 'import_id' | 'franchise' | 'excel_product_id' | 'sheet_name' | 'sheet_row_number' | 'row_hash' | 'card_name'>> & {
+            id?: string;
+            created_at?: string;
+          };
+        Update: Partial<Omit<OrderListItemRow, 'id' | 'created_at'>>;
+        Relationships: [];
+      };
       raw_import: {
         Row: RawImportRow;
-        Insert: Omit<RawImportRow, 'id' | 'created_at'> & { id?: string; created_at?: string };
+        Insert: Omit<RawImportRow, 'id' | 'created_at' | 'order_list_item_id' | 'excel_product_id' | 'db_card_id' | 'source_price' | 'price_source'> & {
+          id?: string;
+          created_at?: string;
+          order_list_item_id?: string | null;
+          excel_product_id?: string | null;
+          db_card_id?: string | null;
+          source_price?: number | null;
+          price_source?: PriceSource;
+        };
         Update: Partial<Omit<RawImportRow, 'id' | 'created_at'>>;
         Relationships: [];
       };
       prepared_card: {
         Row: PreparedCardRow;
-        Insert: Omit<PreparedCardRow, 'id' | 'created_at'> & { id?: string; created_at?: string };
+        Insert: Omit<PreparedCardRow, 'id' | 'created_at' | 'order_list_item_id' | 'excel_product_id' | 'db_card_id' | 'price_source' | 'price_source_date'> & {
+          id?: string;
+          created_at?: string;
+          order_list_item_id?: string | null;
+          excel_product_id?: string | null;
+          db_card_id?: string | null;
+          price_source?: PriceSource;
+          price_source_date?: string | null;
+        };
         Update: Partial<Omit<PreparedCardRow, 'id' | 'created_at'>>;
         Relationships: [];
       };
@@ -445,7 +589,56 @@ export type Database = {
       };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      resolve_order_list_item_mapping: {
+        Args: {
+          p_import_id: string;
+          p_item_id: string;
+          p_db_card_id: string;
+        };
+        Returns: Record<string, unknown>;
+      };
+      resolve_order_list_item_mappings: {
+        Args: {
+          p_import_id: string;
+          p_mappings: Array<{ item_id: string; db_card_id: string }>;
+          p_allow_unresolved: boolean;
+        };
+        Returns: Record<string, unknown>;
+      };
+      finalize_order_list_sync: {
+        Args: {
+          p_import_id: string;
+          p_run_id: string;
+          p_total_prepared: number;
+          p_total_pages: number;
+          p_completed_at: string;
+        };
+        Returns: undefined;
+      };
+      fail_order_list_sync: {
+        Args: {
+          p_import_id: string;
+          p_run_id: string;
+          p_failure_message: string;
+          p_failed_at: string;
+        };
+        Returns: undefined;
+      };
+      recover_stale_order_list_imports: {
+        Args: {
+          p_stale_before: string;
+        };
+        Returns: number;
+      };
+      recover_stale_order_list_imports_for_store: {
+        Args: {
+          p_store: string;
+          p_stale_before: string;
+        };
+        Returns: number;
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };

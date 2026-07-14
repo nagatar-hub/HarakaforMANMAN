@@ -85,8 +85,8 @@ export async function checkImageHealth(
   runId: string,
   cards: PreparedCardRow[],
 ): Promise<number> {
-  // image_url または alt_image_url があるカードのみ対象
-  const targets = cards.filter(c => c.image_url || c.alt_image_url);
+  // URLなしも生成対象外として監査できるよう dead に含める。
+  const targets = cards;
   if (targets.length === 0) return 0;
 
   let deadCount = 0;
@@ -96,7 +96,7 @@ export async function checkImageHealth(
   for (let i = 0; i < targets.length; i += CONCURRENCY) {
     const batch = targets.slice(i, i + CONCURRENCY);
 
-    const results = await Promise.allSettled(
+    const results = await Promise.all(
       batch.map(async (card): Promise<{ id: string; status: ImageStatus }> => {
         // 1. image_url をチェック
         if (card.image_url) {
@@ -124,16 +124,19 @@ export async function checkImageHealth(
     };
 
     for (const result of results) {
-      if (result.status === 'fulfilled') {
-        byStatus[result.value.status].push(result.value.id);
-      }
+      byStatus[result.status].push(result.id);
     }
 
     for (const [status, ids] of Object.entries(byStatus)) {
       if (ids.length > 0 && status !== 'unchecked') {
-        await supabase.from('prepared_card')
+        const { data, error } = await supabase.from('prepared_card')
           .update({ image_status: status as ImageStatus })
-          .in('id', ids);
+          .in('id', ids)
+          .select('id');
+        if (error) throw new Error(`画像ステータス更新失敗 (${status}): ${error.message}`);
+        if ((data ?? []).length !== ids.length) {
+          throw new Error(`画像ステータス更新件数不一致 (${status}): expected=${ids.length}, actual=${data?.length ?? 0}`);
+        }
       }
     }
 

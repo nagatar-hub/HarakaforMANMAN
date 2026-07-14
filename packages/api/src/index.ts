@@ -13,6 +13,7 @@ import { postBannerRoutes } from './routes/post-banners.js';
 import { xCredentialRoutes } from './routes/x-credentials.js';
 import { postPlanRoutes } from './routes/post-plans.js';
 import { storeConfigRoutes } from './routes/store-config.js';
+import { orderListImportRoutes } from './routes/order-list-imports.js';
 
 const app = new Hono();
 
@@ -40,6 +41,7 @@ app.route('/api', postBannerRoutes);
 app.route('/api', xCredentialRoutes);
 app.route('/api', postPlanRoutes);
 app.route('/api', storeConfigRoutes);
+app.route('/api', orderListImportRoutes);
 
 app.notFound((c) => c.json({ error: 'Not Found' }, 404));
 app.onError((err, c) => {

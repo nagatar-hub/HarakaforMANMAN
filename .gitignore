@@ -9,4 +9,4 @@ dist/
 .vercel/
 supabase/.temp/
 Harakawebapp
-.vercel
+out/

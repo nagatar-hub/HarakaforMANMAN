@@ -15,13 +15,39 @@
  *   H: レアリティ
  */
 
+import { fetchWithRetry } from './fetch-with-retry.js';
+import { getSecret } from './secret-manager.js';
+
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const GOOGLE_SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 
+async function getHarakaDbSpreadsheetId(): Promise<string | null> {
+  if (process.env.HARAKA_DB_SPREADSHEET_ID) {
+    return process.env.HARAKA_DB_SPREADSHEET_ID;
+  }
+  try {
+    return await getSecret('haraka-db-spreadsheet-id');
+  } catch {
+    return null;
+  }
+}
+
+async function resolveCredential(envName: string, secretName: string): Promise<string | null> {
+  if (process.env[envName]) return process.env[envName] as string;
+  try {
+    return await getSecret(secretName);
+  } catch {
+    return null;
+  }
+}
+
 async function getAccessToken(): Promise<string> {
-  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  // env 未設定時は Secret Manager にフォールバック（Cloud Run に Secret 注入漏れがあっても動かすため）
+  const [refreshToken, clientId, clientSecret] = await Promise.all([
+    resolveCredential('GOOGLE_REFRESH_TOKEN', 'haraka-oauth-refresh-token'),
+    resolveCredential('GOOGLE_CLIENT_ID', 'haraka-oauth-client-id'),
+    resolveCredential('GOOGLE_CLIENT_SECRET', 'haraka-oauth-client-secret'),
+  ]);
 
   if (!refreshToken || !clientId || !clientSecret) {
     throw new Error('Google OAuth credentials not configured');
@@ -34,11 +60,15 @@ async function getAccessToken(): Promise<string> {
     client_secret: clientSecret,
   }).toString();
 
-  const response = await fetch(GOOGLE_TOKEN_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
+  const response = await fetchWithRetry(
+    GOOGLE_TOKEN_ENDPOINT,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    },
+    { maxRetries: 3, timeoutMs: 15_000 },
+  );
 
   if (!response.ok) {
     const data = await response.json() as { error?: string };
@@ -47,6 +77,34 @@ async function getAccessToken(): Promise<string> {
 
   const data = await response.json() as { access_token: string };
   return data.access_token;
+}
+
+export async function fetchHarakaDbSheetRows(): Promise<string[][]> {
+  const spreadsheetId = await getHarakaDbSpreadsheetId();
+  if (!spreadsheetId) throw new Error('HARAKA_DB_SPREADSHEET_ID not configured');
+
+  const accessToken = await getAccessToken();
+  const range = encodeURIComponent('DB');
+  const response = await fetchWithRetry(
+    `${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${range}?majorDimension=ROWS`,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+    },
+    { maxRetries: 2, timeoutMs: 20_000 },
+  );
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Haraka DB取得失敗: ${response.status} ${detail.slice(0, 300)}`);
+  }
+
+  const payload = await response.json() as { values?: unknown[][] };
+  return (payload.values ?? []).map((row) =>
+    row.map((value) => value === null || value === undefined ? '' : String(value)),
+  );
 }
 
 /**
@@ -62,7 +120,7 @@ export async function appendTagToHarakaDB(card: {
   list_no: string | null;
   image_url: string | null;
 }, tag: string): Promise<void> {
-  const spreadsheetId = process.env.HARAKA_DB_SPREADSHEET_ID;
+  const spreadsheetId = await getHarakaDbSpreadsheetId();
   if (!spreadsheetId) {
     console.warn('HARAKA_DB_SPREADSHEET_ID not set, skipping sheet write-back');
     return;
@@ -88,18 +146,22 @@ export async function appendTagToHarakaDB(card: {
   const encodedRange = encodeURIComponent(range);
   const url = `${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
+  const response = await fetchWithRetry(
+    url,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        range,
+        majorDimension: 'ROWS',
+        values: [row],
+      }),
     },
-    body: JSON.stringify({
-      range,
-      majorDimension: 'ROWS',
-      values: [row],
-    }),
-  });
+    { maxRetries: 3, timeoutMs: 30_000 },
+  );
 
   if (!response.ok) {
     const data = await response.json() as { error?: { message?: string } };
@@ -137,7 +199,7 @@ export async function updateDbSheetCell(
   field: string,
   value: string,
 ): Promise<void> {
-  const spreadsheetId = process.env.HARAKA_DB_SPREADSHEET_ID;
+  const spreadsheetId = await getHarakaDbSpreadsheetId();
   if (!spreadsheetId) {
     console.warn('HARAKA_DB_SPREADSHEET_ID not set, skipping sheet cell update');
     return;
@@ -155,18 +217,22 @@ export async function updateDbSheetCell(
   const encodedRange = encodeURIComponent(cellRange);
   const url = `${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${encodedRange}?valueInputOption=RAW`;
 
-  const response = await fetch(url, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
+  const response = await fetchWithRetry(
+    url,
+    {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        range: cellRange,
+        majorDimension: 'ROWS',
+        values: [[value]],
+      }),
     },
-    body: JSON.stringify({
-      range: cellRange,
-      majorDimension: 'ROWS',
-      values: [[value]],
-    }),
-  });
+    { maxRetries: 3, timeoutMs: 30_000 },
+  );
 
   if (!response.ok) {
     const data = await response.json() as { error?: { message?: string } };

@@ -2,13 +2,14 @@
  * 重複排除ユーティリティ
  *
  * 同一 list_no + grade のカードを重複排除する。
- * 優先順位: KECAK > SPECTRE > manual（同一ソースなら price_high が高い方）
+ * 優先順位: オーダーリスト > 旧KECAK > SPECTRE > manual
+ * （同一ソースなら price_high が高い方）
  * list_no がない場合は card.id をキーとして重複排除しない。
  */
 
 import type { PreparedCardRow } from '@haraka/shared';
 
-const SOURCE_PRIORITY: Record<string, number> = { kecak: 2, spectre: 1, manual: 0 };
+const SOURCE_PRIORITY: Record<string, number> = { order_list: 3, kecak: 2, spectre: 1, manual: 0 };
 
 export function deduplicateByListNo(cards: PreparedCardRow[]): PreparedCardRow[] {
   const map = new Map<string, PreparedCardRow>();

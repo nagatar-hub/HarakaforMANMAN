@@ -6,6 +6,31 @@
  */
 
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3/files';
+const MAX_IMAGE_DOWNLOAD_BYTES = 12 * 1024 * 1024;
+
+async function readImageBuffer(response: Response): Promise<Buffer> {
+  const declaredLength = Number(response.headers.get('content-length') ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_IMAGE_DOWNLOAD_BYTES) {
+    throw new Error(`image exceeds ${MAX_IMAGE_DOWNLOAD_BYTES} bytes`);
+  }
+  if (!response.body) return Buffer.alloc(0);
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_IMAGE_DOWNLOAD_BYTES) {
+      await reader.cancel();
+      throw new Error(`image exceeds ${MAX_IMAGE_DOWNLOAD_BYTES} bytes`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total);
+}
+
 
 /**
  * Google Drive ファイルを Buffer としてダウンロード
@@ -52,8 +77,7 @@ export async function downloadImage(
         console.warn(`[downloadImage] HTTP ${res.status} ${res.statusText}: ${urlOrDriveId.substring(0, 100)}`);
         return null;
       }
-      const arrayBuffer = await res.arrayBuffer();
-      return Buffer.from(arrayBuffer);
+      return await readImageBuffer(res);
     } else {
       // Google Drive ファイル ID
       return await downloadDriveFile(accessToken, urlOrDriveId);
