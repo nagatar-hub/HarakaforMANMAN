@@ -5,16 +5,20 @@ import type { OrderListConfirmResult, OrderListImportResult } from './order-list
 import {
   clearDraftMappings,
   draftsForImport,
+  firstReviewStatus,
   mappingSelections,
+  nextReviewStatus,
+  reviewStatusProgress,
   selectionProgress,
   stageDraftMapping,
   unselectedConfirmationMessage,
   unstageDraftMapping,
   type DraftMappingsByImport,
+  type DraftMapping,
   type OrderListMappingSelection,
+  type ReviewMatchStatus,
 } from './order-list-match-review-state';
 
-type MatchStatus = 'ambiguous' | 'unmatched' | 'invalid';
 type RecentImport = Omit<OrderListImportResult, 'issues' | 'import'> & {
   import: OrderListImportResult['import'] & { business_date?: string };
 };
@@ -53,7 +57,7 @@ type DbCard = {
 type ItemsResponse = { items: OrderListItem[]; total: number };
 type ApiErrorPayload = { error?: string | { message?: string }; message?: string };
 
-const STATUS_OPTIONS: Array<{ value: MatchStatus; label: string }> = [
+const STATUS_OPTIONS: Array<{ value: ReviewMatchStatus; label: string }> = [
   { value: 'ambiguous', label: '曖昧' },
   { value: 'unmatched', label: '未照合' },
   { value: 'invalid', label: '不正行' },
@@ -199,32 +203,82 @@ export function OrderListMatchReview({
   const endpointBase = apiBaseUrl.replace(/\/$/, '');
   const [imports, setImports] = useState<RecentImport[]>([]);
   const [selectedImportId, setSelectedImportId] = useState('');
-  const [activeStatus, setActiveStatus] = useState<MatchStatus>('ambiguous');
+  const [activeStatus, setActiveStatus] = useState<ReviewMatchStatus>('ambiguous');
   const [page, setPage] = useState(1);
   const [items, setItems] = useState<OrderListItem[]>([]);
   const [itemsTotal, setItemsTotal] = useState(0);
   const [loadingImports, setLoadingImports] = useState(false);
   const [loadingItems, setLoadingItems] = useState(false);
+  const [itemsLoadError, setItemsLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [selectedDbCardId, setSelectedDbCardId] = useState('');
   const [draftMappingsByImport, setDraftMappingsByImport] = useState<DraftMappingsByImport>({});
+  const [unlockedStatusByImport, setUnlockedStatusByImport] = useState<Record<string, ReviewMatchStatus>>({});
   const [savingMappingsImportId, setSavingMappingsImportId] = useState<string | null>(null);
   const [confirmingImportId, setConfirmingImportId] = useState<string | null>(null);
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [itemsRevision, setItemsRevision] = useState(0);
+  const [loadedItemsQueryKey, setLoadedItemsQueryKey] = useState<string | null>(null);
   const [cardsByFranchise, setCardsByFranchise] = useState<Record<string, DbCard[]>>({});
   const [loadingFranchise, setLoadingFranchise] = useState<string | null>(null);
   const cardCacheRef = useRef<Record<string, DbCard[]>>({});
+  const reviewTopRef = useRef<HTMLDivElement>(null);
+  const confirmationDialogRef = useRef<HTMLElement>(null);
+  const confirmationTriggerRef = useRef<HTMLElement | null>(null);
+  const closeConfirmation = useCallback(() => {
+    setConfirmationOpen(false);
+    window.setTimeout(() => confirmationTriggerRef.current?.focus(), 0);
+  }, []);
+
+  const confirmationCancelRef = useRef<HTMLButtonElement>(null);
 
   const selectedImport = imports.find((item) => item.import.id === selectedImportId) ?? null;
   const editingItem = items.find((item) => item.id === editingItemId) ?? null;
   const draftMappings = draftsForImport(draftMappingsByImport, selectedImportId);
   const progress = selectedImport
     ? selectionProgress(selectedImport.summary, draftMappings)
-    : { staged: 0, reflectable: 0, unselected: 0, invalid: 0 };
+    : {
+      staged: 0,
+      reflectable: 0,
+      unselected: 0,
+      invalid: 0,
+      ambiguousSelected: 0,
+      ambiguousUnselected: 0,
+      unmatchedSelected: 0,
+      unmatchedUnselected: 0,
+    };
   const totalPages = Math.max(1, Math.ceil(itemsTotal / ITEMS_PER_PAGE));
+  const activeStatusTotal = selectedImport?.summary[activeStatus] ?? 0;
+  const currentItemsQueryKey = selectedImportId
+    ? `${selectedImportId}:${activeStatus}:${page}:${itemsRevision}:${activeStatusTotal}`
+    : '';
+  const reviewSteps = selectedImport
+    ? STATUS_OPTIONS.filter((option) => selectedImport.summary[option.value] > 0)
+    : [];
+  const activeStepIndex = Math.max(0, reviewSteps.findIndex((option) => option.value === activeStatus));
+  const unlockedStatus = unlockedStatusByImport[selectedImportId] ?? reviewSteps[0]?.value;
+  const unlockedStepIndex = Math.max(0, reviewSteps.findIndex((option) => option.value === unlockedStatus));
+  const currentStatusProgress = selectedImport
+    ? reviewStatusProgress(selectedImport.summary, draftMappings, activeStatus)
+    : { total: 0, selected: 0, remaining: 0 };
+  const followingStatus = selectedImport
+    ? nextReviewStatus(activeStatus, selectedImport.summary)
+    : null;
+  const followingStatusLabel = STATUS_OPTIONS.find((option) => option.value === followingStatus)?.label
+    ?? '次の工程';
+  const atFinalReviewStep = reviewSteps.length > 0
+    && page >= totalPages && followingStatus === null
+    && !loadingItems && loadedItemsQueryKey === currentItemsQueryKey;
+  const canSaveAppliedMappings = selectedImport?.import.status === 'applied' && progress.staged > 0;
+  const finalActionAvailable = atFinalReviewStep
+    && (Boolean(selectedImport && canConfirmImport(selectedImport, progress.staged)) || canSaveAppliedMappings);
+  const finalWarning = unselectedConfirmationMessage(
+    progress,
+    selectedImport?.import.status === 'applied' ? 'save' : 'reflect',
+  );
 
   const loadImports = useCallback(async (signal?: AbortSignal) => {
     setLoadingImports(true);
@@ -276,6 +330,8 @@ export function OrderListMatchReview({
     setEditingItemId(null);
     setSelectedDbCardId('');
     setDraftMappingsByImport({});
+    setUnlockedStatusByImport({});
+    setConfirmationOpen(false);
     setMessage(null);
     setError(null);
 
@@ -285,11 +341,25 @@ export function OrderListMatchReview({
   }, [loadImports]);
 
   useEffect(() => {
-    if (!selectedImportId) { setItems([]); setItemsTotal(0); return; }
+    if (!selectedImport || selectedImport.summary[activeStatus] > 0) return;
+    const initialStatus = firstReviewStatus(selectedImport.summary);
+    if (!initialStatus || initialStatus === activeStatus) return;
+    setActiveStatus(initialStatus);
+    setPage(1);
+    setUnlockedStatusByImport((current) => ({
+      ...current,
+      [selectedImport.import.id]: initialStatus,
+    }));
+  }, [activeStatus, selectedImport]);
+
+  useEffect(() => {
+    if (!selectedImportId) { setItems([]); setItemsTotal(0); setItemsLoadError(null); setLoadedItemsQueryKey(null); return; }
     const controller = new AbortController();
     const query = new URLSearchParams({ status: activeStatus, page: String(page), limit: String(ITEMS_PER_PAGE) });
     setLoadingItems(true);
     setError(null);
+    setItemsLoadError(null);
+    setLoadedItemsQueryKey(null);
     setEditingItemId(null);
     void (async () => {
       try {
@@ -299,14 +369,51 @@ export function OrderListMatchReview({
         if (!isItemsResponse(payload)) throw new Error('未照合行の形式が正しくありません。');
         setItems(payload.items);
         setItemsTotal(payload.total);
+        setLoadedItemsQueryKey(currentItemsQueryKey);
       } catch (loadError) {
-        if ((loadError as Error).name !== 'AbortError') setError(loadError instanceof Error ? loadError.message : '未照合行の取得に失敗しました。');
+        if ((loadError as Error).name !== 'AbortError') {
+          const loadMessage = loadError instanceof Error ? loadError.message : '未照合行の取得に失敗しました。';
+          setItemsLoadError(loadMessage);
+          setError(loadMessage);
+        }
       } finally {
         if (!controller.signal.aborted) setLoadingItems(false);
       }
     })();
     return () => controller.abort();
-  }, [activeStatus, endpointBase, itemsRevision, page, selectedImportId]);
+  }, [activeStatus, currentItemsQueryKey, endpointBase, itemsRevision, page, selectedImportId]);
+  useEffect(() => {
+    if (!confirmationOpen) return;
+    confirmationCancelRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeConfirmation();
+        return;
+      }
+      if (event.key !== 'Tab' || !confirmationDialogRef.current) return;
+      const focusable = Array.from(confirmationDialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ));
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !confirmationDialogRef.current.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [closeConfirmation, confirmationOpen]);
+
 
   useEffect(() => {
     if (activeStatus !== 'ambiguous') return;
@@ -321,6 +428,62 @@ export function OrderListMatchReview({
       .filter(Boolean).some((value) => String(value).toLocaleLowerCase('ja').includes(query))) : availableCards).slice(0, 100);
   }, [availableCards, search]);
 
+  function scrollReviewTop(): void {
+    window.setTimeout(() => reviewTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  }
+
+  function openReviewStatus(status: ReviewMatchStatus): void {
+    setActiveStatus(status);
+    setPage(1);
+    setEditingItemId(null);
+    setSelectedDbCardId('');
+    setConfirmationOpen(false);
+    scrollReviewTop();
+  }
+
+  function unlockAndOpenStatus(status: ReviewMatchStatus): void {
+    if (!selectedImport) return;
+    setUnlockedStatusByImport((current) => ({
+      ...current,
+      [selectedImport.import.id]: status,
+    }));
+    openReviewStatus(status);
+  }
+
+  function openReviewPage(nextPage: number): void {
+    setPage(Math.max(1, Math.min(totalPages, nextPage)));
+    setEditingItemId(null);
+    setSelectedDbCardId('');
+    scrollReviewTop();
+  }
+
+  function advanceReview(): void {
+    if (page < totalPages) {
+      openReviewPage(page + 1);
+      return;
+    }
+    if (!followingStatus) return;
+    const nextLabel = STATUS_OPTIONS.find((option) => option.value === followingStatus)?.label ?? followingStatus;
+    unlockAndOpenStatus(followingStatus);
+    setMessage(`${nextLabel}${selectedImport?.summary[followingStatus].toLocaleString() ?? 0}件の確認へ進みました。`);
+  }
+
+  function selectRecentImport(importId: string): void {
+    const nextImport = imports.find((entry) => entry.import.id === importId);
+    const initialStatus = nextImport ? firstReviewStatus(nextImport.summary) ?? 'ambiguous' : 'ambiguous';
+    setSelectedImportId(importId);
+    setActiveStatus(initialStatus);
+    setPage(1);
+    setMessage(null);
+    setConfirmationOpen(false);
+    if (nextImport) {
+      setUnlockedStatusByImport((current) => ({
+        ...current,
+        [nextImport.import.id]: initialStatus,
+      }));
+    }
+  }
+
   async function editItem(item: OrderListItem) {
     setEditingItemId(item.id);
     setSearch('');
@@ -330,16 +493,41 @@ export function OrderListMatchReview({
   }
 
   function stageMapping(item: OrderListItem, card: DbCard): void {
-    if (!selectedImport || confirmingImportId || savingMappingsImportId) return;
-    setDraftMappingsByImport((current) => stageDraftMapping(current, selectedImport.import.id, {
+    if (!selectedImport
+      || (item.match_status !== 'ambiguous' && item.match_status !== 'unmatched')
+      || confirmingImportId
+      || savingMappingsImportId) return;
+    const matchStatus = item.match_status === 'ambiguous' ? 'ambiguous' : 'unmatched';
+    const finalActionLabel = selectedImport.import.status === 'applied' ? '保存' : '反映';
+    const draft: DraftMapping = {
       itemId: item.id,
       dbCardId: card.id,
       cardLabel: cardLabel(card),
+      matchStatus,
+    };
+    const wasSelected = Boolean(draftMappings[item.id]);
+    setDraftMappingsByImport((current) => stageDraftMapping(current, selectedImport.import.id, {
+      ...draft,
     }));
     setEditingItemId(null);
     setSelectedDbCardId('');
-    setMessage('仮選択しました。まだDBには保存されていません。最後のボタンでまとめて反映します。');
     setError(null);
+
+    const nextDrafts = { ...draftMappings, [item.id]: draft };
+    const statusProgress = reviewStatusProgress(selectedImport.summary, nextDrafts, matchStatus);
+    const nextStatus = nextReviewStatus(matchStatus, selectedImport.summary);
+    if (!wasSelected && statusProgress.remaining === 0 && nextStatus) {
+      const currentLabel = STATUS_OPTIONS.find((option) => option.value === matchStatus)?.label ?? matchStatus;
+      const nextLabel = STATUS_OPTIONS.find((option) => option.value === nextStatus)?.label ?? nextStatus;
+      unlockAndOpenStatus(nextStatus);
+      setMessage(`${currentLabel}の確認が完了しました。続けて${nextLabel}${selectedImport.summary[nextStatus].toLocaleString()}件を確認してください。`);
+      return;
+    }
+    if (!wasSelected && statusProgress.remaining === 0) {
+      setMessage(`未解決商品の選択が完了しました。内容を確認して最後のボタンからまとめて${finalActionLabel}してください。`);
+      return;
+    }
+    setMessage(`仮選択しました。まだDBには保存されていません。最後のボタンでまとめて${finalActionLabel}します。`);
   }
 
   function removeStagedMapping(itemId: string): void {
@@ -352,6 +540,31 @@ export function OrderListMatchReview({
     setMessage('仮選択を解除しました。');
   }
 
+  function requestFinalAction(): void {
+    if (!selectedImport) return;
+    const warning = finalWarning;
+    if (warning) {
+      confirmationTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setConfirmationOpen(true);
+      return;
+    }
+    if (selectedImport.import.status === 'applied') {
+      void saveAppliedMappings();
+    } else {
+      void confirmSelectedImport();
+    }
+  }
+
+  function continueFinalAction(): void {
+    if (!selectedImport) return;
+    setConfirmationOpen(false);
+    if (selectedImport.import.status === 'applied') {
+      void saveAppliedMappings();
+    } else {
+      void confirmSelectedImport();
+    }
+  }
+
   async function confirmSelectedImport(): Promise<void> {
     if (!selectedImport
       || !canConfirmImport(selectedImport, progress.staged)
@@ -359,11 +572,9 @@ export function OrderListMatchReview({
       || confirmingImportId
       || savingMappingsImportId) return;
 
-    const warning = unselectedConfirmationMessage(progress);
-    if (warning && !window.confirm(warning)) return;
-
     const selections = mappingSelections(draftMappings);
     setConfirmingImportId(selectedImport.import.id);
+    setConfirmationOpen(false);
     setError(null);
     setMessage(null);
     try {
@@ -389,6 +600,7 @@ export function OrderListMatchReview({
     if (selections.length === 0) return;
 
     setSavingMappingsImportId(selectedImport.import.id);
+    setConfirmationOpen(false);
     setError(null);
     setMessage(null);
     try {
@@ -419,7 +631,7 @@ export function OrderListMatchReview({
       <div className="flex flex-col sm:flex-row sm:items-end gap-3">
         <div className="flex-1 min-w-0">
           <label htmlFor="order-list-recent-import" className="block text-sm font-semibold text-text-primary mb-1.5">最近の取込</label>
-          <select id="order-list-recent-import" value={selectedImportId} onChange={(event) => { setSelectedImportId(event.target.value); setActiveStatus('ambiguous'); setPage(1); }} disabled={loadingImports || imports.length === 0 || confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null} className="w-full rounded-lg border border-border-card bg-card-bg px-3 py-2.5 text-sm text-text-primary disabled:opacity-50">
+          <select id="order-list-recent-import" value={selectedImportId} onChange={(event) => selectRecentImport(event.target.value)} disabled={loadingImports || imports.length === 0 || confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null} className="w-full rounded-lg border border-border-card bg-card-bg px-3 py-2.5 text-sm text-text-primary disabled:opacity-50">
             {imports.length === 0 && <option value="">取込履歴がありません</option>}
             {imports.map((entry) => <option key={entry.import.id} value={entry.import.id}>{entry.import.business_date ?? entry.import.imported_at.slice(0, 10)} / {entry.import.filename} / 未解決{unresolvedCount(entry)}件 / {statusLabel(entry.import.status)}</option>)}
           </select>
@@ -430,18 +642,20 @@ export function OrderListMatchReview({
     {error && !selectedImport && <div role="alert" className="rounded-xl border border-[#e3b0a2] bg-[#fff0ec] p-3 text-sm text-[#8d3a22]">{error}</div>}
 
     {selectedImport && <>
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
+      <div ref={reviewTopRef} className="scroll-mt-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
         <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-bold text-text-primary truncate">{selectedImport.import.filename}</h3><span className="rounded-full border border-border-card bg-page-bg px-2.5 py-0.5 text-xs text-text-secondary">{statusLabel(selectedImport.import.status)}</span></div><p className="mt-1 text-xs text-text-secondary">取込ID: <span className="font-mono">{selectedImport.import.id}</span></p></div>
         <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
           <p className="text-xs text-text-secondary">照合済み {selectedImport.summary.matched.toLocaleString()} / 今回選択 {progress.staged.toLocaleString()} / 未選択 {progress.unselected.toLocaleString()}{progress.invalid > 0 ? ` / 入力エラー ${progress.invalid.toLocaleString()}` : ''}</p>
-          {canConfirmImport(selectedImport, progress.staged) && (
+          {finalActionAvailable && (
             <button
               type="button"
-              onClick={() => { void confirmSelectedImport(); }}
+              onClick={requestFinalAction}
               disabled={confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null}
               className="rounded-full bg-text-primary px-4 py-2 text-xs font-semibold text-white disabled:bg-text-primary/40 disabled:cursor-not-allowed"
             >
-              {confirmingImportId === selectedImport.import.id ? '反映を開始中...' : 'この取込を確認して反映'}
+              {selectedImport.import.status === 'applied'
+                ? savingMappingsImportId === selectedImport.import.id ? '対応表を保存中...' : '選択した対応をまとめて保存'
+                : confirmingImportId === selectedImport.import.id ? '反映を開始中...' : 'この取込を確認して反映'}
             </button>
           )}
         </div>
@@ -455,16 +669,62 @@ export function OrderListMatchReview({
           </div>
         )}
       {!canMapImport(selectedImport.import.status) && <div role="note" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">現在は{statusLabel(selectedImport.import.status)}のため閲覧のみです。処理完了後に対応付けできます。</div>}
-      <div role="note" className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800">
-        {selectedImport.import.status === 'applied'
-          ? '商品ごとの操作は仮選択です。下の「選択した対応をまとめて保存」を押すまでDBへ保存しません。'
-          : '商品ごとの操作は仮選択です。最後の反映ボタンを押すまでDBへ保存しません。'}
-      </div>
-      <div className="flex flex-wrap gap-2" aria-label="未照合状態で絞り込み">
-        {STATUS_OPTIONS.map((option) => <button key={option.value} type="button" aria-pressed={activeStatus === option.value} onClick={() => { setActiveStatus(option.value); setPage(1); }} className={`rounded-full border px-3.5 py-2 text-sm font-semibold ${activeStatus === option.value ? 'border-text-primary bg-text-primary text-white' : 'border-border-card bg-card-bg text-text-secondary hover:bg-warm-100'}`}>{option.label} {selectedImport.summary[option.value].toLocaleString()}</button>)}
-      </div>
+      {reviewSteps.length > 0 ? <>
+        <div role="note" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-amber-950 shadow-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wide text-amber-800">確認工程 {activeStepIndex + 1} / {reviewSteps.length}</p>
+              <p className="mt-1 text-base font-bold">{STATUS_OPTIONS.find((option) => option.value === activeStatus)?.label}を確認中</p>
+              <p className="mt-1 text-sm leading-relaxed">見落としを防ぐため、各工程を順番に確認してから最後にまとめて{selectedImport.import.status === 'applied' ? '保存' : '反映'}します。</p>
+            </div>
+            <div className="shrink-0 rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-bold">
+              {activeStatus === 'invalid'
+                ? `確認対象 ${currentStatusProgress.total.toLocaleString()}件`
+                : `選択 ${currentStatusProgress.selected.toLocaleString()} / ${currentStatusProgress.total.toLocaleString()}件`}
+            </div>
+          </div>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3" role="group" aria-label="未解決商品の確認工程">
+          {reviewSteps.map((option, index) => {
+            const statusProgress = reviewStatusProgress(selectedImport.summary, draftMappings, option.value);
+            const locked = index > unlockedStepIndex;
+            const active = activeStatus === option.value;
+            return <button
+              key={option.value}
+              type="button"
+              aria-current={active ? 'step' : undefined}
+              disabled={locked}
+              onClick={() => openReviewStatus(option.value)}
+              className={`rounded-xl border-2 px-4 py-3 text-left transition-colors ${active ? 'border-text-primary bg-text-primary text-white' : locked ? 'border-border-card bg-warm-100 text-text-secondary opacity-55' : 'border-border-card bg-card-bg text-text-primary hover:bg-warm-100'}`}
+            >
+              <span className="block text-sm font-bold">{index + 1}. {option.label}</span>
+              <span className={`mt-1 block text-xs ${active ? 'text-white/80' : 'text-text-secondary'}`}>
+                {option.value === 'invalid'
+                  ? `${statusProgress.total.toLocaleString()}件を確認`
+                  : `${statusProgress.selected.toLocaleString()} / ${statusProgress.total.toLocaleString()}件を選択`}
+              </span>
+              {locked && <span className="mt-1 block text-[11px]">前の工程を終えると開きます</span>}
+            </button>;
+          })}
+        </div>
+      </> : (
+        <div role="note" className="rounded-xl border border-[#bfd4b8] bg-[#f3faf0] p-4 text-sm font-semibold text-[#2d5a2f]">未解決の商品はありません。</div>
+      )}
       {message && <div role="status" className="rounded-xl border border-[#bfd4b8] bg-[#f3faf0] p-3 text-sm text-[#2d5a2f]">{message}</div>}
-      {error && <div role="alert" className="rounded-xl border border-[#e3b0a2] bg-[#fff0ec] p-3 text-sm text-[#8d3a22]">{error}</div>}
+      {error && (
+        <div role="alert" className="flex flex-col gap-3 rounded-xl border border-[#e3b0a2] bg-[#fff0ec] p-3 text-sm text-[#8d3a22] sm:flex-row sm:items-center sm:justify-between">
+          <span>{error}</span>
+          {itemsLoadError && (
+            <button
+              type="button"
+              onClick={() => { setError(null); setItemsLoadError(null); setItemsRevision((current) => current + 1); }}
+              className="shrink-0 rounded-full border border-[#e3b0a2] bg-white px-3.5 py-2 text-xs font-bold hover:bg-[#fff8f6]"
+            >
+              この一覧を再読み込み
+            </button>
+          )}
+        </div>
+      )}
       {loadingItems ? <p role="status" className="py-8 text-center text-sm text-text-secondary">未照合行を読み込み中...</p> : items.length === 0 ? <div className="rounded-xl border border-border-card bg-page-bg p-6 text-center text-sm text-text-secondary">この状態の行はありません。</div> : <div className="space-y-3">
         {items.map((item) => {
           const ids = candidateIds(item);
@@ -564,14 +824,41 @@ export function OrderListMatchReview({
           </article>;
         })}
       </div>}
-      {itemsTotal > ITEMS_PER_PAGE && <div className="flex items-center justify-center gap-3"><button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page <= 1 || loadingItems} className="rounded-full border border-border-card px-3.5 py-2 text-xs disabled:opacity-40">前へ</button><span className="text-xs text-text-secondary">{page} / {totalPages}ページ（{itemsTotal.toLocaleString()}件）</span><button type="button" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={page >= totalPages || loadingItems} className="rounded-full border border-border-card px-3.5 py-2 text-xs disabled:opacity-40">次へ</button></div>}
-      {canConfirmImport(selectedImport, progress.staged) && (
+      {itemsTotal > ITEMS_PER_PAGE && (
+        <div className="flex items-center justify-center gap-3">
+          <button type="button" onClick={() => openReviewPage(page - 1)} disabled={page <= 1 || loadingItems} className="rounded-full border border-border-card px-3.5 py-2 text-xs disabled:opacity-40">前へ</button>
+          <span className="text-xs text-text-secondary">{page} / {totalPages}ページ（{itemsTotal.toLocaleString()}件）</span>
+          <button type="button" onClick={() => openReviewPage(page + 1)} disabled={page >= totalPages || loadingItems} className="rounded-full border border-border-card px-3.5 py-2 text-xs disabled:opacity-40">次へ</button>
+        </div>
+      )}
+      {reviewSteps.length > 0 && !atFinalReviewStep && (
+        <div className="mt-2 flex flex-col gap-3 rounded-xl border-2 border-amber-400 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-bold text-amber-950">この工程を確認して、次へ進んでください</p>
+            <p className="mt-1 text-xs leading-relaxed text-amber-900">
+              {page < totalPages
+                ? `残り${(totalPages - page).toLocaleString()}ページあります。`
+                : currentStatusProgress.remaining > 0
+                  ? `未選択${currentStatusProgress.remaining.toLocaleString()}件を残す場合も、次の工程へ進んだあと最後にもう一度確認します。`
+                  : `${STATUS_OPTIONS.find((option) => option.value === activeStatus)?.label}の選択が完了しています。`}
+            </p>
+          </div>
+          <button type="button" onClick={advanceReview} disabled={loadingItems} className="shrink-0 rounded-full bg-amber-950 px-5 py-2.5 text-sm font-bold text-white hover:bg-black disabled:opacity-40">
+            {page < totalPages
+              ? `次のページへ（${page + 1} / ${totalPages}）`
+              : currentStatusProgress.remaining > 0
+                ? `未選択${currentStatusProgress.remaining.toLocaleString()}件を残して次へ：${followingStatusLabel}`
+                : `次へ：${followingStatusLabel}`}
+          </button>
+        </div>
+      )}
+      {atFinalReviewStep && canConfirmImport(selectedImport, progress.staged) && (
         <div className="mt-2 flex flex-col gap-3 rounded-xl border border-border-card bg-page-bg p-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-text-secondary">反映対象 {progress.reflectable.toLocaleString()}件（今回選択 {progress.staged.toLocaleString()}件） / 未選択 {progress.unselected.toLocaleString()}件{progress.invalid > 0 ? ` / 入力エラー ${progress.invalid.toLocaleString()}件` : ''}</p>
           <button
             type="button"
             aria-label="この取込を確認して反映（一覧下部）"
-            onClick={() => { void confirmSelectedImport(); }}
+            onClick={requestFinalAction}
             disabled={confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null}
             className="shrink-0 rounded-full bg-text-primary px-5 py-2.5 text-sm font-semibold text-white disabled:bg-text-primary/40 disabled:cursor-not-allowed"
           >
@@ -579,12 +866,12 @@ export function OrderListMatchReview({
           </button>
         </div>
       )}
-      {selectedImport.import.status === 'applied' && progress.staged > 0 && (
+      {atFinalReviewStep && canSaveAppliedMappings && (
         <div className="mt-2 flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-blue-800">仮選択した{progress.staged.toLocaleString()}件を対応表へ保存します。過去の出力は変更せず、次回以降の取込から使用します。</p>
           <button
             type="button"
-            onClick={() => { void saveAppliedMappings(); }}
+            onClick={requestFinalAction}
             disabled={savingMappingsImportId !== null || confirmingImportId !== null}
             className="shrink-0 rounded-full bg-text-primary px-5 py-2.5 text-sm font-semibold text-white disabled:bg-text-primary/40 disabled:cursor-not-allowed"
           >
@@ -593,5 +880,27 @@ export function OrderListMatchReview({
         </div>
       )}
     </>}
+    {confirmationOpen && selectedImport && (
+      <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/55 p-4" role="presentation">
+        <section ref={confirmationDialogRef} role="alertdialog" aria-modal="true" aria-labelledby="order-list-final-confirm-title" aria-describedby="order-list-final-confirm-description" className="w-full max-w-lg rounded-2xl border border-border-card bg-card-bg p-5 shadow-2xl sm:p-6">
+          <h3 id="order-list-final-confirm-title" className="text-lg font-bold text-text-primary">未選択または入力エラーが残っています</h3>
+          <div id="order-list-final-confirm-description" className="mt-3 space-y-2 text-sm leading-relaxed text-text-secondary">
+            {(finalWarning ?? '').split('\n').filter(Boolean).map((line) => <p key={line}>{line}</p>)}
+          </div>
+          <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">残っている商品は今回{selectedImport.import.status === 'applied' ? '対応表へ保存されません' : '反映されません'}。</p>
+          <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <button ref={confirmationCancelRef} type="button" onClick={closeConfirmation} className="rounded-full border border-border-card px-4 py-2.5 text-sm font-semibold text-text-secondary hover:bg-warm-100">戻って確認</button>
+            <button
+              type="button"
+              onClick={continueFinalAction}
+              disabled={confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null}
+              className="rounded-full bg-text-primary px-5 py-2.5 text-sm font-bold text-white hover:bg-warm-800 disabled:opacity-40"
+            >
+              {selectedImport.import.status === 'applied' ? '残っている商品を除いて保存' : '残っている商品を除いて反映'}
+            </button>
+          </div>
+        </section>
+      </div>
+    )}
   </div>;
 }

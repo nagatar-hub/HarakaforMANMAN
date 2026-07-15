@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { OrderListMatchReview } from './order-list-match-review';
 import {
+  resetFileInputValue,
   selectionProgress,
-  unselectedConfirmationMessage,
   type OrderListMappingSelection,
 } from './order-list-match-review-state';
 
@@ -166,6 +166,7 @@ export default function OrderListImportPanel({
   const [review, setReview] = useState<OrderListImportResult | null>(null);
   const [confirmed, setConfirmed] = useState<OrderListConfirmResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileButtonRef = useRef<HTMLButtonElement>(null);
   const requestRef = useRef<XMLHttpRequest | null>(null);
   const inFlightRef = useRef(false);
   const inputId = useId();
@@ -180,6 +181,16 @@ export default function OrderListImportPanel({
   const franchiseRows = useMemo(() => Object.entries(review?.summary.by_franchise ?? {})
     .sort(([a], [b]) => franchiseSortOrder(a) - franchiseSortOrder(b) || a.localeCompare(b, 'ja')), [review]);
 
+  const reset = useCallback(() => {
+    setPanelView('upload');
+    setSelectedFile(null);
+    setUploadProgress(0);
+    setError(null);
+    setReview(null);
+    setConfirmed(null);
+    resetFileInputValue(inputRef.current);
+  }, []);
+
   useEffect(() => () => requestRef.current?.abort(), []);
 
 
@@ -188,30 +199,34 @@ export default function OrderListImportPanel({
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !inFlightRef.current) setIsOpen(false);
+      if (event.key === 'Escape' && !inFlightRef.current) {
+        setIsOpen(false);
+        reset();
+      }
     };
     window.addEventListener('keydown', onKeyDown);
-    window.setTimeout(() => inputRef.current?.focus(), 0);
+    window.setTimeout(() => fileButtonRef.current?.focus(), 0);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [isOpen]);
+  }, [isOpen, reset]);
 
-  function reset() {
+  function startNewImport() {
+    reset();
     setPanelView('upload');
-    setSelectedFile(null);
-    setUploadProgress(0);
-    setError(null);
-    setReview(null);
-    setConfirmed(null);
-    if (inputRef.current) inputRef.current.value = '';
   }
 
   function close() {
     if (inFlightRef.current) return;
     setIsOpen(false);
     reset();
+  }
+
+  function openFileChooser() {
+    if (inFlightRef.current) return;
+    resetFileInputValue(inputRef.current);
+    inputRef.current?.click();
   }
 
   function selectFile(event: React.ChangeEvent<HTMLInputElement>) {
@@ -303,8 +318,6 @@ export default function OrderListImportPanel({
   async function confirmImport() {
     if (!review || !canConfirm || inFlightRef.current) return;
     const progress = selectionProgress(review.summary, {});
-    const warning = unselectedConfirmationMessage(progress);
-    if (warning && !window.confirm(warning)) return;
     setError(null);
     try {
       completeConfirmation(await requestImportConfirmation(
@@ -346,7 +359,7 @@ export default function OrderListImportPanel({
     <>
       <button
         type="button"
-        onClick={() => { setPanelView('upload'); setIsOpen(true); }}
+        onClick={() => { startNewImport(); setIsOpen(true); }}
         disabled={disabled}
         className="px-4 sm:px-5 py-2 sm:py-2.5 rounded-full text-xs sm:text-sm font-semibold whitespace-nowrap transition-all duration-100 select-none bg-text-primary text-white hover:bg-warm-800 active:scale-90 disabled:bg-text-primary/40 disabled:text-white/70 disabled:cursor-not-allowed disabled:active:scale-100"
       >
@@ -387,7 +400,7 @@ export default function OrderListImportPanel({
                 <div className="flex w-full max-w-md rounded-xl border border-border-card bg-page-bg p-1" aria-label="オーダーリスト操作">
                   <button
                     type="button"
-                    onClick={() => setPanelView('upload')}
+                    onClick={startNewImport}
                     disabled={busy}
                     aria-pressed={panelView === 'upload'}
                     className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-50 ${panelView === 'upload' ? 'bg-card-bg text-text-primary shadow-sm' : 'text-text-secondary hover:text-text-primary'}`}
@@ -422,7 +435,7 @@ export default function OrderListImportPanel({
               ) : (
                 <>
                   <div>
-                    <label htmlFor={inputId} className="block text-sm font-semibold text-text-primary mb-2">Excelファイル</label>
+                    <label className="block text-sm font-semibold text-text-primary mb-2">Excelファイル</label>
                     <input
                       ref={inputRef}
                       id={inputId}
@@ -431,8 +444,18 @@ export default function OrderListImportPanel({
                       onChange={selectFile}
                       disabled={busy}
                       aria-describedby={`${descriptionId}-file-help`}
-                      className="block w-full text-sm text-text-secondary border border-border-card rounded-xl bg-page-bg file:mr-4 file:px-4 file:py-2.5 file:border-0 file:border-r file:border-border-card file:bg-warm-100 file:text-text-primary file:font-semibold hover:file:bg-warm-200 disabled:opacity-50"
+                      aria-hidden="true"
+                      className="sr-only"
+                      tabIndex={-1}
                     />
+                    <div className="flex min-h-12 w-full items-stretch overflow-hidden rounded-xl border border-border-card bg-page-bg">
+                      <button ref={fileButtonRef} type="button" onClick={openFileChooser} disabled={busy} aria-controls={inputId} aria-describedby={`${descriptionId}-file-help`} className="shrink-0 border-r border-border-card bg-warm-100 px-4 py-2.5 text-sm font-semibold text-text-primary hover:bg-warm-200 disabled:opacity-50">
+                        ファイルを選択
+                      </button>
+                      <span className="min-w-0 flex-1 self-center truncate px-4 py-2.5 text-sm text-text-secondary">
+                        {selectedFile?.name ?? '選択されていません'}
+                      </span>
+                    </div>
                     <p id={`${descriptionId}-file-help`} className="mt-1.5 text-xs text-text-secondary">
                       対応形式: .xlsx（ポケモン・ワンピース・遊戯王の3シート）
                     </p>
@@ -521,14 +544,14 @@ export default function OrderListImportPanel({
                               <div>
                                 <div className="flex flex-wrap items-center gap-2">
                                   <span className="inline-flex rounded-full border border-amber-500 bg-white px-2.5 py-0.5 text-xs font-bold text-amber-900">
-                                    あとで確認
+                                    反映前に確認
                                   </span>
                                   <h3 className="text-base font-bold sm:text-lg">
                                     未解決の行が{unresolved.toLocaleString()}件あります
                                   </h3>
                                 </div>
                                 <p className="mt-2 text-sm leading-relaxed text-amber-900">
-                                  今回は照合済みの{review.summary.matched.toLocaleString()}件だけを反映します。曖昧・未照合・不正行は反映せず、あとでまとめて確認できます。
+                                  見落としを防ぐため、反映前に曖昧・未照合・不正行を順番に確認します。対応しない商品は最後にまとめて残せます。
                                 </p>
                               </div>
                             </div>
@@ -537,7 +560,7 @@ export default function OrderListImportPanel({
                               onClick={() => setPanelView('review')}
                               className="shrink-0 rounded-full bg-amber-900 px-5 py-2.5 text-sm font-bold text-white shadow-sm transition-colors hover:bg-amber-950"
                             >
-                              未解決の明細を確認
+                              未解決{unresolved.toLocaleString()}件を順番に確認
                             </button>
                           </div>
                         </div>
@@ -618,14 +641,14 @@ export default function OrderListImportPanel({
               {review && !confirmed && panelView === 'upload' && (
                 <button
                   type="button"
-                  onClick={confirmImport}
-                  disabled={busy || !canConfirm}
+                  onClick={unresolved > 0 ? () => setPanelView('review') : confirmImport}
+                  disabled={busy || (unresolved === 0 && !canConfirm)}
                   className="px-5 py-2.5 rounded-full text-sm font-semibold bg-text-primary text-white hover:bg-warm-800 disabled:bg-text-primary/40 disabled:text-white/70 disabled:cursor-not-allowed"
                 >
-                  {pendingAction === 'confirm'
-                    ? '反映を開始中...'
-                    : unresolved > 0
-                      ? '未解決はあとで確認して反映'
+                  {unresolved > 0
+                    ? `未解決${unresolved.toLocaleString()}件を確認して次へ`
+                    : pendingAction === 'confirm'
+                      ? '反映を開始中...'
                       : '確認して反映'}
                 </button>
               )}
