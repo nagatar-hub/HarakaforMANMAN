@@ -30,10 +30,16 @@ export function prepareOrderListCards(
       throw new Error(`raw_import ${rawImport.id} の対応先DB商品が見つかりません: ${rawImport.db_card_id}`);
     }
     if (rawImport.source_price === null) {
-      throw new Error(`raw_import ${rawImport.id} にオーダーリスト価格がありません`);
+      const isMissingPokemonBoxPrice = rawImport.franchise === 'Pokemon'
+        && isBoxRow(rawImport)
+        && rawImport.raw_row?.pokemon_box_price_source === 'missing';
+      if (!isMissingPokemonBoxPrice) {
+        throw new Error(`raw_import ${rawImport.id} にオーダーリスト価格がありません`);
+      }
     }
 
-    const sourcePrice = rawImport.source_price;
+    // 既存MANMAN同期と同様、BOX価格DB未登録行は0円で監査対象へ残し、後段でページから除外する。
+    const sourcePrice = rawImport.source_price ?? 0;
     const franchise = rawImport.franchise as Franchise;
     const isBox = isBoxRow(rawImport);
     const boxRates = pricingSettings.box_discount_rates[franchise];

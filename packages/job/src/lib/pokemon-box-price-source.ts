@@ -87,28 +87,32 @@ export function applyPokemonBoxPriceOverrides(
 
     const productName = normalizePokemonBoxProductName(row.card_name);
     const price = priceMap.get(productName);
+    const usesOrderListPrice = row.price_source === 'order_list';
+    const originalPriceMetadata = usesOrderListPrice
+      ? { pokemon_box_original_order_list_price: row.source_price }
+      : { pokemon_box_original_kecak_price: row.kecak_price };
     if (price == null) {
       missingNames.push(productName);
       return {
         ...row,
-        kecak_price: null,
+        ...(usesOrderListPrice ? { source_price: null } : { kecak_price: null }),
         raw_row: {
           ...(row.raw_row ?? {}),
           pokemon_box_price_source: 'missing',
           pokemon_box_price_lookup_name: productName,
-          pokemon_box_original_kecak_price: row.kecak_price,
+          ...originalPriceMetadata,
         },
       };
     }
 
     return {
       ...row,
-      kecak_price: price,
+      ...(usesOrderListPrice ? { source_price: price } : { kecak_price: price }),
       raw_row: {
         ...(row.raw_row ?? {}),
         pokemon_box_price_source: 'BOX_PRICE_DB',
         pokemon_box_price_lookup_name: productName,
-        pokemon_box_original_kecak_price: row.kecak_price,
+        ...originalPriceMetadata,
       },
     };
   });

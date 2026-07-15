@@ -20,6 +20,10 @@ import { getAccessToken } from '../lib/auth.js';
 import { batchInsert, batchUpsert } from '../lib/batch.js';
 import { buildDbCardRows } from '../lib/db-card-sync.js';
 import { prepareOrderListCards } from '../lib/prepare-order-list.js';
+import {
+  applyPokemonBoxPriceOverrides,
+  parsePokemonBoxPriceRows,
+} from '../lib/pokemon-box-price-source.js';
 import { parseSpectreRows } from '../lib/spectre-parser.js';
 import { deduplicateByListNo } from '../lib/dedup.js';
 import { checkImageHealth } from '../lib/image-health-check.js';
@@ -28,7 +32,7 @@ import { planPages } from '../lib/page-planner.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import { OAuthInvalidGrantError } from '../lib/fetch-with-retry.js';
 import { startOrderListLease } from '../lib/order-list-lease.js';
-import { getRequiredEnvOrSecret } from '../lib/env.js';
+import { getOptionalEnvOrSecret, getRequiredEnvOrSecret } from '../lib/env.js';
 import { loadStorePricingSettings } from '../lib/pricing-settings.js';
 import type {
   Database,
@@ -50,6 +54,8 @@ type RunUpdate = Database['public']['Tables']['run']['Update'];
 const PAGE_SIZE = 1000;
 const DB_CARD_QUERY_BATCH_SIZE = 200;
 const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+const DEFAULT_POKEMON_BOX_SPREADSHEET_ID = '1xxIJ0Rbi90I_Bd2FhGVcu3cdlAcVAxl0x6wk5913vWw';
+const POKEMON_BOX_PRICE_RANGE = 'Database';
 
 type Supabase = Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>;
 function createOrderListLease(supabase: Supabase, importId: string) {
@@ -294,7 +300,18 @@ export async function runSync(): Promise<void> {
     await updateProgress(supabase, run.id, 0, 100, '認証中...');
     const accessToken = await getAccessToken();
     const harakaDbSpreadsheetId = await getRequiredEnvOrSecret('HARAKA_DB_SPREADSHEET_ID');
+    const pokemonBoxSpreadsheetId =
+      (await getOptionalEnvOrSecret('POKEMON_BOX_SPREADSHEET_ID')) ?? DEFAULT_POKEMON_BOX_SPREADSHEET_ID;
     console.log('[sync] Access token 取得完了（Haraka DB）');
+
+    console.log('[sync] Pokemon BOX価格DB 取得: Database');
+    const pokemonBoxPriceRows = await fetchSheetValues({
+      accessToken,
+      spreadsheetId: pokemonBoxSpreadsheetId,
+      range: POKEMON_BOX_PRICE_RANGE,
+    });
+    const pokemonBoxPriceMap = parsePokemonBoxPriceRows(pokemonBoxPriceRows);
+    console.log(`[sync] Pokemon BOX価格DB: ${pokemonBoxPriceMap.size}件`);
 
     // ---- 4. 照合済みオーダーリスト行 → raw_import ----
     await lease.renewNow();
@@ -303,7 +320,15 @@ export async function runSync(): Promise<void> {
     if (orderListItems.length === 0) {
       throw new Error('照合済みのオーダーリスト行がありません');
     }
-    const rawImportInserts = buildOrderListRawImports(orderListItems, run.id);
+    const boxPriceResult = applyPokemonBoxPriceOverrides(
+      buildOrderListRawImports(orderListItems, run.id),
+      pokemonBoxPriceMap,
+    );
+    const rawImportInserts = boxPriceResult.rows;
+    if (boxPriceResult.missingNames.length > 0) {
+      const sample = boxPriceResult.missingNames.slice(0, 10).join(', ');
+      console.warn(`[sync] Pokemon BOX価格DB 未マッチ: ${boxPriceResult.missingNames.length}件 (${sample})`);
+    }
     await batchInsert(supabase, 'raw_import', rawImportInserts as unknown as Record<string, unknown>[]);
     const allRawImports = await fetchAllRunRawImports(supabase, run.id);
     const totalImported = allRawImports.length;

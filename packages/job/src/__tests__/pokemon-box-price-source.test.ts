@@ -90,6 +90,69 @@ describe('applyPokemonBoxPriceOverrides', () => {
     expect(result.missingNames).toEqual(['未登録BOX']);
   });
 
+  it('オーダーリストのPokemon BOX行はsource_priceをBOX価格DBの価格へ差し替える', () => {
+    const result = applyPokemonBoxPriceOverrides(
+      [makeRawImport({
+        card_name: '[1BOX]ホワイトフレア',
+        grade: 'BOX',
+        kecak_price: null,
+        source_price: 21500,
+        price_source: 'order_list',
+        raw_row: { 商品ID: 'excel-1' },
+      })],
+      new Map([['ホワイトフレア', 19000]]),
+    );
+
+    expect(result.rows[0]).toMatchObject({
+      kecak_price: null,
+      source_price: 19000,
+      price_source: 'order_list',
+      raw_row: {
+        商品ID: 'excel-1',
+        pokemon_box_price_source: 'BOX_PRICE_DB',
+        pokemon_box_price_lookup_name: 'ホワイトフレア',
+        pokemon_box_original_order_list_price: 21500,
+      },
+    });
+    expect(result.missingNames).toEqual([]);
+  });
+
+  it('BOX価格DBにないオーダーリストのPokemon BOX行はExcel価格へフォールバックしない', () => {
+    const result = applyPokemonBoxPriceOverrides(
+      [makeRawImport({
+        card_name: '【BOX】未登録BOX',
+        kecak_price: null,
+        source_price: 99999,
+        price_source: 'order_list',
+      })],
+      new Map(),
+    );
+
+    expect(result.rows[0]).toMatchObject({
+      kecak_price: null,
+      source_price: null,
+      price_source: 'order_list',
+      raw_row: {
+        pokemon_box_price_source: 'missing',
+        pokemon_box_price_lookup_name: '未登録BOX',
+        pokemon_box_original_order_list_price: 99999,
+      },
+    });
+    expect(result.missingNames).toEqual(['未登録BOX']);
+  });
+
+  it('オーダーリストの非BOX行とPokemon以外のBOX行は変更しない', () => {
+    const rows = [
+      makeRawImport({ card_name: 'リザードン', kecak_price: null, source_price: 50000, price_source: 'order_list' }),
+      makeRawImport({ franchise: 'ONE PIECE', card_name: '【BOX】頂上決戦', kecak_price: null, source_price: 30000, price_source: 'order_list' }),
+    ];
+
+    const result = applyPokemonBoxPriceOverrides(rows, new Map());
+
+    expect(result.rows).toEqual(rows);
+    expect(result.missingNames).toEqual([]);
+  });
+
   it('カード名にボックスを含むPSA行はBOX価格差し替え対象にしない', () => {
     const row = makeRawImport({
       card_name: 'ピカチュウ(プレシャスコレクターボックス)',
