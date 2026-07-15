@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { createSupabaseClient } from './supabase.js';
+import { STORE_NAME } from './store-scope.js';
 
 const X_CLIENT_ID = process.env.X_CLIENT_ID!;
 const X_CLIENT_SECRET = process.env.X_CLIENT_SECRET!;
@@ -11,12 +12,13 @@ const TOKEN_REFRESH_MARGIN_SEC = 600;
 const pkceStore = new Map<string, { verifier: string; createdAt: number }>();
 
 // Cleanup expired entries every 5 minutes
-setInterval(() => {
+const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, val] of pkceStore) {
     if (now - val.createdAt > 10 * 60 * 1000) pkceStore.delete(key);
   }
 }, 5 * 60 * 1000);
+cleanupTimer.unref();
 
 function base64UrlEncode(buffer: Buffer): string {
   return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -134,6 +136,7 @@ export async function getXCredentials(credentialId: string): Promise<{ accessTok
     .from('x_credential')
     .select('*')
     .eq('id', credentialId)
+    .eq('store', STORE_NAME)
     .single();
   if (error || !data) throw new Error('Credential not found: ' + credentialId);
 
@@ -156,7 +159,7 @@ export async function getXCredentials(credentialId: string): Promise<{ accessTok
       refresh_token: refreshed.refresh_token,
       token_expires_at: newExpiresAt,
       updated_at: new Date().toISOString(),
-    } as any).eq('id', credentialId);
+    } as any).eq('id', credentialId).eq('store', STORE_NAME);
 
     return { accessToken: refreshed.access_token };
   }
@@ -169,6 +172,7 @@ export async function getDefaultXCredentials(): Promise<{ id: string; accessToke
   const { data, error } = await supabase
     .from('x_credential')
     .select('*')
+    .eq('store', STORE_NAME)
     .eq('is_default', true)
     .eq('status', 'active')
     .single();

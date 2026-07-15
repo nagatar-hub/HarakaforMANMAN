@@ -32,6 +32,7 @@ function makeItem(overrides: Partial<OrderListItemRow> = {}): OrderListItemRow {
     match_method: 'existing_mapping',
     match_candidates: [],
     match_note: null,
+    selection_fingerprint: null,
     matched_at: '2026-07-14T00:00:00.000Z',
     created_at: '2026-07-14T00:00:00.000Z',
     updated_at: '2026-07-14T00:00:00.000Z',
@@ -41,19 +42,31 @@ function makeItem(overrides: Partial<OrderListItemRow> = {}): OrderListItemRow {
 
 describe('order-list sync helpers', () => {
   const originalImportId = process.env.ORDER_LIST_IMPORT_ID;
+  const originalRequestId = process.env.ORDER_LIST_SYNC_REQUEST_ID;
+  const originalRequestFingerprint = process.env.ORDER_LIST_SYNC_REQUEST_FINGERPRINT;
 
   afterEach(() => {
-    if (originalImportId === undefined) {
-      delete process.env.ORDER_LIST_IMPORT_ID;
-    } else {
-      process.env.ORDER_LIST_IMPORT_ID = originalImportId;
-    }
+    const restore = (name: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    };
+    restore('ORDER_LIST_IMPORT_ID', originalImportId);
+    restore('ORDER_LIST_SYNC_REQUEST_ID', originalRequestId);
+    restore('ORDER_LIST_SYNC_REQUEST_FINGERPRINT', originalRequestFingerprint);
   });
 
   it('ORDER_LIST_IMPORT_ID がなければDBへ接続する前に拒否する', async () => {
     delete process.env.ORDER_LIST_IMPORT_ID;
 
     await expect(runSync()).rejects.toThrow('ORDER_LIST_IMPORT_ID is required');
+  });
+
+  it('再同期の操作IDと内容指紋は必ず組で受け取る', async () => {
+    process.env.ORDER_LIST_IMPORT_ID = '550e8400-e29b-41d4-a716-446655440000';
+    process.env.ORDER_LIST_SYNC_REQUEST_ID = '650e8400-e29b-41d4-a716-446655440000';
+    delete process.env.ORDER_LIST_SYNC_REQUEST_FINGERPRINT;
+
+    await expect(runSync()).rejects.toThrow('must be provided together');
   });
 
   it('照合済み行を監査項目付き raw_import に変換する', () => {

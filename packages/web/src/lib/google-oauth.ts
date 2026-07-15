@@ -40,10 +40,12 @@ export interface EnvVars {
 
 const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
-const OAUTH_SCOPES = [
+// spreadsheets は read+write。Haraka DB シートへの append/update に書き込みが必要。
+const SHEET_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/drive.readonly',
 ].join(' ');
+const OPERATOR_OAUTH_SCOPES = 'openid email';
 const DEFAULT_BASE_URL = 'http://localhost:3001';
 
 // ---------------------------------------------------------------------------
@@ -59,15 +61,29 @@ const DEFAULT_BASE_URL = 'http://localhost:3001';
 export function buildAuthorizationUrl(params: {
   clientId: string;
   redirectUri: string;
+  state?: string;
+  mode?: 'sheet' | 'operator';
 }): string {
+  const mode = params.mode ?? 'sheet';
   const searchParams = new URLSearchParams({
     client_id: params.clientId,
     redirect_uri: params.redirectUri,
     response_type: 'code',
-    scope: OAUTH_SCOPES,
-    access_type: 'offline',
-    prompt: 'consent',
+    scope: mode === 'operator' ? OPERATOR_OAUTH_SCOPES : SHEET_OAUTH_SCOPES,
   });
+
+  // Sheet OAuth still needs a refresh token. Operator login only requests
+  // identity and must never request or persist offline access.
+  if (mode === 'sheet') {
+    searchParams.set('access_type', 'offline');
+    searchParams.set('prompt', 'consent');
+  } else {
+    searchParams.set('prompt', 'select_account');
+  }
+
+  if (params.state) {
+    searchParams.set('state', params.state);
+  }
 
   return `${GOOGLE_AUTH_ENDPOINT}?${searchParams.toString()}`;
 }
@@ -104,16 +120,64 @@ export function extractRefreshToken(
  * 必須環境変数の存在を検証し、値を返す。
  * 不足している場合は変数名を含むエラーメッセージを返す。
  */
-export function validateEnvVars(): Result<EnvVars> {
+export function validateEnvVars(headers?: Headers): Result<EnvVars> {
   const missing: string[] = [];
 
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const baseUrl =
-    process.env.NEXTAUTH_URL ?? DEFAULT_BASE_URL;
+  // The web UI and operator login intentionally share one Google OAuth client.
+  // GOOGLE_CLIENT_* remains a compatibility fallback for existing deployments.
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim()
+    || process.env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim()
+    || process.env.GOOGLE_CLIENT_SECRET?.trim();
 
-  if (!clientId) missing.push('GOOGLE_CLIENT_ID');
-  if (!clientSecret) missing.push('GOOGLE_CLIENT_SECRET');
+  // OAuth redirect_uri must come from a trusted configured origin in
+  // production. Forwarded headers are request-controlled in some proxy
+  // deployments, so they are considered only for localhost development.
+  let baseUrl = DEFAULT_BASE_URL;
+  const configuredBaseUrl = process.env.NEXTAUTH_URL?.trim();
+  if (configuredBaseUrl) {
+    try {
+      const parsed = new URL(configuredBaseUrl);
+      const isLocalhost = parsed.hostname === 'localhost'
+        || parsed.hostname === '127.0.0.1'
+        || parsed.hostname === '[::1]';
+      if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:')
+        || (parsed.protocol === 'http:' && !isLocalhost)
+        || parsed.username
+        || parsed.password
+        || parsed.pathname !== '/'
+        || parsed.search
+        || parsed.hash) {
+        throw new Error('untrusted OAuth base URL');
+      }
+      baseUrl = parsed.origin;
+    } catch {
+      return {
+        ok: false,
+        error: 'NEXTAUTH_URL must be a trusted HTTPS origin without a path, query, or hash',
+      };
+    }
+  } else if (process.env.NODE_ENV === 'production') {
+    missing.push('NEXTAUTH_URL');
+  } else if (headers) {
+    const host = headers.get('x-forwarded-host') || headers.get('host');
+    const proto = headers.get('x-forwarded-proto') || 'http';
+    if (host && (proto === 'http' || proto === 'https')) {
+      try {
+        const inferred = new URL(`${proto}://${host}`);
+        if (inferred.hostname === 'localhost'
+          || inferred.hostname === '127.0.0.1'
+          || inferred.hostname === '[::1]') {
+          baseUrl = inferred.origin;
+        }
+      } catch {
+        // Keep the fixed localhost default for malformed development headers.
+      }
+    }
+  }
+
+  if (!clientId) missing.push('GOOGLE_OAUTH_CLIENT_ID or GOOGLE_CLIENT_ID');
+  if (!clientSecret) missing.push('GOOGLE_OAUTH_CLIENT_SECRET or GOOGLE_CLIENT_SECRET');
 
   if (missing.length > 0) {
     return {

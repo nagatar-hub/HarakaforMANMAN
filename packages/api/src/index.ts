@@ -14,6 +14,7 @@ import { xCredentialRoutes } from './routes/x-credentials.js';
 import { postPlanRoutes } from './routes/post-plans.js';
 import { storeConfigRoutes } from './routes/store-config.js';
 import { orderListImportRoutes } from './routes/order-list-imports.js';
+import { STORE_NAME } from './lib/store-scope.js';
 
 const app = new Hono();
 
@@ -27,7 +28,13 @@ app.use('*', cors({
     return null;
   },
   credentials: true,
+  exposeHeaders: ['X-Haraka-Store'],
 }));
+
+app.use('*', async (c, next) => {
+  c.header('X-Haraka-Store', STORE_NAME);
+  await next();
+});
 
 app.route('/api', healthRoutes);
 app.route('/api', ruleRoutes);

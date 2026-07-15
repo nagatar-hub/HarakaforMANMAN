@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { createSupabaseClient } from '../lib/supabase.js';
+import { hasForbiddenFields, pickAllowedFields, STORE_NAME } from '../lib/store-scope.js';
 import type { Database } from '@haraka/shared';
 
 type RuleInsert = Database['public']['Tables']['rule']['Insert'];
@@ -7,7 +8,8 @@ type RuleUpdate = Database['public']['Tables']['rule']['Update'];
 
 export const ruleRoutes = new Hono();
 
-const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+const RULE_MUTABLE_FIELDS = ['franchise', 'tag_pattern', 'match_type', 'behavior', 'priority', 'notes', 'group_key'] as const;
+const RULE_FORBIDDEN_FIELDS = ['id', 'store', 'created_at'] as const;
 
 ruleRoutes.get('/rules', async (c) => {
   const supabase = createSupabaseClient();
@@ -17,27 +19,44 @@ ruleRoutes.get('/rules', async (c) => {
 });
 
 ruleRoutes.post('/rules', async (c) => {
-  const body = await c.req.json<RuleInsert>();
+  const body = await c.req.json<RuleInsert & Record<string, unknown>>();
+  if (hasForbiddenFields(body, RULE_FORBIDDEN_FIELDS)) {
+    return c.json({ error: 'id, store and created_at cannot be supplied' }, 400);
+  }
+  const insert = pickAllowedFields<RuleInsert & Record<string, unknown>>(body, RULE_MUTABLE_FIELDS);
   const supabase = createSupabaseClient();
-  const { data, error } = await supabase.from('rule').insert({ ...body, store: STORE_NAME }).select().single();
+  const { data, error } = await supabase.from('rule').insert({ ...insert, store: STORE_NAME } as RuleInsert).select().single();
   if (error) return c.json({ error: error.message }, 500);
   return c.json(data, 201);
 });
 
 ruleRoutes.patch('/rules/:id', async (c) => {
   const id = c.req.param('id');
-  const body = await c.req.json<RuleUpdate>();
+  const body = await c.req.json<RuleUpdate & Record<string, unknown>>();
+  if (hasForbiddenFields(body, RULE_FORBIDDEN_FIELDS)) {
+    return c.json({ error: 'id, store and created_at cannot be changed' }, 400);
+  }
+  const update = pickAllowedFields<RuleUpdate & Record<string, unknown>>(body, RULE_MUTABLE_FIELDS);
+  if (Object.keys(update).length === 0) return c.json({ error: 'No editable fields supplied' }, 400);
   const supabase = createSupabaseClient();
-  const { data, error } = await supabase.from('rule').update(body).eq('id', id).select().single();
+  const { data, error } = await supabase
+    .from('rule')
+    .update(update)
+    .eq('id', id)
+    .eq('store', STORE_NAME)
+    .select()
+    .maybeSingle();
   if (error) return c.json({ error: error.message }, 500);
+  if (!data) return c.json({ error: 'Rule not found' }, 404);
   return c.json(data);
 });
 
 ruleRoutes.delete('/rules/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = createSupabaseClient();
-  const { error } = await supabase.from('rule').delete().eq('id', id);
+  const { data, error } = await supabase.from('rule').delete().eq('id', id).eq('store', STORE_NAME).select('id').maybeSingle();
   if (error) return c.json({ error: error.message }, 500);
+  if (!data) return c.json({ error: 'Rule not found' }, 404);
   return c.json({ ok: true });
 });
 

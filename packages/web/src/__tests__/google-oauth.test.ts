@@ -54,7 +54,10 @@ describe('buildAuthorizationUrl', () => {
     const parsed = new URL(url);
 
     const scope = parsed.searchParams.get('scope')!;
+    // Haraka DB シートへの append/update（appendCardToDbSheet, updateDbSheetCell）に
+    // 書き込み権限が必要なため readonly ではなくフルスコープ。
     expect(scope).toContain('https://www.googleapis.com/auth/spreadsheets');
+    expect(scope).not.toContain('https://www.googleapis.com/auth/spreadsheets.readonly');
     expect(scope).toContain('https://www.googleapis.com/auth/drive.readonly');
   });
 
@@ -70,6 +73,23 @@ describe('buildAuthorizationUrl', () => {
     const parsed = new URL(url);
 
     expect(parsed.searchParams.get('prompt')).toBe('consent');
+  });
+
+  it('operator mode requests identity only and forces account selection', () => {
+    const url = buildAuthorizationUrl({
+      ...baseParams,
+      mode: 'operator',
+      state: 'signed-state',
+    });
+    const parsed = new URL(url);
+
+    expect(parsed.searchParams.get('scope')?.split(' ').sort()).toEqual([
+      'email',
+      'openid',
+    ]);
+    expect(parsed.searchParams.get('access_type')).toBeNull();
+    expect(parsed.searchParams.get('prompt')).toBe('select_account');
+    expect(parsed.searchParams.get('state')).toBe('signed-state');
   });
 });
 
@@ -102,7 +122,7 @@ describe('extractRefreshToken', () => {
       refresh_token: 'refresh-token-abc',
       expires_in: 3600,
       token_type: 'Bearer',
-      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
     };
 
     expect(extractRefreshToken(tokenResponse)).toBe('refresh-token-abc');
@@ -113,7 +133,7 @@ describe('extractRefreshToken', () => {
       access_token: 'access-token-xyz',
       expires_in: 3600,
       token_type: 'Bearer',
-      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
     };
 
     expect(extractRefreshToken(tokenResponse)).toBeNull();
@@ -125,6 +145,8 @@ describe('validateEnvVars', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    delete process.env.GOOGLE_OAUTH_CLIENT_ID;
+    delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
   });
 
   afterEach(() => {
@@ -146,6 +168,21 @@ describe('validateEnvVars', () => {
     }
   });
 
+  it('Web UI用Google OAuth clientをoperator loginでも共用する', () => {
+    delete process.env.GOOGLE_CLIENT_ID;
+    delete process.env.GOOGLE_CLIENT_SECRET;
+    process.env.GOOGLE_OAUTH_CLIENT_ID = 'web-client-id';
+    process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'web-client-secret';
+    process.env.NEXTAUTH_URL = 'https://app.example';
+
+    const result = validateEnvVars();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.clientId).toBe('web-client-id');
+      expect(result.value.clientSecret).toBe('web-client-secret');
+    }
+  });
   it('NEXTAUTH_URL がない場合はデフォルト値 http://localhost:3001 を使う', () => {
     process.env.GOOGLE_CLIENT_ID = 'client-id';
     process.env.GOOGLE_CLIENT_SECRET = 'client-secret';
@@ -157,6 +194,45 @@ describe('validateEnvVars', () => {
     if (result.ok) {
       expect(result.value.baseUrl).toBe('http://localhost:3001');
     }
+  });
+
+  it('設定済みNEXTAUTH_URLを優先し、転送ヘッダーでOAuth originを上書きしない', () => {
+    process.env.GOOGLE_CLIENT_ID = 'client-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'client-secret';
+    process.env.NEXTAUTH_URL = 'https://app.example';
+
+    const result = validateEnvVars(new Headers({
+      'x-forwarded-host': 'attacker.example',
+      'x-forwarded-proto': 'https',
+    }));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.baseUrl).toBe('https://app.example');
+  });
+
+  it('productionではNEXTAUTH_URL未設定を拒否する', () => {
+    process.env.GOOGLE_CLIENT_ID = 'client-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'client-secret';
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
+    delete process.env.NEXTAUTH_URL;
+
+    const result = validateEnvVars(new Headers({
+      'x-forwarded-host': 'attacker.example',
+      'x-forwarded-proto': 'https',
+    }));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('NEXTAUTH_URL');
+  });
+
+  it('path付きまたは平文リモートのNEXTAUTH_URLを拒否する', () => {
+    process.env.GOOGLE_CLIENT_ID = 'client-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'client-secret';
+    process.env.NEXTAUTH_URL = 'https://app.example/oauth';
+    expect(validateEnvVars()).toMatchObject({ ok: false });
+
+    process.env.NEXTAUTH_URL = 'http://app.example';
+    expect(validateEnvVars()).toMatchObject({ ok: false });
   });
 
   it('GOOGLE_CLIENT_ID がない場合はエラーを返す', () => {

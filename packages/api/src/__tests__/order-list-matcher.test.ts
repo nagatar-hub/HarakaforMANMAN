@@ -55,6 +55,26 @@ describe('matchOrderListRows', () => {
     assert.equal(result.mappingId, 'mapping-1');
   });
 
+  it('買取表対象外のExcel商品IDは画像・商品情報より先に除外する', () => {
+    const [result] = matchOrderListRows(
+      [row({ excelProductId: ' ＥＸＣＥＬ－１ ' })],
+      [dbCard({ image_url: 'https://excel.example/card.jpg' })],
+      [{
+        id: 'excluded-mapping',
+        franchise: 'Pokemon',
+        excel_product_id: 'excel-1',
+        db_card_id: 'db-1',
+        status: 'disabled',
+      }],
+    );
+
+    assert.equal(result.status, 'excluded');
+    assert.equal(result.method, null);
+    assert.equal(result.dbCardId, null);
+    assert.equal(result.mappingId, 'excluded-mapping');
+    assert.deepEqual(result.candidateDbCardIds, []);
+  });
+
   it('同一商材で画像URLが1件だけ完全一致すれば自動照合する', () => {
     const [result] = matchOrderListRows(
       [row({ imageUrl: 'https://fallback.example/card.jpg#preview' })],
@@ -130,7 +150,13 @@ describe('matchOrderListRows', () => {
     const [result] = matchOrderListRows(
       [row({ valid: false, validationIssues: [{ code: 'PRICE_REQUIRED' }] })],
       [dbCard({ image_url: 'https://excel.example/card.jpg' })],
-      [],
+      [{
+        id: 'excluded-mapping',
+        franchise: 'Pokemon',
+        excel_product_id: 'excel-1',
+        db_card_id: null,
+        status: 'disabled',
+      }],
     );
 
     assert.equal(result.status, 'invalid');

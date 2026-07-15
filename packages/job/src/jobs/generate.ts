@@ -65,7 +65,8 @@ function romanizeLabel(label: string): string {
 // メイン処理
 // ---------------------------------------------------------------------------
 
-const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 const FRANCHISE_STORAGE_SLUG: Record<string, string> = {
   Pokemon: 'pokemon',
@@ -122,29 +123,31 @@ export async function runGenerate() {
   const supabase = await createSupabaseClientFromSecrets();
   const t0 = Date.now();
   const requestedRunId = process.env.RUN_ID?.trim();
-
-  // ---- 1. 対象 run を取得 ----
-  // Web API から起動される場合は、API 側で先に running 化した RUN_ID を処理する。
-  const runQuery = supabase
-    .from('run')
-    .select('*')
-    .eq('store', STORE_NAME);
-  const { data: run, error: runFindError } = requestedRunId
-    ? await runQuery.eq('id', requestedRunId).maybeSingle<RunRow>()
-    : await runQuery
-      .eq('status', 'completed')
-      .order('started_at', { ascending: false })
-      .limit(1)
-      .maybeSingle<RunRow>();
-  if (runFindError || !run) {
-    const target = requestedRunId ? `RUN_ID=${requestedRunId}` : 'completed Run';
-    throw new Error(`${target} が見つかりません: ${runFindError?.message ?? 'not found'}`);
+  const expectedClaimToken = process.env.GENERATE_CLAIM_TOKEN?.trim();
+  if (!requestedRunId) throw new Error('RUN_ID is required');
+  if (!expectedClaimToken || !UUID_PATTERN.test(expectedClaimToken)) {
+    throw new Error(`RUN_ID=${requestedRunId} には有効な GENERATE_CLAIM_TOKEN が必須です`);
   }
-  console.log(`[generate] Run 使用: ${run.id}`);
 
-  // Run を再度 running に更新（generate フェーズ開始）
-  await supabase.from('run').update({ status: 'running' }).eq('id', run.id);
-
+  // ---- 1. API/watchdogが事前claimしたMANMAN Runへtoken一致で参加 ----
+  const leaseStartedAt = new Date().toISOString();
+  const { data: run, error: runFindError } = await supabase
+    .from('run')
+    .update({ generate_claimed_at: leaseStartedAt })
+    .eq('id', requestedRunId)
+    .eq('store', STORE_NAME)
+    .eq('status', 'running')
+    .eq('generate_claim_token', expectedClaimToken)
+    .not('plan_done_at', 'is', null)
+    .is('generate_done_at', null)
+    .select('*')
+    .maybeSingle<RunRow>();
+  if (runFindError || !run) {
+    throw new Error(
+      `RUN_ID=${requestedRunId} の画像生成claimを確認できません: ${runFindError?.message ?? 'claim mismatch or run is not eligible'}`,
+    );
+  }
+  console.log(`[generate] Run claim参加: ${run.id}`);
   // 日付ベースのストレージパス
   const jstDate = getJstDateParts();
   const datePath = `${jstDate.year}/${jstDate.month}/${jstDate.day}`;
@@ -612,13 +615,29 @@ export async function runGenerate() {
       console.log(`[generate]   ${franchise} 完了: ${Date.now() - tFranchise}ms`);
     }
 
-    // ---- 5. Run 完了更新 ----
-    await supabase.from('run').update({
-      total_pages: totalPages,
-      generate_done_at: new Date().toISOString(),
-      status: 'completed',
-      completed_at: new Date().toISOString(),
-    }).eq('id', run.id);
+    // ---- 5. Run 完了更新（claim token一致時だけ） ----
+    const completedAt = new Date().toISOString();
+    const { data: completedRun, error: completionError } = await supabase
+      .from('run')
+      .update({
+        total_pages: totalPages,
+        generate_done_at: completedAt,
+        generate_claimed_at: null,
+        generate_claim_token: null,
+        status: 'completed',
+        completed_at: completedAt,
+        error_message: null,
+      })
+      .eq('id', run.id)
+      .eq('store', STORE_NAME)
+      .eq('status', 'running')
+      .eq('generate_claim_token', expectedClaimToken)
+      .is('generate_done_at', null)
+      .select('id')
+      .maybeSingle();
+    if (completionError || !completedRun) {
+      throw new Error(`Run画像生成完了更新を拒否しました（claim不一致）: ${completionError?.message ?? run.id}`);
+    }
 
     await clearProgress(supabase, run.id);
 
@@ -655,11 +674,30 @@ export async function runGenerate() {
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await supabase.from('run').update({
-      status: 'failed',
-      error_message: message,
-    }).eq('id', run.id);
-    await clearProgress(supabase, run.id);
+    const failedAt = new Date().toISOString();
+    const { data: failedRun, error: failureStateError } = await supabase
+      .from('run')
+      .update({
+        status: 'failed',
+        error_message: message,
+        completed_at: failedAt,
+        generate_claimed_at: null,
+        generate_claim_token: null,
+      })
+      .eq('id', run.id)
+      .eq('store', STORE_NAME)
+      .eq('status', 'running')
+      .eq('generate_claim_token', expectedClaimToken)
+      .is('generate_done_at', null)
+      .select('id')
+      .maybeSingle();
+    if (failureStateError) {
+      console.error(`[generate] Run失敗状態更新失敗: ${failureStateError.message}`);
+    } else if (!failedRun) {
+      console.warn(`[generate] 古いclaimからのRun失敗更新を拒否: ${run.id}`);
+    } else {
+      await clearProgress(supabase, run.id);
+    }
 
     // Discord 通知: 失敗
     await sendDiscordNotification({

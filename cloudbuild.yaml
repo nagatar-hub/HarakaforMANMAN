@@ -18,7 +18,7 @@ steps:
       - '--no-cpu-throttling'
       - '--timeout=300'
       - '--memory=1Gi'
-      - '--update-env-vars=STORE_NAME=manman'
+      - '--update-env-vars=STORE_NAME=manman,GENERATE_JOB_NAME=haraka-manman-generate,ORDER_LIST_SYNC_JOB_NAME=haraka-manman-sync,NEXT_PUBLIC_APP_URL=https://harakafor-manman-web.vercel.app'
 
   # ---- Job イメージ ----
   - name: 'gcr.io/cloud-builders/docker'
@@ -39,6 +39,8 @@ steps:
       - '--region=asia-northeast1'
       - '--task-timeout=1800'
       - '--memory=2Gi'
+      - '--tasks=1'
+      - '--parallelism=1'
       - '--update-env-vars=JOB_NAME=sync,STORE_NAME=manman'
 
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -52,6 +54,8 @@ steps:
       - '--region=asia-northeast1'
       - '--task-timeout=3600'
       - '--memory=2Gi'
+      - '--tasks=1'
+      - '--parallelism=1'
       - '--update-env-vars=JOB_NAME=generate,STORE_NAME=manman'
 
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -65,6 +69,8 @@ steps:
       - '--region=asia-northeast1'
       - '--task-timeout=5400'
       - '--memory=2Gi'
+      - '--tasks=1'
+      - '--parallelism=1'
       - '--update-env-vars=JOB_NAME=watchdog,TRIGGER=watchdog,STORE_NAME=manman'
 
 images:

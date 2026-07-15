@@ -1,0 +1,30 @@
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  OPERATOR_SESSION_COOKIE,
+  operatorAuthSecretFromEnv,
+  operatorEmailAllowlistFromEnv,
+  verifyOperatorSession,
+} from '@/lib/operator-auth';
+
+export async function middleware(request: NextRequest): Promise<NextResponse> {
+  const secretResult = operatorAuthSecretFromEnv();
+  const session = request.cookies.get(OPERATOR_SESSION_COOKIE)?.value;
+  if (secretResult.ok && session) {
+    const verified = await verifyOperatorSession({
+      session,
+      secret: secretResult.value,
+    });
+    if (verified.ok && operatorEmailAllowlistFromEnv().has(verified.value.email)) {
+      return NextResponse.next();
+    }
+  }
+
+  const loginUrl = new URL('/api/auth/google', request.url);
+  loginUrl.searchParams.set('target', 'operator');
+  loginUrl.searchParams.set('return_to', `${request.nextUrl.pathname}${request.nextUrl.search}`);
+  return NextResponse.redirect(loginUrl);
+}
+
+export const config = {
+  matcher: ['/runs/:path*'],
+};

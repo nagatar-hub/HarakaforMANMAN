@@ -46,6 +46,8 @@ const FRANCHISE_STORAGE_SLUG: Record<string, string> = {
   'YU-GI-OH!': 'yugioh',
 };
 
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+
 const BOX_TEMPLATE_DRIVE_ID: Record<string, string> = {
   Pokemon: '1ZiS1Xci3Dlc5i9SJrYoEEUUwiRuCzjZk',
   'ONE PIECE': '1RiAdjVUyDhpJyb8YxmZsZdSh6PxxEeHy',
@@ -91,34 +93,60 @@ function getJstDateParts(date = new Date()) {
   };
 }
 
+async function findOwnedPageRunId(
+  supabase: Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>,
+  pageId: string,
+): Promise<string> {
+  const { data: page, error: pageError } = await supabase
+    .from('generated_page')
+    .select('run_id')
+    .eq('id', pageId)
+    .maybeSingle<{ run_id: string }>();
+  if (pageError || !page) throw new Error(`ページが見つかりません: ${pageError?.message ?? '該当なし'}`);
+
+  const { data: run, error: runError } = await supabase
+    .from('run')
+    .select('id')
+    .eq('id', page.run_id)
+    .eq('store', STORE_NAME)
+    .maybeSingle<{ id: string }>();
+  if (runError || !run) throw new Error(`この店舗のページではありません: ${runError?.message ?? pageId}`);
+  return run.id;
+}
+
 export async function runRegeneratePage() {
   const pageId = process.env.PAGE_ID;
   if (!pageId) throw new Error('PAGE_ID が未設定です');
 
   const supabase = await createSupabaseClientFromSecrets();
   console.log(`[regenerate-page] ページ再生成開始: ${pageId}`);
+  const ownedRunId = await findOwnedPageRunId(supabase, pageId);
 
   try {
-    await _runRegeneratePage(supabase, pageId);
+    await _runRegeneratePage(supabase, pageId, ownedRunId);
   } catch (err) {
     // 失敗時: status は 'generated' を維持（ギャラリーから消えないように）し、error_message に記録
     const errMsg = err instanceof Error ? err.message : String(err);
     await supabase.from('generated_page').update({
       status: 'generated',
       error_message: `再生成失敗: ${errMsg}`,
-    }).eq('id', pageId);
+    }).eq('id', pageId).eq('run_id', ownedRunId);
     throw err;
   }
 }
 
-async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>, pageId: string) {
-  const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+async function _runRegeneratePage(
+  supabase: Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>,
+  pageId: string,
+  ownedRunId: string,
+) {
 
   // ---- 1. ページ情報取得 ----
   const { data: page, error: pageErr } = await supabase
     .from('generated_page')
     .select('*')
     .eq('id', pageId)
+    .eq('run_id', ownedRunId)
     .single<GeneratedPageRow>();
 
   if (pageErr || !page) throw new Error(`ページが見つかりません: ${pageErr?.message}`);
@@ -132,8 +160,23 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
 
   if (cardErr) throw new Error(`カード取得失敗: ${cardErr.message}`);
 
-  // card_ids の順序を保持
+  // 別Runから追加したカードも許可するが、共有DB上の他店舗カードは拒否する。
   const cardMap = new Map((cards || []).map(c => [c.id, c]));
+  const expectedCardCount = new Set(page.card_ids).size;
+  if (cardMap.size !== expectedCardCount) throw new Error('ページ内カードの一部が見つかりません');
+  const cardRunIds = [...new Set((cards || []).map(card => card.run_id))];
+  if (cardRunIds.length > 0) {
+    const { data: ownedCardRuns, error: cardRunError } = await supabase
+      .from('run')
+      .select('id')
+      .in('id', cardRunIds)
+      .eq('store', STORE_NAME);
+    if (cardRunError || (ownedCardRuns?.length ?? 0) !== cardRunIds.length) {
+      throw new Error(`他店舗のカードを含むページは再生成できません: ${cardRunError?.message ?? pageId}`);
+    }
+  }
+
+  // card_ids の順序を保持
   const orderedCards = page.card_ids.map(id => cardMap.get(id)!).filter(Boolean);
   const psa10DiscountRates = await loadPsa10DiscountRates(supabase, STORE_NAME);
   const orderedCardsWithCurrentPrices = applyCurrentPsa10DiscountRates(orderedCards, psa10DiscountRates);
@@ -158,6 +201,7 @@ async function _runRegeneratePage(supabase: Awaited<ReturnType<typeof createSupa
       .from('layout_template')
       .select('*')
       .eq('id', page.layout_template_id)
+      .eq('store', STORE_NAME)
       .single<LayoutTemplateRow>();
     if (layoutErr || !layoutRow) throw new Error(`layout_template 取得失敗: ${layoutErr?.message ?? '該当なし'}`);
     layoutTemplate = layoutRow;

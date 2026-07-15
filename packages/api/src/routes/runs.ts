@@ -2,10 +2,25 @@ import { Hono } from 'hono';
 import { createSupabaseClient } from '../lib/supabase.js';
 import { updateDbSheetCell } from '../lib/haraka-db-sheet.js';
 import { executeCloudRunJob } from '../lib/cloud-run-jobs.js';
+import { isDefinitiveCloudRunJobRejection } from '../lib/cloud-run-errors.js';
+import {
+  claimGenerateRun,
+  createSupabaseGenerateRunClaimStore,
+  GenerateRunClaimError,
+  parseGenerateRunRequest,
+} from '../lib/generate-run-claim.js';
+import { authorizeInternalApiRequest } from '../lib/internal-api-auth.js';
 
 export const runRoutes = new Hono();
 
 const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+const GENERATE_JOB_NAME = process.env.GENERATE_JOB_NAME?.trim() || 'haraka-manman-generate';
+
+export function redactGenerateClaimToken(run: Record<string, unknown>): Record<string, unknown> {
+  const publicRun = { ...run };
+  delete publicRun.generate_claim_token;
+  return publicRun;
+}
 
 async function findRunInStore(
   supabase: ReturnType<typeof createSupabaseClient>,
@@ -30,7 +45,7 @@ runRoutes.get('/runs', async (c) => {
     .order('started_at', { ascending: false })
     .limit(limit);
   if (error) return c.json({ error: error.message }, 500);
-  return c.json(data);
+  return c.json((data ?? []).map((run) => redactGenerateClaimToken(run)));
 });
 
 /** 特定ランの詳細 */
@@ -53,7 +68,7 @@ runRoutes.get('/runs/:id', async (c) => {
     .eq('run_id', id)
     .eq('status', 'generated');
 
-  return c.json({ ...data, generated_page_count: count });
+  return c.json({ ...redactGenerateClaimToken(data), generated_page_count: count });
 });
 
 runRoutes.post('/jobs/sync', (c) => c.json({
@@ -61,90 +76,88 @@ runRoutes.post('/jobs/sync', (c) => c.json({
 }, 410));
 
 runRoutes.post('/jobs/generate', async (c) => {
+  const auth = authorizeInternalApiRequest(c.req.header('authorization'));
+  if (auth === 'misconfigured') {
+    return c.json({ error: '画像生成APIの認証設定がありません' }, 503);
+  }
+  if (auth !== 'authorized') {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  let payload: unknown = {};
+  if ((c.req.header('content-type') ?? '').toLowerCase().includes('application/json')) {
+    try {
+      payload = await c.req.json<unknown>();
+    } catch {
+      return c.json({ error: '画像生成リクエストのJSONが正しくありません' }, 400);
+    }
+  }
+  const parsed = parseGenerateRunRequest(payload);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+
   const supabase = createSupabaseClient();
-  let claimedRunId: string | null = null;
+  const claimStore = createSupabaseGenerateRunClaimStore(supabase, STORE_NAME);
+  let claim: Awaited<ReturnType<typeof claimGenerateRun>>;
+  try {
+    claim = await claimGenerateRun(claimStore, parsed.runId);
+  } catch (error) {
+    if (error instanceof GenerateRunClaimError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    return c.json({
+      error: '画像生成対象Runの確保に失敗しました',
+      detail: error instanceof Error ? error.message : String(error),
+    }, 500);
+  }
+  const runId = claim.id;
 
   try {
-    const { data: runningRun, error: runningError } = await supabase
-      .from('run')
-      .select('id')
-      .eq('store', STORE_NAME)
-      .eq('status', 'running')
-      .limit(1)
-      .maybeSingle();
-    if (runningError) {
-      return c.json({ error: `Running run lookup failed: ${runningError.message}` }, 500);
-    }
-    if (runningRun) {
-      return c.json({ error: 'すでに画像生成または同期が起動中です。', run_id: runningRun.id }, 409);
-    }
-
-    const { data: latestRun, error: lookupError } = await supabase
-      .from('run')
-      .select('id')
-      .eq('store', STORE_NAME)
-      .eq('status', 'completed')
-      .order('started_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (lookupError) {
-      return c.json({ error: `Run lookup failed: ${lookupError.message}` }, 500);
-    }
-    if (!latestRun) {
-      return c.json({ error: 'completed Run が見つかりません。先に sync を実行してください。' }, 400);
-    }
-
-    const { data: claimedRun, error: claimError } = await supabase
-      .from('run')
-      .update({
-        status: 'running',
-        error_message: null,
-        generate_done_at: null,
-        completed_at: null,
-        progress_current: 0,
-        progress_total: 0,
-        progress_message: '画像生成ジョブ起動中...',
-      })
-      .eq('id', latestRun.id)
-      .eq('store', STORE_NAME)
-      .eq('status', 'completed')
-      .select('id')
-      .maybeSingle();
-    if (claimError) {
-      return c.json({ error: `Run claim failed: ${claimError.message}` }, 500);
-    }
-    if (!claimedRun) {
-      return c.json({ error: 'すでに画像生成または同期が起動中です。', run_id: latestRun.id }, 409);
-    }
-    claimedRunId = claimedRun.id;
-
-    const { operationName, executionName } = await executeCloudRunJob('haraka-manman-generate', {
-      env: { RUN_ID: claimedRunId, TRIGGER: 'web-ui', STORE_NAME },
+    const { operationName, executionName } = await executeCloudRunJob(GENERATE_JOB_NAME, {
+      env: {
+        RUN_ID: runId,
+        GENERATE_CLAIM_TOKEN: claim.generate_claim_token,
+        TRIGGER: 'web-ui',
+        STORE_NAME,
+      },
     });
     return c.json({
       status: 'triggered',
       job: 'generate',
-      run_id: claimedRunId,
+      run_id: runId,
       operation: operationName,
       execution: executionName,
     });
   } catch (err) {
-    if (claimedRunId) {
-      await supabase.from('run').update({
-        status: 'failed',
-        error_message: `画像生成ジョブ起動失敗: ${err instanceof Error ? err.message : String(err)}`,
-        completed_at: new Date().toISOString(),
-        progress_current: 0,
-        progress_total: 0,
-        progress_message: null,
-      })
-        .eq('id', claimedRunId)
-        .eq('store', STORE_NAME);
+    const definitiveRejection = isDefinitiveCloudRunJobRejection(err);
+    let claimReleased = false;
+    let releaseError: string | null = null;
+    if (definitiveRejection) {
+      try {
+        claimReleased = await claimStore.releaseUnstarted(
+          runId,
+          claim.generate_claim_token,
+          claim.generate_claimed_at,
+        );
+      } catch (releaseFailure) {
+        releaseError = releaseFailure instanceof Error
+          ? releaseFailure.message
+          : String(releaseFailure);
+      }
     }
-    return c.json({ error: `Failed to trigger: ${(err as Error).message}` }, 500);
+    return c.json({
+      error: definitiveRejection
+        ? claimReleased
+          ? '画像生成ジョブは開始されませんでした。もう一度お試しください'
+          : '画像生成の状態が変わったため、実行履歴を更新してください'
+        : '画像生成ジョブの起動結果を確認できませんでした。二重起動防止のため再実行せず、実行履歴を確認してください',
+      detail: err instanceof Error ? err.message : String(err),
+      run_id: runId,
+      launch_pending: !definitiveRejection,
+      retryable: claimReleased,
+      ...(releaseError ? { state_error: releaseError } : {}),
+    }, 502);
   }
 });
-
 /** 指定 run のタグなしカード一覧 */
 runRoutes.get('/runs/:id/untagged-cards', async (c) => {
   const id = c.req.param('id');
@@ -356,6 +369,7 @@ runRoutes.post('/runs/:id/fix-image', async (c) => {
   let query = supabase
     .from('db_card')
     .select('id, sheet_row_number')
+    .eq('store', STORE_NAME)
     .eq('franchise', card.franchise)
     .eq('card_name', card.card_name);
 
@@ -366,7 +380,7 @@ runRoutes.post('/runs/:id/fix-image', async (c) => {
 
   if (dbCards && dbCards.length > 0) {
     const dbCard = dbCards[0];
-    await supabase.from('db_card').update({ alt_image_url: new_url, image_status: 'fallback' }).eq('id', dbCard.id);
+    await supabase.from('db_card').update({ alt_image_url: new_url, image_status: 'fallback' }).eq('id', dbCard.id).eq('store', STORE_NAME);
 
     // シート書き戻し（非同期、エラーは無視）
     if (dbCard.sheet_row_number) {

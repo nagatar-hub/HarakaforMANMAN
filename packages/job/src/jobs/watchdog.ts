@@ -1,63 +1,172 @@
 /**
- * Watchdog ジョブ — 朝9時ジョブの実行監視＋自動リトライ
+ * Watchdog ジョブ — 満満のオーダーリスト画像生成を監視し、安全に再実行する。
  *
- * 1 Run を 2 Task が共有する Tasks 並列モデルでは、kind 別に
- * postal_done_at / store_done_at を見て片寄り未完 / 両方未完を判定する。
- * リトライは Cloud Run Jobs API 経由で haraka-generate を再実行する。
+ * 画像生成は 1 Run / 1 Task。generate_claim_token を fencing token として使い、
+ * 同じ Run の二重起動を防ぐ。Oripark の Run は一切参照・更新しない。
  */
 
+import { randomUUID } from 'node:crypto';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import { runCloudRunJob, fetchMetadataAccessToken } from '../lib/cloud-run.js';
 
 import type { Database } from '@haraka/shared';
 
-type RunRow = Database['public']['Tables']['run']['Row'] & {
-  postal_done_at: string | null;
-  store_done_at: string | null;
+type RunRow = Database['public']['Tables']['run']['Row'];
+type ClaimedRun = Pick<RunRow, 'id' | 'generate_claimed_at' | 'generate_claim_token'>;
+type Supabase = Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>;
+
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+const JOB_NAME = process.env.GENERATE_JOB_NAME?.trim() || 'haraka-manman-generate';
+export const GENERATE_CLAIM_LEASE_MS = 75 * 60 * 1000;
+
+export function isStaleGenerateClaim(
+  run: Pick<RunRow, 'status' | 'generate_done_at' | 'generate_claimed_at'>,
+  now: Date,
+): boolean {
+  if (run.status !== 'running' || run.generate_done_at || !run.generate_claimed_at) return false;
+  const claimedAt = Date.parse(run.generate_claimed_at);
+  return Number.isFinite(claimedAt) && now.getTime() - claimedAt >= GENERATE_CLAIM_LEASE_MS;
+}
+
+function isFreshClaim(run: RunRow, now: Date): boolean {
+  return Boolean(run.generate_claim_token && run.generate_claimed_at && !isStaleGenerateClaim(run, now));
+}
+
+async function claimGenerateRun(
+  supabase: Supabase,
+  run: RunRow,
+  now: Date,
+): Promise<ClaimedRun | null> {
+  const claimedAt = now.toISOString();
+  const claimToken = randomUUID();
+  let query = supabase
+    .from('run')
+    .update({
+      status: 'running',
+      error_message: null,
+      generate_claimed_at: claimedAt,
+      generate_claim_token: claimToken,
+    })
+    .eq('id', run.id)
+    .eq('store', STORE_NAME)
+    .not('plan_done_at', 'is', null)
+    .is('generate_done_at', null);
+
+  if (run.status === 'running') {
+    query = query.eq('status', 'running');
+    query = run.generate_claim_token
+      ? query.eq('generate_claim_token', run.generate_claim_token)
+      : query.is('generate_claim_token', null);
+    query = run.generate_claimed_at
+      ? query.eq('generate_claimed_at', run.generate_claimed_at)
+      : query.is('generate_claimed_at', null);
+  } else {
+    query = query.in('status', ['completed', 'failed']);
+  }
+
+  const { data, error } = await query
+    .select('id, generate_claimed_at, generate_claim_token')
+    .maybeSingle<ClaimedRun>();
+  if (error) throw new Error(`画像生成Runのclaimに失敗しました: ${error.message}`);
+  return data;
+}
+
+async function launchGenerate(run: ClaimedRun): Promise<void> {
+  if (!run.generate_claim_token) throw new Error('画像生成claim tokenが保存されていません');
+  await runCloudRunJob({
+    jobName: JOB_NAME,
+    taskCount: 1,
+    containerOverrides: [{
+      env: [
+        { name: 'RUN_ID', value: run.id },
+        { name: 'GENERATE_CLAIM_TOKEN', value: run.generate_claim_token },
+        { name: 'STORE_NAME', value: STORE_NAME },
+      ],
+    }],
+    tokenFetcher: fetchMetadataAccessToken,
+  });
+}
+
+type GlobalRecoveryResult = {
+  handledRunIds: Set<string>;
+  launchErrors: unknown[];
 };
 
-const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
-const JOB_NAME = process.env.GENERATE_JOB_NAME?.trim() || 'haraka-manman-generate';
-
 /**
- * Cloud Run Jobs Admin API の `containerOverrides[]` は **タスク別ではなくコンテナ別** override。
- * したがって両 kind retry は taskCount=2 + RUN_ID broadcast（KIND は CLOUD_RUN_TASK_INDEX が決める）、
- * 単 kind retry は taskCount=1 + KIND 明示、と分岐する必要がある。
+ * 日付やorder_list_import_idに依存せず、全期間の期限切れgeneration claimを回収する。
+ * store + old token + old claimed_at のCAS後にだけ再起動する。
  */
-async function retryGenerate(runId: string, missingKinds: Array<'postal' | 'store'>): Promise<void> {
-  if (missingKinds.length === 2) {
-    await runCloudRunJob({
-      jobName: JOB_NAME,
-      taskCount: 2,
-      containerOverrides: [{ env: [{ name: 'RUN_ID', value: runId }] }],
-      tokenFetcher: fetchMetadataAccessToken,
-    });
-  } else {
-    const kind = missingKinds[0];
-    await runCloudRunJob({
-      jobName: JOB_NAME,
-      taskCount: 1,
-      containerOverrides: [{ env: [
-        { name: 'KIND', value: kind },
-        { name: 'RUN_ID', value: runId },
-      ] }],
-      tokenFetcher: fetchMetadataAccessToken,
-    });
+async function recoverGlobalStaleGenerationClaims(
+  supabase: Supabase,
+  now: Date,
+): Promise<GlobalRecoveryResult> {
+  const staleBefore = new Date(now.getTime() - GENERATE_CLAIM_LEASE_MS).toISOString();
+  const handledRunIds = new Set<string>();
+  const launchErrors: unknown[] = [];
+  const { data: staleRuns, error } = await supabase
+    .from('run')
+    .select('*')
+    .eq('store', STORE_NAME)
+    .eq('status', 'running')
+    .not('plan_done_at', 'is', null)
+    .is('generate_done_at', null)
+    .not('generate_claimed_at', 'is', null)
+    .lte('generate_claimed_at', staleBefore)
+    .order('generate_claimed_at', { ascending: true })
+    .returns<RunRow[]>();
+  if (error) throw new Error(`stale generate claim検索失敗: ${error.message}`);
+
+  for (const staleRun of staleRuns || []) {
+    if (!isStaleGenerateClaim(staleRun, now)) continue;
+    const claimedRun = await claimGenerateRun(supabase, staleRun, now);
+    if (!claimedRun) {
+      console.log(`[watchdog] stale claimは別プロセスが更新済み (run_id=${staleRun.id})`);
+      continue;
+    }
+    handledRunIds.add(staleRun.id);
+
+    try {
+      await launchGenerate(claimedRun);
+      await sendDiscordNotification({
+        title: '🟢 ウォッチドッグ: stale Run再起動成功',
+        description: `Run ${staleRun.id} の画像生成を単一タスクで再起動しました。`,
+        color: COLOR.SUCCESS,
+      });
+    } catch (launchError) {
+      // 起動結果が不明でもジョブだけ開始済みの可能性があるため、renew済みclaimを維持する。
+      launchErrors.push(launchError);
+      const message = launchError instanceof Error ? launchError.message : String(launchError);
+      await sendDiscordNotification({
+        title: '🔴 ウォッチドッグ: stale Run再起動結果不明',
+        description: `二重起動防止のためclaimを維持します。Run ${staleRun.id}\n${message.substring(0, 500)}`,
+        color: COLOR.ERROR,
+      });
+    }
   }
+
+  return { handledRunIds, launchErrors };
 }
 
 export async function runWatchdog() {
   const supabase = await createSupabaseClientFromSecrets();
+  const now = new Date();
+
+  // 日次検索より先に、全期間のstale claimを回収する。
+  const globalRecovery = await recoverGlobalStaleGenerationClaims(supabase, now);
+  if (globalRecovery.launchErrors.length > 0) throw globalRecovery.launchErrors[0];
+  if (process.env.WATCHDOG_MODE?.trim().toLowerCase() === 'recovery') {
+    console.log('[watchdog] recovery-only完了');
+    return;
+  }
 
   // 本日 00:00 JST を計算
-  const now = new Date();
   const jstOffset = 9 * 60 * 60 * 1000;
   const todayJST = new Date(now.getTime() + jstOffset);
   todayJST.setUTCHours(0, 0, 0, 0);
   const todayStart = new Date(todayJST.getTime() - jstOffset);
 
-  console.log(`[watchdog] 本日のオーダーリスト Run を検索 (since ${todayStart.toISOString()})`);
+  console.log(`[watchdog] 本日の${STORE_NAME}オーダーリストRunを検索 (since ${todayStart.toISOString()})`);
 
   const { data: runs, error: runsError } = await supabase
     .from('run')
@@ -70,89 +179,81 @@ export async function runWatchdog() {
 
   if (runsError) throw new Error(`run テーブル検索失敗: ${runsError.message}`);
 
-  // 正常: 両 kind 完了
-  const normalRun = runs?.find(
-    (r) => r.status === 'completed' && r.generate_done_at && r.postal_done_at && r.store_done_at
-  );
-  if (normalRun) {
-    console.log(`[watchdog] 朝ジョブ正常完了確認済み (run_id=${normalRun.id})`);
-    return;
-  }
-
-  // 実行中の Run があれば待機
-  const runningRun = runs?.find((r) => r.status === 'running');
-  if (runningRun) {
-    console.log(`[watchdog] ジョブ実行中 (run_id=${runningRun.id}), スキップ`);
-    await sendDiscordNotification({
-      title: '⏳ ウォッチドッグ: ジョブ実行中',
-      description: `朝ジョブがまだ実行中です (run_id=${runningRun.id})。次回チェックまで待機します。`,
-      color: COLOR.WARNING,
-    });
-    return;
-  }
-
-  // 候補 Run（最新の completed/failed を採用、なければ最新）
   const targetRun = runs?.[0];
-
+  if (!targetRun && globalRecovery.handledRunIds.size > 0) {
+    console.log('[watchdog] global stale回復済みのため本日Run未生成通知をスキップ');
+    return;
+  }
+  if (targetRun && globalRecovery.handledRunIds.has(targetRun.id)) {
+    console.log(`[watchdog] global stale回復済みRunの日次処理をスキップ (run_id=${targetRun.id})`);
+    return;
+  }
   if (!targetRun) {
-    // Excel 取込は人が選択・確認する操作を伴うため、取込IDなしで Sync を
-    // 自動実行してはいけない。旧 KECAK 同期への暗黙フォールバックも行わない。
-    console.log('[watchdog] 朝の Run が未生成。オーダーリスト取込待ちとして停止');
+    console.log('[watchdog] 本日のRunなし。オーダーリスト取込待ちとして停止');
     await sendDiscordNotification({
       title: '⚠️ 本日のオーダーリスト未反映',
-      description: '本日の Run が見つかりません。管理画面でExcelを読み込み、内容を確認して反映してください。',
+      description: '本日のRunが見つかりません。管理画面でExcelを読み込み、内容を確認して反映してください。',
       color: COLOR.WARNING,
     });
     return;
   }
 
-  // 候補 Run があるが完了していない → 未完 kind を特定
-  const missingKinds: Array<'postal' | 'store'> = [];
-  if (!targetRun.postal_done_at) missingKinds.push('postal');
-  if (!targetRun.store_done_at) missingKinds.push('store');
+  if (targetRun.generate_done_at) {
+    console.log(`[watchdog] 画像生成完了確認済み (run_id=${targetRun.id})`);
+    return;
+  }
 
-  if (missingKinds.length === 0) {
-    // 両 kind 完了済みだが status が completed 以外。atomic finalizer の取りこぼし可能性
-    console.log(`[watchdog] 両 kind 完了済みだが status=${targetRun.status}, generate_done_at=${targetRun.generate_done_at ?? 'null'}. 手動確認を推奨`);
+  if (!targetRun.plan_done_at) {
+    console.log(`[watchdog] Runは画像生成準備前です (run_id=${targetRun.id}, status=${targetRun.status})`);
     await sendDiscordNotification({
-      title: '⚠️ ウォッチドッグ: 整合性異常',
-      description: `Run ${targetRun.id} は両 kind 完了済みですが status=${targetRun.status} のままです (generate_done_at=${targetRun.generate_done_at ?? 'null'})。手動確認を推奨します。`,
+      title: '⏳ ウォッチドッグ: 反映処理中',
+      description: `Run ${targetRun.id} はまだ画像生成準備前です。次回チェックまで待機します。`,
       color: COLOR.WARNING,
     });
     return;
   }
 
-  const failedRun = targetRun.status === 'failed' ? targetRun : undefined;
-
-  let reason: string;
-  if (failedRun) {
-    reason = `朝ジョブが失敗 (status=failed): ${failedRun.error_message?.substring(0, 200) ?? '不明'}`;
-  } else if (missingKinds.length === 2) {
-    reason = '両 kind とも未完了です';
-  } else {
-    reason = `kind=${missingKinds[0]} のみ未完了です（片寄り完了）`;
+  if (targetRun.status === 'running' && isFreshClaim(targetRun, now)) {
+    console.log(`[watchdog] 画像生成実行中 (run_id=${targetRun.id}), スキップ`);
+    await sendDiscordNotification({
+      title: '⏳ ウォッチドッグ: 画像生成中',
+      description: `Run ${targetRun.id} はまだ画像生成中です。claim期限までは再実行しません。`,
+      color: COLOR.WARNING,
+    });
+    return;
   }
 
-  console.log(`[watchdog] ${reason} → ${missingKinds.join(',')} を再キック`);
+  const claimedRun = await claimGenerateRun(supabase, targetRun, now);
+  if (!claimedRun) {
+    console.log(`[watchdog] 他の実行がRunを先にclaimしました (run_id=${targetRun.id})`);
+    return;
+  }
+
+  const retryReason = targetRun.status === 'running'
+    ? '期限切れの画像生成claimを再確保しました'
+    : `画像生成未完了を検知しました (status=${targetRun.status})`;
+  console.log(`[watchdog] ${retryReason}: run_id=${claimedRun.id}`);
 
   await sendDiscordNotification({
-    title: '⚠️ 朝ジョブ未完了検知',
-    description: `${reason}\n自動リトライを実行します（kind=${missingKinds.join(',')}）。`,
+    title: '⚠️ 画像生成未完了を検知',
+    description: `${retryReason}\n単一タスクで自動リトライします。`,
     color: COLOR.WARNING,
   });
 
   try {
-    await retryGenerate(targetRun.id, missingKinds);
+    await launchGenerate(claimedRun);
     await sendDiscordNotification({
-      title: '🟢 ウォッチドッグ: リトライキック成功',
-      description: `Run ${targetRun.id} の kind=${missingKinds.join(',')} を再キックしました。実行結果は Cloud Run Jobs 側の通知を待ちます。`,
+      title: '🟢 ウォッチドッグ: リトライ起動成功',
+      description: `Run ${claimedRun.id} の画像生成を再起動しました。`,
       color: COLOR.SUCCESS,
     });
   } catch (err) {
+    // Cloud Run APIの応答が失われてもジョブだけ起動している可能性があるため、
+    // claimは解除しない。75分後にのみ再claimできる。
     const message = err instanceof Error ? err.message : String(err);
     await sendDiscordNotification({
-      title: '🔴 ウォッチドッグ: リトライ失敗',
-      description: `自動リトライも失敗しました。手動対応が必要です。\n${message.substring(0, 500)}`,
+      title: '🔴 ウォッチドッグ: リトライ起動結果不明',
+      description: `二重起動防止のためclaimを維持します。手動確認してください。\n${message.substring(0, 500)}`,
       color: COLOR.ERROR,
     });
     throw err;

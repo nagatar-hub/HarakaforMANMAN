@@ -1,6 +1,6 @@
 import type { Franchise } from '@haraka/shared';
 
-export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'invalid';
+export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'excluded' | 'invalid';
 export type OrderListMatchMethod = 'existing_mapping' | 'exact_image' | 'exact_identity' | null;
 
 export type MatchableOrderListRow = {
@@ -150,8 +150,16 @@ export function matchOrderListRows<T extends MatchableOrderListRow>(
   const { dbCardById, identity, image } = buildIndexes(dbCards);
   const mappingByProduct = new Map<string, ExistingProductMapping>();
 
+  const excludedMappingByProduct = new Map<string, ExistingProductMapping>();
   for (const mapping of existingMappings) {
-    if (mapping.status === 'disabled' || !mapping.db_card_id) continue;
+    if (mapping.status === 'disabled') {
+      excludedMappingByProduct.set(
+        mappingKey(mapping.franchise, mapping.excel_product_id),
+        mapping,
+      );
+      continue;
+    }
+    if (!mapping.db_card_id) continue;
     mappingByProduct.set(
       mappingKey(mapping.franchise, mapping.excel_product_id),
       mapping,
@@ -168,6 +176,21 @@ export function matchOrderListRows<T extends MatchableOrderListRow>(
         mappingId: null,
         candidateDbCardIds: [],
         note: 'Excel行の検証エラーがあります',
+      };
+    }
+
+    const exclusion = excludedMappingByProduct.get(
+      mappingKey(row.franchise, row.excelProductId),
+    );
+    if (exclusion) {
+      return {
+        row,
+        status: 'excluded',
+        method: null,
+        dbCardId: null,
+        mappingId: exclusion.id,
+        candidateDbCardIds: [],
+        note: 'このExcel商品IDは買取表に載せない設定です',
       };
     }
 

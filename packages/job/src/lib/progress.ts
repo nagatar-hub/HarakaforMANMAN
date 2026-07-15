@@ -8,6 +8,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '@haraka/shared';
 
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+
 export async function updateProgress(
   supabase: SupabaseClient<Database>,
   runId: string,
@@ -19,7 +21,7 @@ export async function updateProgress(
     progress_current: current,
     progress_total: total,
     progress_message: message,
-  }).eq('id', runId);
+  }).eq('id', runId).eq('store', STORE_NAME);
 }
 
 export async function clearProgress(
@@ -30,5 +32,5 @@ export async function clearProgress(
     progress_current: 0,
     progress_total: 0,
     progress_message: null,
-  }).eq('id', runId);
+  }).eq('id', runId).eq('store', STORE_NAME);
 }

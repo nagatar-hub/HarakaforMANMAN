@@ -53,24 +53,23 @@ type RunUpdate = Database['public']['Tables']['run']['Update'];
 
 const PAGE_SIZE = 1000;
 const DB_CARD_QUERY_BATCH_SIZE = 200;
-const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const DEFAULT_POKEMON_BOX_SPREADSHEET_ID = '1xxIJ0Rbi90I_Bd2FhGVcu3cdlAcVAxl0x6wk5913vWw';
 const POKEMON_BOX_PRICE_RANGE = 'Database';
 
 type Supabase = Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>;
-function createOrderListLease(supabase: Supabase, importId: string) {
+function createOrderListLease(supabase: Supabase, importId: string, runId: string) {
   return startOrderListLease({
     renew: async (id, heartbeatAt) => {
-      const { data, error } = await supabase
-        .from('order_list_import')
-        .update({ heartbeat_at: heartbeatAt })
-        .eq('id', id)
-        .eq('store', STORE_NAME)
-        .eq('status', 'processing')
-        .select('id')
-        .maybeSingle();
-      if (error || !data) {
-        throw new Error(error?.message ?? 'processing import is no longer active');
+      const { data, error } = await supabase.rpc('renew_order_list_sync_lease', {
+        p_import_id: id,
+        p_run_id: runId,
+        p_heartbeat_at: heartbeatAt,
+      });
+      if (error || data !== true) {
+        throw new Error(error?.message ?? 'processing import or run is no longer active');
       }
     },
   }, importId);
@@ -212,6 +211,7 @@ async function fetchMappedDbCards(
     const { data, error } = await supabase
       .from('db_card')
       .select('*')
+      .eq('store', STORE_NAME)
       .in('id', batch)
       .returns<DbCardRow[]>();
     if (error) throw new Error(`db_card 取得失敗: ${error.message}`);
@@ -232,8 +232,19 @@ async function fetchMappedDbCards(
 
 export async function runSync(): Promise<void> {
   const orderListImportId = process.env.ORDER_LIST_IMPORT_ID?.trim();
+  const orderListSyncRequestId = process.env.ORDER_LIST_SYNC_REQUEST_ID?.trim() || null;
+  const orderListSyncRequestFingerprint = process.env.ORDER_LIST_SYNC_REQUEST_FINGERPRINT?.trim() || null;
   if (!orderListImportId) {
     throw new Error('ORDER_LIST_IMPORT_ID is required');
+  }
+  if (Boolean(orderListSyncRequestId) !== Boolean(orderListSyncRequestFingerprint)) {
+    throw new Error('ORDER_LIST_SYNC_REQUEST_ID and ORDER_LIST_SYNC_REQUEST_FINGERPRINT must be provided together');
+  }
+  if (orderListSyncRequestId && !UUID_PATTERN.test(orderListSyncRequestId)) {
+    throw new Error('ORDER_LIST_SYNC_REQUEST_ID must be a UUID');
+  }
+  if (orderListSyncRequestFingerprint && !SHA256_PATTERN.test(orderListSyncRequestFingerprint)) {
+    throw new Error('ORDER_LIST_SYNC_REQUEST_FINGERPRINT must be a SHA-256 hex digest');
   }
 
   const t0 = Date.now();
@@ -241,7 +252,7 @@ export async function runSync(): Promise<void> {
 
   // ---- 1. 確認済み取込を処理中へ確保（同一取込の二重実行を防ぐ） ----
   const processingStartedAt = new Date().toISOString();
-  const { data: orderListImport, error: claimError } = await supabase
+  const claimBase = supabase
     .from('order_list_import')
     .update({
       status: 'processing',
@@ -252,7 +263,15 @@ export async function runSync(): Promise<void> {
     })
     .eq('id', orderListImportId)
     .eq('store', STORE_NAME)
-    .eq('status', 'confirmed')
+    .eq('status', 'confirmed');
+  const claimQuery = orderListSyncRequestId && orderListSyncRequestFingerprint
+    ? claimBase
+      .eq('order_list_sync_request_id', orderListSyncRequestId)
+      .eq('order_list_sync_request_fingerprint', orderListSyncRequestFingerprint)
+    : claimBase
+      .is('order_list_sync_request_id', null)
+      .is('order_list_sync_request_fingerprint', null);
+  const { data: orderListImport, error: claimError } = await claimQuery
     .select('*')
     .single<OrderListImportRow>();
   if (claimError || !orderListImport) {
@@ -265,6 +284,8 @@ export async function runSync(): Promise<void> {
     .insert({
       triggered_by: process.env.TRIGGER || 'manual',
       order_list_import_id: orderListImport.id,
+      order_list_sync_request_id: orderListSyncRequestId,
+      order_list_sync_request_fingerprint: orderListSyncRequestFingerprint,
       store: STORE_NAME,
     })
     .select()
@@ -293,7 +314,7 @@ export async function runSync(): Promise<void> {
   }
   console.log(`[sync] Run 作成: ${run.id} / order_list_import=${orderListImport.id}`);
 
-  const lease = createOrderListLease(supabase, orderListImport.id);
+  const lease = createOrderListLease(supabase, orderListImport.id, run.id);
   try {
     await lease.renewNow();
     // ---- 3. Haraka DB 用 OAuth access token 取得 ----
@@ -352,13 +373,16 @@ export async function runSync(): Promise<void> {
     });
 
     const dbDataRows = allDbRows.slice(1);
-    const dbCardRows = buildDbCardRows(dbDataRows);
+    const dbCardRows = buildDbCardRows(dbDataRows).map((row) => ({
+      ...row,
+      store: STORE_NAME,
+    }));
     if (dbCardRows.length > 0) {
       await batchUpsert(
         supabase,
         'db_card',
         dbCardRows as unknown as Record<string, unknown>[],
-        'franchise,card_name,grade,list_no',
+        'store,franchise,card_name,grade,list_no',
       );
       console.log(`[sync] db_card upsert 完了: ${dbCardRows.length}件`);
     }

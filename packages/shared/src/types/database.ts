@@ -34,7 +34,7 @@ export type RuleMatchType = 'exact' | 'contains' | 'regex';
 export type RuleBehavior = 'isolate' | 'merge' | 'exclude' | 'group';
 export type OrderListFranchise = 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
 export type OrderListImportStatus = 'parsed' | 'confirmed' | 'processing' | 'applied' | 'failed';
-export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'invalid';
+export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'excluded' | 'invalid';
 export type OrderListMatchMethod = 'existing_mapping' | 'exact_image' | 'exact_identity' | 'manual';
 export type ExcelProductMappingStatus = 'active' | 'disabled';
 export type PriceSource = 'order_list' | 'kecak' | 'spectre' | 'manual';
@@ -72,6 +72,8 @@ export type RunRow = {
   triggered_by: string;
   status: RunStatus;
   order_list_import_id: string | null;
+  order_list_sync_request_id: string | null;
+  order_list_sync_request_fingerprint: string | null;
   total_imported: number;
   total_prepared: number;
   total_image_ng: number;
@@ -88,8 +90,18 @@ export type RunRow = {
   health_check_done_at: string | null;
   plan_done_at: string | null;
   generate_done_at: string | null;
+  generate_claimed_at: string | null;
+  generate_claim_token: string | null;
   completed_at: string | null;
   error_message: string | null;
+  postal_done_at: string | null;
+  store_done_at: string | null;
+  progress_postal_current: number;
+  progress_postal_total: number;
+  progress_postal_message: string | null;
+  progress_store_current: number;
+  progress_store_total: number;
+  progress_store_message: string | null;
 };
 
 export type RuleRow = {
@@ -211,6 +223,7 @@ export type AssetType = 'buylist' | 'banner';
 
 export type XCredentialRow = {
   id: string;
+  store: string;
   account_name: string;
   x_user_id: string | null;
   x_username: string | null;
@@ -226,6 +239,7 @@ export type XCredentialRow = {
 
 export type VariableRegistryRow = {
   id: string;
+  store: string;
   key: string;
   label: string;
   source: VariableSource;
@@ -238,6 +252,7 @@ export type VariableRegistryRow = {
 
 export type PostTemplateRow = {
   id: string;
+  store: string;
   name: string;
   franchise: string | null;
   header_template: string;
@@ -249,6 +264,7 @@ export type PostTemplateRow = {
 
 export type PostBannerRow = {
   id: string;
+  store: string;
   franchise: string | null;
   name: string;
   image_url: string;
@@ -259,6 +275,7 @@ export type PostBannerRow = {
 
 export type PostPlanRow = {
   id: string;
+  store: string;
   run_id: string | null;
   franchise: string;
   template_id: string | null;
@@ -313,6 +330,7 @@ export type GeneratedPageRow = {
 
 export type DbCardRow = {
   id: string;
+  store: string;
   franchise: string;
   tag: string | null;
   card_name: string;
@@ -348,9 +366,13 @@ export type OrderListImportRow = {
   matched_rows: number;
   unmatched_rows: number;
   ambiguous_rows: number;
+  excluded_rows: number;
   invalid_rows: number;
   duplicate_rows: number;
   error_summary: unknown;
+  confirmation_allow_unresolved: boolean | null;
+  order_list_sync_request_id: string | null;
+  order_list_sync_request_fingerprint: string | null;
   uploaded_by: string | null;
   confirmed_by: string | null;
   confirmed_at: string | null;
@@ -365,6 +387,7 @@ export type OrderListImportRow = {
 
 export type ExcelProductMappingRow = {
   id: string;
+  store: string;
   franchise: OrderListFranchise;
   excel_product_id: string;
   excel_product_key: string;
@@ -403,6 +426,7 @@ export type OrderListItemRow = {
   match_method: OrderListMatchMethod | null;
   match_candidates: unknown[];
   match_note: string | null;
+  selection_fingerprint: string | null;
   matched_at: string | null;
   created_at: string;
   updated_at: string;
@@ -441,8 +465,8 @@ export type Database = {
       };
       excel_product_mapping: {
         Row: ExcelProductMappingRow;
-        Insert: Pick<ExcelProductMappingRow, 'franchise' | 'excel_product_id'> &
-          Partial<Omit<ExcelProductMappingRow, 'id' | 'created_at' | 'franchise' | 'excel_product_id' | 'excel_product_key'>> & {
+        Insert: Pick<ExcelProductMappingRow, 'store' | 'franchise' | 'excel_product_id'> &
+          Partial<Omit<ExcelProductMappingRow, 'id' | 'created_at' | 'store' | 'franchise' | 'excel_product_id' | 'excel_product_key'>> & {
             id?: string;
             created_at?: string;
           };
@@ -606,7 +630,106 @@ export type Database = {
         };
         Returns: Record<string, unknown>;
       };
-      finalize_order_list_sync: {
+      resolve_order_list_item_selections: {
+        Args: {
+          p_import_id: string;
+          p_mappings: Array<{ item_id: string; db_card_id: string }>;
+          p_new_cards: Array<{
+            item_id: string;
+            card_name: string;
+            grade: string;
+            list_no: string;
+            tag: string;
+            alt_image_url: string | null;
+          }>;
+          p_allow_unresolved: boolean;
+        };
+        Returns: Record<string, unknown>;
+      };
+      confirm_order_list_import_selections: {
+        Args: {
+          p_import_id: string;
+          p_mappings: Array<{ item_id: string; db_card_id: string }>;
+          p_new_cards: Array<{
+            item_id: string;
+            card_name: string;
+            grade: string;
+            list_no: string;
+            tag: string;
+            alt_image_url: string | null;
+          }>;
+          p_allow_unresolved: boolean;
+        };
+        Returns: Record<string, unknown>;
+      };
+      renew_order_list_sync_lease: {
+        Args: {
+          p_import_id: string;
+          p_run_id: string;
+          p_heartbeat_at: string;
+        };
+        Returns: boolean;
+      };
+      resolve_order_list_item_exclusions: {
+        Args: {
+          p_import_id: string;
+          p_exclusions: Array<{ item_id: string }>;
+        };
+        Returns: Record<string, unknown>;
+      };
+      resolve_order_list_review_changes: {
+        Args: {
+          p_import_id: string;
+          p_mappings: Array<{ item_id: string; db_card_id: string }>;
+          p_new_cards: Array<{
+            item_id: string;
+            card_name: string;
+            grade: string;
+            list_no: string;
+            tag: string;
+            alt_image_url: string | null;
+          }>;
+          p_exclusions: Array<{ item_id: string }>;
+          p_allow_unresolved: boolean;
+        };
+        Returns: Record<string, unknown>;
+      };
+      confirm_order_list_import_review: {
+        Args: {
+          p_import_id: string;
+          p_mappings: Array<{ item_id: string; db_card_id: string }>;
+          p_new_cards: Array<{
+            item_id: string;
+            card_name: string;
+            grade: string;
+            list_no: string;
+            tag: string;
+            alt_image_url: string | null;
+          }>;
+          p_exclusions: Array<{ item_id: string }>;
+          p_allow_unresolved: boolean;
+        };
+        Returns: Record<string, unknown>;
+      };
+      queue_order_list_import_resync: {
+        Args: {
+          p_import_id: string;
+          p_request_id: string;
+          p_request_fingerprint: string;
+          p_mappings: Array<{ item_id: string; db_card_id: string }>;
+          p_new_cards: Array<{
+            item_id: string;
+            card_name: string;
+            grade: string;
+            list_no: string;
+            tag: string;
+            alt_image_url: string | null;
+          }>;
+          p_exclusions: Array<{ item_id: string }>;
+          p_allow_unresolved: boolean;
+        };
+        Returns: Record<string, unknown>;
+      };      finalize_order_list_sync: {
         Args: {
           p_import_id: string;
           p_run_id: string;

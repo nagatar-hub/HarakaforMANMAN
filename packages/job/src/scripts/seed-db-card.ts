@@ -10,6 +10,8 @@ import { getAccessToken } from '../lib/auth.js';
 import { batchUpsert } from '../lib/batch.js';
 import { buildDbCardRows } from '../lib/db-card-sync.js';
 
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+
 async function main() {
   console.log('[seed-db-card] 開始...');
 
@@ -31,7 +33,7 @@ async function main() {
   console.log(`[seed-db-card] DBタブ: ${dbDataRows.length}行取得`);
 
   // db_card 用データに変換
-  const dbCardRows = buildDbCardRows(dbDataRows);
+  const dbCardRows = buildDbCardRows(dbDataRows).map((row) => ({ ...row, store: STORE_NAME }));
   console.log(`[seed-db-card] 変換: ${dbCardRows.length}件`);
 
   if (dbCardRows.length > 0) {
@@ -39,7 +41,7 @@ async function main() {
       supabase,
       'db_card',
       dbCardRows as unknown as Record<string, unknown>[],
-      'franchise,card_name,grade,list_no',
+      'store,franchise,card_name,grade,list_no',
     );
     console.log(`[seed-db-card] upsert 完了: ${dbCardRows.length}件`);
   }
@@ -47,7 +49,8 @@ async function main() {
   // 確認クエリ
   const { count } = await supabase
     .from('db_card')
-    .select('*', { count: 'exact', head: true });
+    .select('*', { count: 'exact', head: true })
+    .eq('store', STORE_NAME);
   console.log(`[seed-db-card] db_card テーブル: ${count}件`);
 
   console.log('[seed-db-card] 完了');

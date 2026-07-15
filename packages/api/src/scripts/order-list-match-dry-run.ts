@@ -8,6 +8,7 @@ import {
 } from '../lib/order-list-matcher.js';
 
 const PAGE_SIZE = 1000;
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
 
 async function fetchDbCards(): Promise<DbCardMatchInput[]> {
   const supabase = createSupabaseClient();
@@ -17,6 +18,7 @@ async function fetchDbCards(): Promise<DbCardMatchInput[]> {
     const { data, error } = await supabase
       .from('db_card')
       .select('id, franchise, card_name, grade, list_no, image_url, alt_image_url')
+      .eq('store', STORE_NAME)
       .order('id')
       .range(from, from + PAGE_SIZE - 1)
       .returns<DbCardMatchInput[]>();
@@ -36,6 +38,7 @@ async function fetchMappingsIfAvailable(): Promise<ExistingProductMapping[]> {
     const { data, error } = await supabase
       .from('excel_product_mapping')
       .select('id, franchise, excel_product_id, db_card_id, status')
+      .eq('store', STORE_NAME)
       .order('id')
       .range(from, from + PAGE_SIZE - 1)
       .returns<ExistingProductMapping[]>();
@@ -63,20 +66,20 @@ async function main(): Promise<void> {
   ]);
   const results = matchOrderListRows(parsed.rows, dbCards, mappings);
 
-  const statuses = { matched: 0, ambiguous: 0, unmatched: 0, invalid: 0 };
+  const statuses = { matched: 0, ambiguous: 0, unmatched: 0, excluded: 0, invalid: 0 };
   const methods = { existing_mapping: 0, exact_image: 0, exact_identity: 0 };
   const byFranchise: Record<string, typeof statuses> = {};
 
   for (const result of results) {
     statuses[result.status] += 1;
     const counts = byFranchise[result.row.franchise]
-      ?? (byFranchise[result.row.franchise] = { matched: 0, ambiguous: 0, unmatched: 0, invalid: 0 });
+      ?? (byFranchise[result.row.franchise] = { matched: 0, ambiguous: 0, unmatched: 0, excluded: 0, invalid: 0 });
     counts[result.status] += 1;
     if (result.method) methods[result.method] += 1;
   }
 
   const unresolved = results
-    .filter((result) => result.status !== 'matched')
+    .filter((result) => result.status !== 'matched' && result.status !== 'excluded')
     .slice(0, 30)
     .map((result) => ({
       franchise: result.row.franchise,

@@ -3,9 +3,15 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { OrderListMatchReview } from './order-list-match-review';
 import {
+  clearOrderListSyncRequestId,
+  getOrCreateOrderListSyncRequestId,
+  isLaunchPendingConfirmation,
   resetFileInputValue,
   selectionProgress,
+  shouldResyncOrderListImport,
+  type OrderListExclusionSelection,
   type OrderListMappingSelection,
+  type OrderListNewCardSelection,
 } from './order-list-match-review-state';
 
 export type OrderListFranchiseSummary = {
@@ -14,6 +20,7 @@ export type OrderListFranchiseSummary = {
   ambiguous: number;
   unmatched: number;
   invalid: number;
+  excluded?: number;
 };
 
 export type OrderListImportIssue = {
@@ -32,6 +39,7 @@ export type OrderListImportResult = {
     total_rows: number;
     structural_valid?: boolean;
     persistence_complete?: boolean;
+    applied_summary?: unknown;
   };
   summary: OrderListFranchiseSummary & {
     by_franchise: Record<string, OrderListFranchiseSummary>;
@@ -43,7 +51,17 @@ export type OrderListConfirmResult = {
   import_id: string;
   status: 'confirmed' | string;
   sync_started: boolean;
-  job?: { pid?: number };
+  launch_pending?: boolean;
+  run_id?: string;
+  run_status?: string;
+  request_id?: string;
+  created?: number;
+  reused?: number;
+  resolved?: number;
+  unselected?: number;
+  invalid?: number;
+  excluded?: number;
+  job?: { pid?: number; operation?: string; execution?: string | null };
 };
 
 export type OrderListImportPanelProps = {
@@ -152,6 +170,20 @@ function franchiseSortOrder(franchise: string): number {
   return index < 0 ? FRANCHISE_ORDER.length : index;
 }
 
+function syncRequestPayloadSignature(
+  mappings: OrderListMappingSelection[],
+  newCards: OrderListNewCardSelection[],
+  exclusions: OrderListExclusionSelection[],
+  allowUnresolved: boolean,
+): string {
+  return JSON.stringify({
+    mappings,
+    new_cards: newCards,
+    exclusions,
+    allow_unresolved: allowUnresolved,
+  });
+}
+
 export default function OrderListImportPanel({
   apiBaseUrl,
   disabled = false,
@@ -165,16 +197,25 @@ export default function OrderListImportPanel({
   const [error, setError] = useState<string | null>(null);
   const [review, setReview] = useState<OrderListImportResult | null>(null);
   const [confirmed, setConfirmed] = useState<OrderListConfirmResult | null>(null);
+  const [pendingConfirmation, setPendingConfirmation] = useState<OrderListConfirmResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileButtonRef = useRef<HTMLButtonElement>(null);
   const requestRef = useRef<XMLHttpRequest | null>(null);
   const inFlightRef = useRef(false);
+  const fallbackSyncRequestIdsRef = useRef<Record<string, {
+    requestId: string;
+    payloadSignature: string;
+  }>>({});
   const inputId = useId();
   const titleId = useId();
   const descriptionId = useId();
   const busy = pendingAction !== null;
   const endpointBase = apiBaseUrl.replace(/\/$/, '');
-  const canConfirm = Boolean(review && review.import.structural_valid !== false && review.import.persistence_complete === true && review.summary.matched > 0);
+  const canConfirm = Boolean(review
+    && ['parsed', 'failed', 'confirmed', 'applied'].includes(review.import.status)
+    && review.import.structural_valid !== false
+    && review.import.persistence_complete === true
+    && review.summary.matched > 0);
   const unresolved = review
     ? review.summary.ambiguous + review.summary.unmatched + review.summary.invalid
     : 0;
@@ -188,6 +229,7 @@ export default function OrderListImportPanel({
     setError(null);
     setReview(null);
     setConfirmed(null);
+    setPendingConfirmation(null);
     resetFileInputValue(inputRef.current);
   }, []);
 
@@ -235,6 +277,7 @@ export default function OrderListImportPanel({
     setError(null);
     setReview(null);
     setConfirmed(null);
+    setPendingConfirmation(null);
     setUploadProgress(0);
     if (!file) return setSelectedFile(null);
     if (!file.name.toLowerCase().endsWith('.xlsx')) {
@@ -265,6 +308,7 @@ export default function OrderListImportPanel({
     setError(null);
     setReview(null);
     setConfirmed(null);
+    setPendingConfirmation(null);
     try {
       const payload = await uploadWorkbook(
         `${endpointBase}/api/order-list/imports`,
@@ -283,21 +327,57 @@ export default function OrderListImportPanel({
     }
   }
 
+  function getResyncRequestId(importId: string, payloadSignature: string): string {
+    const fallback = fallbackSyncRequestIdsRef.current[importId];
+    if (fallback?.payloadSignature === payloadSignature) return fallback.requestId;
+    try {
+      const requestId = getOrCreateOrderListSyncRequestId(
+        window.localStorage, importId, payloadSignature, () => window.crypto.randomUUID(),
+      );
+      fallbackSyncRequestIdsRef.current[importId] = { requestId, payloadSignature };
+      return requestId;
+    } catch {
+      const requestId = window.crypto.randomUUID();
+      fallbackSyncRequestIdsRef.current[importId] = { requestId, payloadSignature };
+      return requestId;
+    }
+  }
+
+  function clearResyncRequestId(importId: string): void {
+    delete fallbackSyncRequestIdsRef.current[importId];
+    try {
+      clearOrderListSyncRequestId(window.localStorage, importId);
+    } catch {
+      // localStorage can be unavailable in hardened browsers; the in-memory key is already cleared.
+    }
+  }
+
   async function requestImportConfirmation(
     importId: string,
     mappings: OrderListMappingSelection[] = [],
+    newCards: OrderListNewCardSelection[] = [],
+    exclusions: OrderListExclusionSelection[] = [],
     allowUnresolved = false,
+    resync = false,
+    requestId?: string,
   ): Promise<OrderListConfirmResult> {
+    if (resync && !requestId) throw new Error('再同期の操作IDを生成できませんでした。');
     if (inFlightRef.current) throw new Error('別の処理が完了するまでお待ちください。');
     inFlightRef.current = true;
     setPendingAction('confirm');
     try {
       const response = await fetch(
-        `${endpointBase}/api/order-list/imports/${encodeURIComponent(importId)}/confirm`,
+        `${endpointBase}/api/order-list/imports/${encodeURIComponent(importId)}/${resync ? 'resync' : 'confirm'}`,
         {
           method: 'POST',
           headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mappings, allow_unresolved: allowUnresolved }),
+          body: JSON.stringify({
+            mappings,
+            new_cards: newCards,
+            exclusions,
+            allow_unresolved: allowUnresolved,
+            ...(resync ? { request_id: requestId } : {}),
+          }),
         },
       );
       const payload = parseJson(await response.text());
@@ -311,20 +391,41 @@ export default function OrderListImportPanel({
   }
 
   function completeConfirmation(result: OrderListConfirmResult): void {
-    setConfirmed(result);
+    if (isLaunchPendingConfirmation(result)) {
+      setConfirmed(null);
+      setPendingConfirmation(result);
+      setPanelView('review');
+      void refreshImportReview(result.import_id);
+    } else {
+      setPendingConfirmation(null);
+      setConfirmed(result);
+    }
     void Promise.resolve(onTriggered?.(result)).catch(() => undefined);
   }
 
   async function confirmImport() {
     if (!review || !canConfirm || inFlightRef.current) return;
     const progress = selectionProgress(review.summary, {});
+    const resync = shouldResyncOrderListImport({
+      status: review.import.status,
+      appliedSummary: review.import.applied_summary,
+    });
+    const allowUnresolved = progress.unselected > 0;
+    const payloadSignature = syncRequestPayloadSignature([], [], [], allowUnresolved);
+    const requestId = resync
+      ? getResyncRequestId(review.import.id, payloadSignature)
+      : undefined;
     setError(null);
     try {
-      completeConfirmation(await requestImportConfirmation(
-        review.import.id,
-        [],
-        progress.unselected > 0,
-      ));
+      const result = await requestImportConfirmation(
+        review.import.id, [], [], [], allowUnresolved, resync, requestId,
+      );
+      if (resync && (result.status === 'failed' || result.run_status === 'failed')) {
+        clearResyncRequestId(review.import.id);
+        throw new Error('前回の同期は失敗しています。もう一度押すと新しい同期として再試行します。');
+      }
+      completeConfirmation(result);
+      if (resync && !isLaunchPendingConfirmation(result)) clearResyncRequestId(review.import.id);
     } catch (confirmError) {
       setError(confirmError instanceof Error ? confirmError.message : '反映の開始に失敗しました。');
     }
@@ -333,10 +434,35 @@ export default function OrderListImportPanel({
   async function confirmImportFromHistory(
     importId: string,
     mappings: OrderListMappingSelection[],
+    newCards: OrderListNewCardSelection[],
+    exclusions: OrderListExclusionSelection[],
     allowUnresolved: boolean,
   ): Promise<OrderListConfirmResult> {
-    const result = await requestImportConfirmation(importId, mappings, allowUnresolved);
+    const result = await requestImportConfirmation(importId, mappings, newCards, exclusions, allowUnresolved);
     completeConfirmation(result);
+    return result;
+  }
+
+  async function resyncImportFromHistory(
+    importId: string,
+    mappings: OrderListMappingSelection[],
+    newCards: OrderListNewCardSelection[],
+    exclusions: OrderListExclusionSelection[],
+    allowUnresolved: boolean,
+  ): Promise<OrderListConfirmResult> {
+    const payloadSignature = syncRequestPayloadSignature(
+      mappings, newCards, exclusions, allowUnresolved,
+    );
+    const requestId = getResyncRequestId(importId, payloadSignature);
+    const result = await requestImportConfirmation(
+      importId, mappings, newCards, exclusions, allowUnresolved, true, requestId,
+    );
+    if (result.status === 'failed' || result.run_status === 'failed') {
+      clearResyncRequestId(importId);
+      throw new Error('前回の同期は失敗しています。もう一度押すと新しい同期として再試行します。');
+    }
+    completeConfirmation(result);
+    if (!isLaunchPendingConfirmation(result)) clearResyncRequestId(importId);
     return result;
   }
 
@@ -418,11 +544,34 @@ export default function OrderListImportPanel({
                   </button>
                 </div>
               )}
+              {pendingConfirmation && !confirmed && (
+                <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-amber-950" role="status">
+                  <p className="font-bold">取込は確定済みで、同期ジョブの開始を確認中です。</p>
+                  <p className="mt-1 text-sm leading-relaxed">
+                    二重起動を防ぐため待機しています。下の履歴を更新し、開始されていなければ約5分後に「同期を再試行」を押してください。
+                  </p>
+                  <p className="mt-1 text-xs opacity-80">取込ID: <span className="font-mono">{pendingConfirmation.import_id}</span></p>
+                </div>
+              )}
               {confirmed ? (
                 <div className="rounded-xl border border-[#bfd4b8] bg-[#f3faf0] p-5 text-[#2d5a2f]" role="status">
                   <p className="font-semibold">
-                    {confirmed.sync_started ? '読み込みを確定し、同期を開始しました。' : '読み込みを確定しました。'}
+                    {confirmed.status === 'applied'
+                      ? '同じ同期操作はすでに完了しています。'
+                      : confirmed.status === 'processing' || confirmed.run_status === 'running'
+                        ? '同期はすでに実行中です。'
+                        : confirmed.sync_started
+                          ? '読み込みを確定し、同期を開始しました。'
+                          : confirmed.launch_pending
+                            ? '読み込みは確定済みで、同期の開始を確認中です。'
+                            : '読み込みを確定しました。'}
                   </p>
+                  {Boolean(confirmed.created || confirmed.reused) && (
+                    <p className="text-sm mt-1 opacity-90">
+                      新規DB商品 {confirmed.created ?? 0}件
+                      {confirmed.reused ? ` ／ 既存DB商品を再利用 ${confirmed.reused}件` : ''}
+                    </p>
+                  )}
                   <p className="text-sm mt-1 opacity-80">取込ID: <span className="font-mono">{confirmed.import_id}</span></p>
                 </div>
               ) : panelView === 'review' ? (
@@ -430,6 +579,7 @@ export default function OrderListImportPanel({
                   apiBaseUrl={apiBaseUrl}
                   onImportUpdated={refreshImportReview}
                   onConfirmImport={confirmImportFromHistory}
+                  onResyncImport={resyncImportFromHistory}
                   confirmDisabled={busy}
                 />
               ) : (
@@ -518,12 +668,13 @@ export default function OrderListImportPanel({
                           <h3 className="text-base font-bold text-text-primary">照合結果</h3>
                           <span className="text-xs text-text-secondary">取込行数: {review.summary.total.toLocaleString()}件</span>
                         </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                        <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
                           <SummaryCard label="合計" count={review.summary.total} tone="neutral" />
                           <SummaryCard label="照合済み" count={review.summary.matched} tone="success" />
                           <SummaryCard label="曖昧" count={review.summary.ambiguous} tone="warning" />
                           <SummaryCard label="未照合" count={review.summary.unmatched} tone="warning" />
                           <SummaryCard label="不正行" count={review.summary.invalid} tone="danger" />
+                          <SummaryCard label="除外済み" count={review.summary.excluded ?? 0} tone="neutral" />
                         </div>
                       </div>
 
@@ -579,6 +730,7 @@ export default function OrderListImportPanel({
                                   <th className="px-4 py-2.5 font-medium text-right">曖昧</th>
                                   <th className="px-4 py-2.5 font-medium text-right">未照合</th>
                                   <th className="px-4 py-2.5 font-medium text-right">不正行</th>
+                                  <th className="px-4 py-2.5 font-medium text-right">除外済み</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -590,6 +742,7 @@ export default function OrderListImportPanel({
                                     <td className="px-4 py-2.5 text-right text-amber-700">{counts.ambiguous.toLocaleString()}</td>
                                     <td className="px-4 py-2.5 text-right text-amber-700">{counts.unmatched.toLocaleString()}</td>
                                     <td className="px-4 py-2.5 text-right text-[#8d3a22]">{counts.invalid.toLocaleString()}</td>
+                                    <td className="px-4 py-2.5 text-right text-text-secondary">{(counts.excluded ?? 0).toLocaleString()}</td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -648,8 +801,8 @@ export default function OrderListImportPanel({
                   {unresolved > 0
                     ? `未解決${unresolved.toLocaleString()}件を確認して次へ`
                     : pendingAction === 'confirm'
-                      ? '反映を開始中...'
-                      : '確認して反映'}
+                      ? '同期を開始中...'
+                      : 'この内容で同期'}
                 </button>
               )}
             </footer>

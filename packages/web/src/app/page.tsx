@@ -1,6 +1,5 @@
-import { createServerSupabase } from '@/lib/supabase-server';
+import { loadDashboardData } from '@/lib/dashboard-data';
 import Link from 'next/link';
-import type { RunRow } from '@haraka/shared';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,38 +15,7 @@ function formatDate(iso: string | null) {
 }
 
 export default async function DashboardPage() {
-  const supabase = createServerSupabase();
-
-  const { data: rawRun } = await supabase
-    .from('run')
-    .select('*')
-    .order('started_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  const run = rawRun as RunRow | null;
-
-  let untaggedCount = 0;
-  let recentPages: { id: string; franchise: string; page_label: string | null; image_url: string | null }[] = [];
-
-  if (run) {
-    const { count } = await supabase
-      .from('prepared_card')
-      .select('id', { count: 'exact', head: true })
-      .eq('run_id', run.id)
-      .is('tag', null);
-    untaggedCount = count ?? 0;
-
-    const { data: pages } = await supabase
-      .from('generated_page')
-      .select('id, franchise, page_label, image_url')
-      .eq('run_id', run.id)
-      .eq('status', 'generated')
-      .order('franchise')
-      .order('page_index')
-      .limit(6);
-    recentPages = (pages ?? []) as typeof recentPages;
-  }
+  const { run, untaggedCount, recentPages } = await loadDashboardData();
 
   return (
     <div>

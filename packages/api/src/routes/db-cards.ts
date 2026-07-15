@@ -4,6 +4,8 @@ import { updateDbSheetCell } from '../lib/haraka-db-sheet.js';
 
 export const dbCardRoutes = new Hono();
 
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+
 /** db_card 一覧取得（フランチャイズ・エラーフィルタ対応） */
 dbCardRoutes.get('/db-cards', async (c) => {
   const franchise = c.req.query('franchise');
@@ -13,6 +15,7 @@ dbCardRoutes.get('/db-cards', async (c) => {
   let query = supabase
     .from('db_card')
     .select('id, franchise, tag, card_name, grade, list_no, image_url, alt_image_url, rarity_icon, sheet_row_number, image_status')
+    .eq('store', STORE_NAME)
     .order('franchise')
     .order('card_name')
     .limit(2000);
@@ -45,6 +48,7 @@ dbCardRoutes.get('/db-cards/stats', async (c) => {
     const { count: fCount } = await supabase
       .from('db_card')
       .select('*', { count: 'exact', head: true })
+      .eq('store', STORE_NAME)
       .eq('franchise', f);
     byFranchise[f] = fCount ?? 0;
     total += fCount ?? 0;
@@ -54,6 +58,7 @@ dbCardRoutes.get('/db-cards/stats', async (c) => {
   const { count: errCount } = await supabase
     .from('db_card')
     .select('*', { count: 'exact', head: true })
+    .eq('store', STORE_NAME)
     .or('tag.is.null,image_url.is.null,image_status.eq.dead');
   errorCount = errCount ?? 0;
 
@@ -61,6 +66,7 @@ dbCardRoutes.get('/db-cards/stats', async (c) => {
   const { count: deadCount } = await supabase
     .from('db_card')
     .select('*', { count: 'exact', head: true })
+    .eq('store', STORE_NAME)
     .eq('image_status', 'dead');
 
   return c.json({ total, byFranchise, errorCount, deadCount: deadCount ?? 0 });
@@ -73,6 +79,7 @@ dbCardRoutes.get('/db-cards/tags', async (c) => {
   const { data, error } = await supabase
     .from('db_card')
     .select('franchise, tag')
+    .eq('store', STORE_NAME)
     .not('tag', 'is', null)
     .limit(2000);
 
@@ -108,6 +115,7 @@ dbCardRoutes.post('/db-cards/health-check', async (c) => {
     const { data: page, error } = await supabase
       .from('db_card')
       .select('id, image_url')
+      .eq('store', STORE_NAME)
       .not('image_url', 'is', null)
       .range(offset, offset + PAGE_SIZE - 1);
     if (error) return c.json({ error: error.message }, 500);
@@ -170,7 +178,7 @@ dbCardRoutes.post('/db-cards/health-check', async (c) => {
     // 100件ずつ更新
     for (let i = 0; i < okIds.length; i += 100) {
       const chunk = okIds.slice(i, i + 100);
-      await supabase.from('db_card').update({ image_status: 'ok' }).in('id', chunk);
+      await supabase.from('db_card').update({ image_status: 'ok' }).in('id', chunk).eq('store', STORE_NAME);
     }
     okCount = okIds.length;
   }
@@ -178,7 +186,7 @@ dbCardRoutes.post('/db-cards/health-check', async (c) => {
   if (deadIds.length > 0) {
     for (let i = 0; i < deadIds.length; i += 100) {
       const chunk = deadIds.slice(i, i + 100);
-      await supabase.from('db_card').update({ image_status: 'dead' }).in('id', chunk);
+      await supabase.from('db_card').update({ image_status: 'dead' }).in('id', chunk).eq('store', STORE_NAME);
     }
     deadCount = deadIds.length;
   }
@@ -222,6 +230,7 @@ dbCardRoutes.patch('/db-cards/:id', async (c) => {
     .from('db_card')
     .update(updates)
     .eq('id', id)
+    .eq('store', STORE_NAME)
     .select('id, franchise, tag, card_name, grade, list_no, image_url, alt_image_url, rarity_icon, sheet_row_number, image_status')
     .single();
 
@@ -248,7 +257,8 @@ dbCardRoutes.delete('/db-cards/:id', async (c) => {
   const { error } = await supabase
     .from('db_card')
     .delete()
-    .eq('id', id);
+    .eq('id', id)
+    .eq('store', STORE_NAME);
 
   if (error) return c.json({ error: error.message }, 500);
 

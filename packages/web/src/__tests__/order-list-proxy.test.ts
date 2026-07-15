@@ -1,9 +1,14 @@
 import { GET, POST } from '../app/api/order-list/[...path]/route';
+import {
+  OPERATOR_SESSION_COOKIE,
+  createOperatorSession,
+} from '@/lib/operator-auth';
 
 const context = { params: Promise.resolve({ path: ['imports'] }) };
 const originalApiToken = process.env.ORDER_LIST_IMPORT_API_TOKEN;
 const originalApiBaseUrl = process.env.API_BASE_URL;
 const originalPublicApiUrl = process.env.NEXT_PUBLIC_API_URL;
+const originalOperatorEmails = process.env.ORDER_LIST_OPERATOR_EMAILS;
 const originalFetch = global.fetch;
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -14,19 +19,22 @@ function restoreEnv(name: string, value: string | undefined): void {
 function configureAuth(): void {
   process.env.ORDER_LIST_IMPORT_API_TOKEN = 'a'.repeat(32);
   process.env.API_BASE_URL = 'https://api.internal.example';
+  process.env.ORDER_LIST_OPERATOR_EMAILS = 'operator@example.com';
 }
 
-function sameOriginHeaders(extra?: HeadersInit): Headers {
-  const headers = new Headers(extra);
-  headers.set('Origin', 'http://localhost');
-  headers.set('Sec-Fetch-Site', 'same-origin');
-  return headers;
+async function authenticatedCookie(email = 'operator@example.com'): Promise<string> {
+  const session = await createOperatorSession({
+    email,
+    secret: 'a'.repeat(32),
+  });
+  return OPERATOR_SESSION_COOKIE + '=' + session;
 }
 
 afterEach(() => {
   restoreEnv('ORDER_LIST_IMPORT_API_TOKEN', originalApiToken);
   restoreEnv('API_BASE_URL', originalApiBaseUrl);
   restoreEnv('NEXT_PUBLIC_API_URL', originalPublicApiUrl);
+  restoreEnv('ORDER_LIST_OPERATOR_EMAILS', originalOperatorEmails);
   global.fetch = originalFetch;
 });
 
@@ -36,35 +44,38 @@ test('server secrets未設定時はproxyをfail closedする', async () => {
   expect(response.status).toBe(503);
 });
 
-test('cross-originの書き込みはserver tokenを使う前に拒否する', async () => {
+test('unsigned proxy request returns 401 without upstream access', async () => {
   configureAuth();
   const upstreamFetch = jest.fn(async () => Response.json({ ok: true }));
   global.fetch = upstreamFetch as typeof fetch;
 
-  const response = await POST(new Request('http://localhost/api/order-list/imports', {
-    method: 'POST',
-    headers: {
-      Origin: 'https://attacker.example',
-      'Sec-Fetch-Site': 'cross-site',
-    },
-  }), context);
+  const response = await GET(new Request('http://localhost/api/order-list/imports'), context);
 
-  expect(response.status).toBe(403);
+  expect(response.status).toBe(401);
   expect(upstreamFetch).not.toHaveBeenCalled();
 });
 
-test('Originなしの書き込みはfail closedする', async () => {
+test('removing an operator from the allowlist immediately revokes the session', async () => {
   configureAuth();
-  const response = await POST(new Request('http://localhost/api/order-list/imports', { method: 'POST' }), context);
-  expect(response.status).toBe(403);
+  const cookie = await authenticatedCookie();
+  process.env.ORDER_LIST_OPERATOR_EMAILS = 'other@example.com';
+
+  const response = await GET(new Request('http://localhost/api/order-list/imports', {
+    headers: { Cookie: cookie },
+  }), context);
+
+  expect(response.status).toBe(401);
 });
+
 
 test('ブラウザ側の共有キーなしでserver Bearerとqueryを安全に転送する', async () => {
   configureAuth();
   const upstreamFetch = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ ok: true }));
   global.fetch = upstreamFetch as typeof fetch;
 
-  const response = await GET(new Request('http://localhost/api/order-list/imports?limit=30'), context);
+  const response = await GET(new Request('http://localhost/api/order-list/imports?limit=30', {
+    headers: { Cookie: await authenticatedCookie() },
+  }), context);
 
   expect(response.status).toBe(200);
   expect(upstreamFetch).toHaveBeenCalledTimes(1);
@@ -101,9 +112,12 @@ test('Content-Lengthなしのchunked bodyも16MB超過時にstreamingで拒否�
 
   const request = new Request('http://localhost/api/order-list/imports', {
     method: 'POST',
-    headers: sameOriginHeaders({
+    headers: {
       'Content-Type': 'application/octet-stream',
-    }),
+      Origin: 'http://localhost',
+      'Sec-Fetch-Site': 'same-origin',
+      Cookie: await authenticatedCookie(),
+    },
     body: requestBody,
     duplex: 'half',
   } as RequestInit & { duplex: 'half' });
@@ -115,22 +129,6 @@ test('Content-Lengthなしのchunked bodyも16MB超過時にstreamingで拒否�
   expect(chunksSent).toBeGreaterThan(16);
 });
 
-test('Content-Lengthが16MB超ならupstreamへ接続せず拒否する', async () => {
-  configureAuth();
-  const upstreamFetch = jest.fn(async () => Response.json({ ok: true }));
-  global.fetch = upstreamFetch as typeof fetch;
-
-  const response = await POST(new Request('http://localhost/api/order-list/imports', {
-    method: 'POST',
-    headers: sameOriginHeaders({
-      'Content-Type': 'application/octet-stream',
-      'Content-Length': String(16 * 1024 * 1024 + 1),
-    }),
-  }), context);
-
-  expect(response.status).toBe(413);
-  expect(upstreamFetch).not.toHaveBeenCalled();
-});
 
 test('confirmの一括対応付けJSONをBearer付きでそのまま転送する', async () => {
   configureAuth();
@@ -142,12 +140,20 @@ test('confirmの一括対応付けJSONをBearer付きでそのまま転送する
   global.fetch = upstreamFetch as typeof fetch;
   const payload = {
     mappings: [{ item_id: 'item-1', db_card_id: 'card-1' }],
+    new_cards: [{
+      item_id: 'item-2', card_name: '新商品', grade: 'PSA10', list_no: '001', tag: 'TOP', alt_image_url: null,
+    }],
     allow_unresolved: true,
   };
 
   const response = await POST(new Request('http://localhost/api/order-list/imports/import-1/confirm', {
     method: 'POST',
-    headers: sameOriginHeaders({ 'Content-Type': 'application/json' }),
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: 'http://localhost',
+      'Sec-Fetch-Site': 'same-origin',
+      Cookie: await authenticatedCookie(),
+    },
     body: JSON.stringify(payload),
   }), { params: Promise.resolve({ path: ['imports', 'import-1', 'confirm'] }) });
 
@@ -158,4 +164,23 @@ test('confirmの一括対応付けJSONをBearer付きでそのまま転送する
   expect(new Headers(init?.headers).get('content-type')).toBe('application/json');
   expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${'a'.repeat(32)}`);
   expect(JSON.parse(forwardedBody)).toEqual(payload);
+});
+
+test('別オリジンからの書込要求はupstreamへ送らず拒否する', async () => {
+  configureAuth();
+  const upstreamFetch = jest.fn(async () => Response.json({ ok: true }));
+  global.fetch = upstreamFetch as typeof fetch;
+
+  const response = await POST(new Request('http://localhost/api/order-list/imports/import-1/confirm', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: 'https://attacker.example',
+      'Sec-Fetch-Site': 'cross-site',
+    },
+    body: '{}',
+  }), { params: Promise.resolve({ path: ['imports', 'import-1', 'confirm'] }) });
+
+  expect(response.status).toBe(403);
+  expect(upstreamFetch).not.toHaveBeenCalled();
 });

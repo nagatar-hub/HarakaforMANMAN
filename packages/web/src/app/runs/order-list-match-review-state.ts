@@ -1,12 +1,17 @@
-export type ReviewMatchStatus = 'ambiguous' | 'unmatched' | 'invalid';
+export type ReviewMatchStatus = 'ambiguous' | 'unmatched' | 'invalid' | 'excluded';
 export type ResolvableMatchStatus = Exclude<ReviewMatchStatus, 'invalid'>;
 
-export type DraftMapping = {
+type DraftMappingBase = {
   itemId: string;
-  dbCardId: string;
   cardLabel: string;
   matchStatus: ResolvableMatchStatus;
 };
+
+export type DraftMapping = DraftMappingBase & (
+  | { kind: 'existing'; dbCardId: string }
+  | { kind: 'new'; newCard: OrderListNewCardSelection }
+  | { kind: 'exclude' }
+);
 
 export type DraftMappingsByImport = Record<string, Record<string, DraftMapping>>;
 
@@ -15,10 +20,13 @@ export type ReviewSummaryCounts = {
   ambiguous: number;
   unmatched: number;
   invalid: number;
+  excluded?: number;
 };
 
 export type ReviewSelectionProgress = {
   staged: number;
+  excluded: number;
+  handled: number;
   reflectable: number;
   unselected: number;
   invalid: number;
@@ -26,6 +34,7 @@ export type ReviewSelectionProgress = {
   ambiguousUnselected: number;
   unmatchedSelected: number;
   unmatchedUnselected: number;
+  excludedSelected: number;
 };
 
 export type ReviewStatusProgress = {
@@ -38,6 +47,26 @@ export type OrderListMappingSelection = {
   item_id: string;
   db_card_id: string;
 };
+
+export type OrderListNewCardSelection = {
+  item_id: string;
+  card_name: string;
+  grade: string;
+  list_no: string;
+  tag: string;
+  alt_image_url: string | null;
+};
+
+export type OrderListExclusionSelection = {
+  item_id: string;
+};
+
+export function isLaunchPendingConfirmation(result: {
+  sync_started: boolean;
+  launch_pending?: boolean;
+}): boolean {
+  return result.sync_started === false && result.launch_pending === true;
+}
 
 export function draftsForImport(
   draftsByImport: DraftMappingsByImport,
@@ -90,8 +119,27 @@ export function mappingSelections(
   drafts: Record<string, DraftMapping>,
 ): OrderListMappingSelection[] {
   return Object.values(drafts)
+    .filter((draft): draft is Extract<DraftMapping, { kind: 'existing' }> => draft.kind === 'existing')
     .sort((left, right) => left.itemId.localeCompare(right.itemId))
     .map((draft) => ({ item_id: draft.itemId, db_card_id: draft.dbCardId }));
+}
+
+export function newCardSelections(
+  drafts: Record<string, DraftMapping>,
+): OrderListNewCardSelection[] {
+  return Object.values(drafts)
+    .filter((draft): draft is Extract<DraftMapping, { kind: 'new' }> => draft.kind === 'new')
+    .sort((left, right) => left.itemId.localeCompare(right.itemId))
+    .map((draft) => draft.newCard);
+}
+
+export function exclusionSelections(
+  drafts: Record<string, DraftMapping>,
+): OrderListExclusionSelection[] {
+  return Object.values(drafts)
+    .filter((draft): draft is Extract<DraftMapping, { kind: 'exclude' }> => draft.kind === 'exclude')
+    .sort((left, right) => left.itemId.localeCompare(right.itemId))
+    .map((draft) => ({ item_id: draft.itemId }));
 }
 
 export function selectionProgress(
@@ -99,13 +147,25 @@ export function selectionProgress(
   drafts: Record<string, DraftMapping>,
 ): ReviewSelectionProgress {
   const values = Object.values(drafts);
-  const ambiguousSelected = Math.min(summary.ambiguous, values.filter((draft) => draft.matchStatus === 'ambiguous').length);
-  const unmatchedSelected = Math.min(summary.unmatched, values.filter((draft) => draft.matchStatus === 'unmatched').length);
+  const statusCounts = (status: ResolvableMatchStatus, total: number) => {
+    const selected = values.filter((draft) => draft.matchStatus === status);
+    const handled = Math.min(total, selected.length);
+    const excluded = Math.min(handled, selected.filter((draft) => draft.kind === 'exclude').length);
+    return { handled, excluded, reflectable: handled - excluded };
+  };
+  const ambiguous = statusCounts('ambiguous', summary.ambiguous);
+  const unmatched = statusCounts('unmatched', summary.unmatched);
+  const previouslyExcluded = statusCounts('excluded', summary.excluded ?? 0);
+  const ambiguousSelected = ambiguous.handled;
+  const unmatchedSelected = unmatched.handled;
   const ambiguousUnselected = Math.max(0, summary.ambiguous - ambiguousSelected);
   const unmatchedUnselected = Math.max(0, summary.unmatched - unmatchedSelected);
-  const staged = ambiguousSelected + unmatchedSelected;
+  const staged = ambiguous.reflectable + unmatched.reflectable + previouslyExcluded.reflectable;
+  const excluded = ambiguous.excluded + unmatched.excluded;
   return {
     staged,
+    excluded,
+    handled: staged + excluded,
     reflectable: summary.matched + staged,
     unselected: ambiguousUnselected + unmatchedUnselected,
     invalid: summary.invalid,
@@ -113,13 +173,14 @@ export function selectionProgress(
     ambiguousUnselected,
     unmatchedSelected,
     unmatchedUnselected,
+    excludedSelected: previouslyExcluded.reflectable,
   };
 }
 
-const REVIEW_STATUS_ORDER: ReviewMatchStatus[] = ['ambiguous', 'unmatched', 'invalid'];
+const REVIEW_STATUS_ORDER: ReviewMatchStatus[] = ['ambiguous', 'unmatched', 'invalid', 'excluded'];
 
 export function firstReviewStatus(summary: ReviewSummaryCounts): ReviewMatchStatus | null {
-  return REVIEW_STATUS_ORDER.find((status) => summary[status] > 0) ?? null;
+  return REVIEW_STATUS_ORDER.find((status) => (summary[status] ?? 0) > 0) ?? null;
 }
 
 export function nextReviewStatus(
@@ -129,7 +190,7 @@ export function nextReviewStatus(
   const currentIndex = REVIEW_STATUS_ORDER.indexOf(current);
   return REVIEW_STATUS_ORDER
     .slice(currentIndex + 1)
-    .find((status) => summary[status] > 0) ?? null;
+    .find((status) => (summary[status] ?? 0) > 0) ?? null;
 }
 
 export function reviewStatusProgress(
@@ -152,7 +213,89 @@ export function reviewStatusProgress(
       remaining: progress.unmatchedUnselected,
     };
   }
+  if (status === 'excluded') {
+    return {
+      total: summary.excluded ?? 0,
+      selected: progress.excludedSelected,
+      remaining: 0,
+    };
+  }
   return { total: summary.invalid, selected: 0, remaining: summary.invalid };
+}
+
+export function canConfirmOrderListImport(params: {
+  status: string;
+  structuralValid: boolean | undefined;
+  persistenceComplete: boolean | undefined;
+  matchedCount: number;
+  stagedCount?: number;
+}): boolean {
+  const retryingConfirmedLaunch = params.status === 'confirmed';
+  const confirmingSelections = params.status === 'parsed' || params.status === 'failed';
+  return (retryingConfirmedLaunch || confirmingSelections)
+    && params.structuralValid !== false
+    && params.persistenceComplete === true
+    && params.matchedCount + (params.stagedCount ?? 0) > 0;
+}
+
+export function canSyncOrderListImport(params: {
+  status: string;
+  structuralValid: boolean | undefined;
+  persistenceComplete: boolean | undefined;
+  matchedCount: number;
+  stagedCount?: number;
+}): boolean {
+  return ['parsed', 'failed', 'confirmed', 'applied'].includes(params.status)
+    && params.structuralValid !== false
+    && params.persistenceComplete === true
+    && params.matchedCount + (params.stagedCount ?? 0) > 0;
+}
+
+export function shouldResyncOrderListImport(params: {
+  status: string;
+  appliedSummary?: unknown;
+}): boolean {
+  return params.status === 'applied'
+    || (['confirmed', 'failed'].includes(params.status) && params.appliedSummary != null);
+}
+
+type OrderListSyncRequestStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
+function syncRequestStorageKey(importId: string): string {
+  return 'haraka:order-list-sync-request:' + importId;
+}
+
+export function getOrCreateOrderListSyncRequestId(
+  storage: OrderListSyncRequestStorage,
+  importId: string,
+  payloadSignature: string,
+  createId: () => string,
+): string {
+  const key = syncRequestStorageKey(importId);
+  const stored = storage.getItem(key)?.trim();
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored) as { requestId?: unknown; payloadSignature?: unknown };
+      if (typeof parsed.requestId === 'string'
+        && parsed.requestId.trim()
+        && parsed.payloadSignature === payloadSignature) {
+        return parsed.requestId;
+      }
+    } catch {
+      // Old or corrupted values are replaced with a fingerprint-bound request ID.
+    }
+  }
+  const created = createId().trim();
+  if (!created) throw new Error('同期操作IDを生成できませんでした');
+  storage.setItem(key, JSON.stringify({ requestId: created, payloadSignature }));
+  return created;
+}
+
+export function clearOrderListSyncRequestId(
+  storage: OrderListSyncRequestStorage,
+  importId: string,
+): void {
+  storage.removeItem(syncRequestStorageKey(importId));
 }
 
 export function resetFileInputValue(input: { value: string } | null): void {
@@ -161,7 +304,7 @@ export function resetFileInputValue(input: { value: string } | null): void {
 
 export function unselectedConfirmationMessage(
   progress: ReviewSelectionProgress,
-  action: 'reflect' | 'save' = 'reflect',
+  action: 'reflect' | 'sync' | 'save' = 'sync',
 ): string | null {
   if (progress.unselected === 0 && progress.invalid === 0) return null;
 
@@ -176,10 +319,10 @@ export function unselectedConfirmationMessage(
   if (progress.invalid > 0) {
     warnings.push(action === 'save'
       ? `入力エラーの行が${progress.invalid.toLocaleString()}件あり、対応表へ保存されません。`
-      : `入力エラーの行が${progress.invalid.toLocaleString()}件あり、反映されません。`);
+      : `入力エラーの行が${progress.invalid.toLocaleString()}件あり、同期されません。`);
   }
   warnings.push(action === 'save'
-    ? `今回選択した${progress.staged.toLocaleString()}件だけを対応表へ保存します。よろしいですか？`
-    : `選択済みを含む${progress.reflectable.toLocaleString()}件だけを反映します。よろしいですか？`);
+    ? `今回指定した${progress.handled.toLocaleString()}件（対応${progress.staged.toLocaleString()}件・除外${progress.excluded.toLocaleString()}件）だけを保存します。よろしいですか？`
+    : `未選択の商品を含めず、照合済み${progress.reflectable.toLocaleString()}件を同期します。よろしいですか？`);
   return warnings.join('\n');
 }

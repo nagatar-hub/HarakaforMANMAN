@@ -8,7 +8,7 @@ import { createSupabaseClient } from '../lib/supabase.js';
 
 export const storeConfigRoutes = new Hono();
 
-const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
 type StoreConfigResult = {
   store?: string;
   settings?: unknown;

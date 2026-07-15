@@ -30,6 +30,7 @@ function makeRawImport(overrides: Partial<RawImportRow> = {}): RawImportRow {
 function makeDbCard(overrides: Partial<DbCardRow> = {}): DbCardRow {
   return {
     id: 'db-1',
+    store: 'manman',
     franchise: 'Pokemon',
     tag: 'TOP',
     card_name: 'リザードン',

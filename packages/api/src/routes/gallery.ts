@@ -11,7 +11,79 @@ import {
 
 export const galleryRoutes = new Hono();
 
-const STORE_NAME = process.env.STORE_NAME ?? 'oripark';
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+
+type StoreOwnership = { runId: string | null; error: string | null };
+
+async function findPageRunInStore(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  pageId: string,
+): Promise<StoreOwnership> {
+  const { data: page, error: pageError } = await supabase
+    .from('generated_page')
+    .select('run_id')
+    .eq('id', pageId)
+    .maybeSingle();
+  if (pageError) return { runId: null, error: pageError.message };
+  if (!page) return { runId: null, error: null };
+
+  const { data: run, error: runError } = await supabase
+    .from('run')
+    .select('id')
+    .eq('id', page.run_id)
+    .eq('store', STORE_NAME)
+    .maybeSingle();
+  if (runError) return { runId: null, error: runError.message };
+  return { runId: run?.id ?? null, error: null };
+}
+
+async function findCardRunInStore(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  cardId: string,
+): Promise<StoreOwnership> {
+  const { data: card, error: cardError } = await supabase
+    .from('prepared_card')
+    .select('run_id')
+    .eq('id', cardId)
+    .maybeSingle();
+  if (cardError) return { runId: null, error: cardError.message };
+  if (!card) return { runId: null, error: null };
+
+  const { data: run, error: runError } = await supabase
+    .from('run')
+    .select('id')
+    .eq('id', card.run_id)
+    .eq('store', STORE_NAME)
+    .maybeSingle();
+  if (runError) return { runId: null, error: runError.message };
+  return { runId: run?.id ?? null, error: null };
+}
+
+async function findCardIdsInStore(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  cardIds: string[],
+): Promise<{ cardIds: string[]; error: string | null }> {
+  const { data: cards, error: cardError } = await supabase
+    .from('prepared_card')
+    .select('id, run_id')
+    .in('id', cardIds);
+  if (cardError) return { cardIds: [], error: cardError.message };
+
+  const runIds = [...new Set((cards || []).map(card => card.run_id))];
+  if (runIds.length === 0) return { cardIds: [], error: null };
+  const { data: runs, error: runError } = await supabase
+    .from('run')
+    .select('id')
+    .in('id', runIds)
+    .eq('store', STORE_NAME);
+  if (runError) return { cardIds: [], error: runError.message };
+
+  const ownedRunIds = new Set((runs || []).map(run => run.id));
+  return {
+    cardIds: (cards || []).filter(card => ownedRunIds.has(card.run_id)).map(card => card.id),
+    error: null,
+  };
+}
 
 async function fetchGeneratedPageRowsForRuns(
   supabase: ReturnType<typeof createSupabaseClient>,
@@ -126,11 +198,14 @@ galleryRoutes.get('/gallery/images', async (c) => {
 galleryRoutes.get('/gallery/pages/:pageId', async (c) => {
   const pageId = c.req.param('pageId');
   const supabase = createSupabaseClient();
-
+  const ownership = await findPageRunInStore(supabase, pageId);
+  if (ownership.error) return c.json({ error: ownership.error }, 500);
+  if (!ownership.runId) return c.json({ error: 'Page not found' }, 404);
   const { data: page, error: pageErr } = await supabase
     .from('generated_page')
     .select('*')
     .eq('id', pageId)
+    .eq('run_id', ownership.runId)
     .single();
 
   if (pageErr || !page) return c.json({ error: 'Page not found' }, 404);
@@ -139,10 +214,16 @@ galleryRoutes.get('/gallery/pages/:pageId', async (c) => {
   const cardIds: string[] = (page as Record<string, unknown>).card_ids as string[] || [];
   if (cardIds.length === 0) return c.json({ page, cards: [] });
 
+  const cardOwnership = await findCardIdsInStore(supabase, cardIds);
+  if (cardOwnership.error) return c.json({ error: cardOwnership.error }, 500);
+  if (new Set(cardOwnership.cardIds).size !== new Set(cardIds).size) {
+    return c.json({ error: 'Page contains cards outside this store' }, 409);
+  }
+
   const { data: cards, error: cardErr } = await supabase
     .from('prepared_card')
     .select('id, franchise, card_name, grade, list_no, image_url, alt_image_url, rarity, tag, price_high, price_low, image_status')
-    .in('id', cardIds);
+    .in('id', cardOwnership.cardIds);
 
   if (cardErr) return c.json({ error: cardErr.message }, 500);
 
@@ -165,17 +246,23 @@ galleryRoutes.patch('/gallery/pages/:pageId/cards/:cardId', async (c) => {
   }>();
 
   const supabase = createSupabaseClient();
-
+  const ownership = await findPageRunInStore(supabase, pageId);
+  if (ownership.error) return c.json({ error: ownership.error }, 500);
+  if (!ownership.runId) return c.json({ error: 'Page not found' }, 404);
   // ページに紐づくカードか確認
   const { data: page } = await supabase
     .from('generated_page')
     .select('card_ids')
     .eq('id', pageId)
+    .eq('run_id', ownership.runId)
     .single();
 
   if (!page || !((page as Record<string, unknown>).card_ids as string[] || []).includes(cardId)) {
     return c.json({ error: 'Card not found in this page' }, 404);
   }
+  const cardOwnership = await findCardRunInStore(supabase, cardId);
+  if (cardOwnership.error) return c.json({ error: cardOwnership.error }, 500);
+  if (!cardOwnership.runId) return c.json({ error: 'Card not found' }, 404);
 
   // 更新フィールドを構築
   const updates: Record<string, unknown> = {};
@@ -210,6 +297,7 @@ galleryRoutes.patch('/gallery/pages/:pageId/cards/:cardId', async (c) => {
     .from('prepared_card')
     .update(updates)
     .eq('id', cardId)
+    .eq('run_id', cardOwnership.runId)
     .select()
     .single();
 
@@ -228,11 +316,14 @@ galleryRoutes.put('/gallery/pages/:pageId/reorder', async (c) => {
   }
 
   const supabase = createSupabaseClient();
-
+  const ownership = await findPageRunInStore(supabase, pageId);
+  if (ownership.error) return c.json({ error: ownership.error }, 500);
+  if (!ownership.runId) return c.json({ error: 'Page not found' }, 404);
   const { data: page, error: pageErr } = await supabase
     .from('generated_page')
     .select('card_ids')
     .eq('id', pageId)
+    .eq('run_id', ownership.runId)
     .single();
 
   if (pageErr || !page) return c.json({ error: 'Page not found' }, 404);
@@ -247,7 +338,8 @@ galleryRoutes.put('/gallery/pages/:pageId/reorder', async (c) => {
   const { error } = await supabase
     .from('generated_page')
     .update({ card_ids: cardIds })
-    .eq('id', pageId);
+    .eq('id', pageId)
+    .eq('run_id', ownership.runId);
 
   if (error) return c.json({ error: error.message }, 500);
 
@@ -263,9 +355,19 @@ galleryRoutes.get('/gallery/cards/search', async (c) => {
   if (!q && !franchise) return c.json([]);
 
   const supabase = createSupabaseClient();
+  const { data: storeRuns, error: storeRunsError } = await supabase
+    .from('run')
+    .select('id')
+    .eq('store', STORE_NAME)
+    .order('started_at', { ascending: false })
+    .limit(100);
+  if (storeRunsError) return c.json({ error: storeRunsError.message }, 500);
+  if (!storeRuns || storeRuns.length === 0) return c.json([]);
+
   let query = supabase
     .from('prepared_card')
     .select('id, franchise, card_name, grade, list_no, image_url, alt_image_url, rarity, tag, price_high, price_low, image_status, created_at')
+    .in('run_id', storeRuns.map((run) => run.id))
     .order('created_at', { ascending: false })
     .limit(100);
 
@@ -305,11 +407,14 @@ galleryRoutes.post('/gallery/pages/:pageId/cards', async (c) => {
   }>();
 
   const supabase = createSupabaseClient();
-
+  const ownership = await findPageRunInStore(supabase, pageId);
+  if (ownership.error) return c.json({ error: ownership.error }, 500);
+  if (!ownership.runId) return c.json({ error: 'Page not found' }, 404);
   const { data: page, error: pageErr } = await supabase
     .from('generated_page')
-    .select('card_ids, franchise')
+    .select('card_ids, franchise, run_id')
     .eq('id', pageId)
+    .eq('run_id', ownership.runId)
     .single();
 
   if (pageErr || !page) return c.json({ error: 'Page not found' }, 404);
@@ -320,6 +425,12 @@ galleryRoutes.post('/gallery/pages/:pageId/cards', async (c) => {
   }
 
   let cardId = body.cardId;
+
+  if (cardId) {
+    const cardOwnership = await findCardRunInStore(supabase, cardId);
+    if (cardOwnership.error) return c.json({ error: cardOwnership.error }, 500);
+    if (!cardOwnership.runId) return c.json({ error: 'Card not found' }, 404);
+  }
 
   if (!cardId) {
     // 手動追加: prepared_card にレコード作成
@@ -336,7 +447,7 @@ galleryRoutes.post('/gallery/pages/:pageId/cards', async (c) => {
         price_low: body.price_low ?? null,
         image_url: body.image_url || null,
         alt_image_url: null,
-        run_id: 'manual',
+        run_id: ownership.runId,
         raw_import_id: null,
         grade: null,
         list_no: null,
@@ -362,7 +473,8 @@ galleryRoutes.post('/gallery/pages/:pageId/cards', async (c) => {
   const { error } = await supabase
     .from('generated_page')
     .update({ card_ids: newIds })
-    .eq('id', pageId);
+    .eq('id', pageId)
+    .eq('run_id', ownership.runId);
 
   if (error) return c.json({ error: error.message }, 500);
 
@@ -380,11 +492,14 @@ galleryRoutes.post('/gallery/pages/:pageId/cards', async (c) => {
 galleryRoutes.delete('/gallery/pages/:pageId/cards/:cardId', async (c) => {
   const { pageId, cardId } = c.req.param();
   const supabase = createSupabaseClient();
-
+  const ownership = await findPageRunInStore(supabase, pageId);
+  if (ownership.error) return c.json({ error: ownership.error }, 500);
+  if (!ownership.runId) return c.json({ error: 'Page not found' }, 404);
   const { data: page, error: pageErr } = await supabase
     .from('generated_page')
     .select('card_ids')
     .eq('id', pageId)
+    .eq('run_id', ownership.runId)
     .single();
 
   if (pageErr || !page) return c.json({ error: 'Page not found' }, 404);
@@ -399,7 +514,8 @@ galleryRoutes.delete('/gallery/pages/:pageId/cards/:cardId', async (c) => {
   const { error } = await supabase
     .from('generated_page')
     .update({ card_ids: newIds })
-    .eq('id', pageId);
+    .eq('id', pageId)
+    .eq('run_id', ownership.runId);
 
   if (error) return c.json({ error: error.message }, 500);
 
@@ -410,18 +526,25 @@ galleryRoutes.delete('/gallery/pages/:pageId/cards/:cardId', async (c) => {
 galleryRoutes.post('/gallery/pages/:pageId/regenerate', async (c) => {
   const pageId = c.req.param('pageId');
   const supabase = createSupabaseClient();
-
+  const ownership = await findPageRunInStore(supabase, pageId);
+  if (ownership.error) return c.json({ error: ownership.error }, 500);
+  if (!ownership.runId) return c.json({ error: 'Page not found' }, 404);
   // ページ情報取得
   const { data: page, error: pageErr } = await supabase
     .from('generated_page')
     .select('*')
     .eq('id', pageId)
+    .eq('run_id', ownership.runId)
     .single();
 
   if (pageErr || !page) return c.json({ error: 'Page not found' }, 404);
 
   // ステータスを pending に更新（ポーリングで完了検知するため）
-  await supabase.from('generated_page').update({ status: 'pending' }).eq('id', pageId);
+  await supabase
+    .from('generated_page')
+    .update({ status: 'pending' })
+    .eq('id', pageId)
+    .eq('run_id', ownership.runId);
 
   // 子プロセスで再生成ジョブを起動（index.ts経由）
   const jobEntry = path.resolve(__dirname, '..', '..', '..', 'job', 'dist', 'index.js');
@@ -429,7 +552,7 @@ galleryRoutes.post('/gallery/pages/:pageId/regenerate', async (c) => {
   const child = fork(jobEntry, [], {
     detached: true,
     stdio: 'inherit',
-    env: { ...process.env, JOB_NAME: 'regenerate-page', PAGE_ID: pageId },
+    env: { ...process.env, JOB_NAME: 'regenerate-page', PAGE_ID: pageId, STORE_NAME },
   });
   child.unref();
 

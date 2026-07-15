@@ -2,20 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OrderListConfirmResult, OrderListImportResult } from './order-list-import-panel';
+import { OrderListNewCardForm } from './order-list-new-card-form';
 import {
   clearDraftMappings,
+  canConfirmOrderListImport,
+  canSyncOrderListImport,
+  exclusionSelections,
   draftsForImport,
   firstReviewStatus,
   mappingSelections,
+  newCardSelections,
   nextReviewStatus,
   reviewStatusProgress,
   selectionProgress,
+  shouldResyncOrderListImport,
   stageDraftMapping,
   unselectedConfirmationMessage,
   unstageDraftMapping,
   type DraftMappingsByImport,
   type DraftMapping,
+  type OrderListExclusionSelection,
   type OrderListMappingSelection,
+  type OrderListNewCardSelection,
   type ReviewMatchStatus,
 } from './order-list-match-review-state';
 
@@ -61,8 +69,10 @@ const STATUS_OPTIONS: Array<{ value: ReviewMatchStatus; label: string }> = [
   { value: 'ambiguous', label: '曖昧' },
   { value: 'unmatched', label: '未照合' },
   { value: 'invalid', label: '不正行' },
+  { value: 'excluded', label: '除外済み' },
 ];
 const ITEMS_PER_PAGE = 40;
+type EditingMode = 'existing' | 'new';
 
 function parseJson(text: string): unknown {
   if (!text.trim()) return {};
@@ -138,9 +148,10 @@ type ExternalImagePreviewProps = {
   alt: string;
   className: string;
   emptyLabel: string;
+  onAvailabilityChange?: (available: boolean) => void;
 };
 
-function ExternalImagePreview({ urls, alt, className, emptyLabel }: ExternalImagePreviewProps) {
+function ExternalImagePreview({ urls, alt, className, emptyLabel, onAvailabilityChange }: ExternalImagePreviewProps) {
   const sources = [...new Set(urls.map(safeImageUrl).filter((value): value is string => Boolean(value)))];
   const sourceKey = sources.join('\u0000');
   const [failure, setFailure] = useState({ sourceKey, count: 0 });
@@ -163,7 +174,14 @@ function ExternalImagePreview({ urls, alt, className, emptyLabel }: ExternalImag
         alt={alt}
         loading="lazy"
         referrerPolicy="no-referrer"
-        onError={() => setFailure({ sourceKey, count: failedCount + 1 })}
+        onLoad={() => onAvailabilityChange?.(true)}
+        onError={() => {
+          const nextFailedCount = failedCount + 1;
+          setFailure({ sourceKey, count: nextFailedCount });
+          if (nextFailedCount >= sources.length) {
+            onAvailabilityChange?.(false);
+          }
+        }}
         className="h-full w-full object-contain"
       />
     </a>
@@ -171,10 +189,11 @@ function ExternalImagePreview({ urls, alt, className, emptyLabel }: ExternalImag
 }
 
 function canConfirmImport(item: RecentImport, stagedCount = 0): boolean {
-  return (item.import.status === 'parsed' || item.import.status === 'failed')
-    && item.import.structural_valid !== false
-    && item.import.persistence_complete === true
-    && item.summary.matched + stagedCount > 0;
+  return canConfirmOrderListImport({
+    status: item.import.status, structuralValid: item.import.structural_valid,
+    persistenceComplete: item.import.persistence_complete,
+    matchedCount: item.summary.matched, stagedCount,
+  });
 }
 
 function issueLabel(issue: unknown): string {
@@ -189,6 +208,7 @@ export function OrderListMatchReview({
   apiBaseUrl,
   onImportUpdated,
   onConfirmImport,
+  onResyncImport,
   confirmDisabled = false,
 }: {
   apiBaseUrl: string;
@@ -196,6 +216,15 @@ export function OrderListMatchReview({
   onConfirmImport: (
     importId: string,
     mappings: OrderListMappingSelection[],
+    newCards: OrderListNewCardSelection[],
+    exclusions: OrderListExclusionSelection[],
+    allowUnresolved: boolean,
+  ) => Promise<OrderListConfirmResult>;
+  onResyncImport: (
+    importId: string,
+    mappings: OrderListMappingSelection[],
+    newCards: OrderListNewCardSelection[],
+    exclusions: OrderListExclusionSelection[],
     allowUnresolved: boolean,
   ) => Promise<OrderListConfirmResult>;
   confirmDisabled?: boolean;
@@ -213,6 +242,7 @@ export function OrderListMatchReview({
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editingMode, setEditingMode] = useState<EditingMode>('existing');
   const [search, setSearch] = useState('');
   const [selectedDbCardId, setSelectedDbCardId] = useState('');
   const [draftMappingsByImport, setDraftMappingsByImport] = useState<DraftMappingsByImport>({});
@@ -220,10 +250,12 @@ export function OrderListMatchReview({
   const [savingMappingsImportId, setSavingMappingsImportId] = useState<string | null>(null);
   const [confirmingImportId, setConfirmingImportId] = useState<string | null>(null);
   const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [confirmationAction, setConfirmationAction] = useState<'sync' | 'save'>('sync');
   const [itemsRevision, setItemsRevision] = useState(0);
   const [loadedItemsQueryKey, setLoadedItemsQueryKey] = useState<string | null>(null);
   const [cardsByFranchise, setCardsByFranchise] = useState<Record<string, DbCard[]>>({});
   const [loadingFranchise, setLoadingFranchise] = useState<string | null>(null);
+  const [excelImageAvailabilityByKey, setExcelImageAvailabilityByKey] = useState<Record<string, boolean>>({});
   const cardCacheRef = useRef<Record<string, DbCard[]>>({});
   const reviewTopRef = useRef<HTMLDivElement>(null);
   const confirmationDialogRef = useRef<HTMLElement>(null);
@@ -238,10 +270,13 @@ export function OrderListMatchReview({
   const selectedImport = imports.find((item) => item.import.id === selectedImportId) ?? null;
   const editingItem = items.find((item) => item.id === editingItemId) ?? null;
   const draftMappings = draftsForImport(draftMappingsByImport, selectedImportId);
+  const stagedNewCards = newCardSelections(draftMappings);
   const progress = selectedImport
     ? selectionProgress(selectedImport.summary, draftMappings)
     : {
       staged: 0,
+      excluded: 0,
+      handled: 0,
       reflectable: 0,
       unselected: 0,
       invalid: 0,
@@ -249,6 +284,7 @@ export function OrderListMatchReview({
       ambiguousUnselected: 0,
       unmatchedSelected: 0,
       unmatchedUnselected: 0,
+      excludedSelected: 0,
     };
   const totalPages = Math.max(1, Math.ceil(itemsTotal / ITEMS_PER_PAGE));
   const activeStatusTotal = selectedImport?.summary[activeStatus] ?? 0;
@@ -256,7 +292,7 @@ export function OrderListMatchReview({
     ? `${selectedImportId}:${activeStatus}:${page}:${itemsRevision}:${activeStatusTotal}`
     : '';
   const reviewSteps = selectedImport
-    ? STATUS_OPTIONS.filter((option) => selectedImport.summary[option.value] > 0)
+    ? STATUS_OPTIONS.filter((option) => (selectedImport.summary[option.value] ?? 0) > 0)
     : [];
   const activeStepIndex = Math.max(0, reviewSteps.findIndex((option) => option.value === activeStatus));
   const unlockedStatus = unlockedStatusByImport[selectedImportId] ?? reviewSteps[0]?.value;
@@ -272,13 +308,31 @@ export function OrderListMatchReview({
   const atFinalReviewStep = reviewSteps.length > 0
     && page >= totalPages && followingStatus === null
     && !loadingItems && loadedItemsQueryKey === currentItemsQueryKey;
-  const canSaveAppliedMappings = selectedImport?.import.status === 'applied' && progress.staged > 0;
-  const finalActionAvailable = atFinalReviewStep
-    && (Boolean(selectedImport && canConfirmImport(selectedImport, progress.staged)) || canSaveAppliedMappings);
-  const finalWarning = unselectedConfirmationMessage(
-    progress,
-    selectedImport?.import.status === 'applied' ? 'save' : 'reflect',
-  );
+  const stagedExclusions = exclusionSelections(draftMappings);
+  const stagedExistingCount = mappingSelections(draftMappings).length;
+  const canSaveAppliedMappings = selectedImport?.import.status === 'applied' && progress.handled > 0;
+  const retryingConfirmedLaunch = Boolean(selectedImport?.import.status === 'confirmed'
+    && canConfirmImport(selectedImport, progress.staged));
+  const canSyncSelectedImport = Boolean(selectedImport && canSyncOrderListImport({
+    status: selectedImport.import.status,
+    structuralValid: selectedImport.import.structural_valid,
+    persistenceComplete: selectedImport.import.persistence_complete,
+    matchedCount: selectedImport.summary.matched,
+    stagedCount: progress.staged,
+  }));
+  const finalActionAvailable = canSyncSelectedImport;
+  const syncUnresolvedWarning = unselectedConfirmationMessage(progress, 'sync');
+  const saveUnresolvedWarning = unselectedConfirmationMessage(progress, 'save');
+  const newCardWarning = stagedNewCards.length > 0
+    ? `新規DB商品を${stagedNewCards.length.toLocaleString()}件登録し、Excel商品IDとの対応表を保存します。`
+    : null;
+  const exclusionWarning = stagedExclusions.length > 0
+    ? `${stagedExclusions.length.toLocaleString()}件を買取表から除外し、同じExcel商品IDが今後出た場合も自動で除外します。`
+    : null;
+  const syncWarning = retryingConfirmedLaunch
+    ? null : [newCardWarning, exclusionWarning, syncUnresolvedWarning].filter(Boolean).join('\n') || null;
+  const saveWarning = [newCardWarning, exclusionWarning, saveUnresolvedWarning].filter(Boolean).join('\n') || null;
+  const finalWarning = confirmationAction === 'save' ? saveWarning : syncWarning;
 
   const loadImports = useCallback(async (signal?: AbortSignal) => {
     setLoadingImports(true);
@@ -328,6 +382,7 @@ export function OrderListMatchReview({
     setItems([]);
     setItemsTotal(0);
     setEditingItemId(null);
+    setExcelImageAvailabilityByKey({});
     setSelectedDbCardId('');
     setDraftMappingsByImport({});
     setUnlockedStatusByImport({});
@@ -341,7 +396,7 @@ export function OrderListMatchReview({
   }, [loadImports]);
 
   useEffect(() => {
-    if (!selectedImport || selectedImport.summary[activeStatus] > 0) return;
+    if (!selectedImport || (selectedImport.summary[activeStatus] ?? 0) > 0) return;
     const initialStatus = firstReviewStatus(selectedImport.summary);
     if (!initialStatus || initialStatus === activeStatus) return;
     setActiveStatus(initialStatus);
@@ -465,7 +520,7 @@ export function OrderListMatchReview({
     if (!followingStatus) return;
     const nextLabel = STATUS_OPTIONS.find((option) => option.value === followingStatus)?.label ?? followingStatus;
     unlockAndOpenStatus(followingStatus);
-    setMessage(`${nextLabel}${selectedImport?.summary[followingStatus].toLocaleString() ?? 0}件の確認へ進みました。`);
+    setMessage(`${nextLabel}${(selectedImport?.summary[followingStatus] ?? 0).toLocaleString()}件の確認へ進みました。`);
   }
 
   function selectRecentImport(importId: string): void {
@@ -484,31 +539,25 @@ export function OrderListMatchReview({
     }
   }
 
-  async function editItem(item: OrderListItem) {
+  async function editItem(item: OrderListItem, mode: EditingMode) {
     setEditingItemId(item.id);
+    setEditingMode(mode);
     setSearch('');
-    setSelectedDbCardId(draftMappings[item.id]?.dbCardId ?? '');
+    const currentDraft = draftMappings[item.id];
+    setSelectedDbCardId(currentDraft?.kind === 'existing' ? currentDraft.dbCardId : '');
     setMessage(null);
     await loadCards(item.franchise);
   }
 
-  function stageMapping(item: OrderListItem, card: DbCard): void {
+  function stageSelection(item: OrderListItem, draft: DraftMapping): void {
     if (!selectedImport
-      || (item.match_status !== 'ambiguous' && item.match_status !== 'unmatched')
+      || !['ambiguous', 'unmatched', 'excluded'].includes(item.match_status)
       || confirmingImportId
       || savingMappingsImportId) return;
-    const matchStatus = item.match_status === 'ambiguous' ? 'ambiguous' : 'unmatched';
-    const finalActionLabel = selectedImport.import.status === 'applied' ? '保存' : '反映';
-    const draft: DraftMapping = {
-      itemId: item.id,
-      dbCardId: card.id,
-      cardLabel: cardLabel(card),
-      matchStatus,
-    };
+    const matchStatus = draft.matchStatus;
+    const finalActionLabel = '同期';
     const wasSelected = Boolean(draftMappings[item.id]);
-    setDraftMappingsByImport((current) => stageDraftMapping(current, selectedImport.import.id, {
-      ...draft,
-    }));
+    setDraftMappingsByImport((current) => stageDraftMapping(current, selectedImport.import.id, draft));
     setEditingItemId(null);
     setSelectedDbCardId('');
     setError(null);
@@ -520,7 +569,7 @@ export function OrderListMatchReview({
       const currentLabel = STATUS_OPTIONS.find((option) => option.value === matchStatus)?.label ?? matchStatus;
       const nextLabel = STATUS_OPTIONS.find((option) => option.value === nextStatus)?.label ?? nextStatus;
       unlockAndOpenStatus(nextStatus);
-      setMessage(`${currentLabel}の確認が完了しました。続けて${nextLabel}${selectedImport.summary[nextStatus].toLocaleString()}件を確認してください。`);
+      setMessage(`${currentLabel}の確認が完了しました。続けて${nextLabel}${(selectedImport.summary[nextStatus] ?? 0).toLocaleString()}件を確認してください。`);
       return;
     }
     if (!wasSelected && statusProgress.remaining === 0) {
@@ -528,6 +577,47 @@ export function OrderListMatchReview({
       return;
     }
     setMessage(`仮選択しました。まだDBには保存されていません。最後のボタンでまとめて${finalActionLabel}します。`);
+  }
+
+  function stageMapping(item: OrderListItem, card: DbCard): void {
+    stageSelection(item, {
+      kind: 'existing',
+      itemId: item.id,
+      dbCardId: card.id,
+      cardLabel: cardLabel(card),
+      matchStatus: item.match_status === 'ambiguous'
+        ? 'ambiguous'
+        : item.match_status === 'excluded' ? 'excluded' : 'unmatched',
+    });
+  }
+
+  function stageNewCard(item: OrderListItem, newCard: OrderListNewCardSelection): void {
+    if (newCard.item_id !== item.id) return;
+    stageSelection(item, {
+      kind: 'new',
+      itemId: item.id,
+      newCard,
+      cardLabel: [newCard.card_name, newCard.grade, newCard.list_no, newCard.tag].filter(Boolean).join(' / '),
+      matchStatus: item.match_status === 'ambiguous'
+        ? 'ambiguous'
+        : item.match_status === 'excluded' ? 'excluded' : 'unmatched',
+    });
+  }
+
+  function stageExclusion(item: OrderListItem): void {
+    const current = draftMappings[item.id];
+    if (current?.kind === 'exclude') {
+      removeStagedMapping(item.id);
+      return;
+    }
+    if (item.match_status !== 'ambiguous' && item.match_status !== 'unmatched') return;
+    stageSelection(item, {
+      kind: 'exclude',
+      itemId: item.id,
+      cardLabel: item.card_name,
+      matchStatus: item.match_status,
+    });
+    setMessage('買取表からの除外を仮設定しました。同期または対応保存まではDBに保存されません。');
   }
 
   function removeStagedMapping(itemId: string): void {
@@ -540,29 +630,36 @@ export function OrderListMatchReview({
     setMessage('仮選択を解除しました。');
   }
 
-  function requestFinalAction(): void {
+  function executeFinalAction(action: 'sync' | 'save'): void {
     if (!selectedImport) return;
-    const warning = finalWarning;
-    if (warning) {
-      confirmationTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setConfirmationOpen(true);
-      return;
-    }
-    if (selectedImport.import.status === 'applied') {
+    if (action === 'save') {
       void saveAppliedMappings();
+    } else if (shouldResyncOrderListImport({
+      status: selectedImport.import.status,
+      appliedSummary: selectedImport.import.applied_summary,
+    })) {
+      void resyncSelectedImport();
     } else {
       void confirmSelectedImport();
     }
   }
 
+  function requestFinalAction(action: 'sync' | 'save' = 'sync'): void {
+    if (!selectedImport) return;
+    setConfirmationAction(action);
+    const warning = action === 'save' ? saveWarning : syncWarning;
+    if (warning) {
+      confirmationTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setConfirmationOpen(true);
+      return;
+    }
+    executeFinalAction(action);
+  }
+
   function continueFinalAction(): void {
     if (!selectedImport) return;
     setConfirmationOpen(false);
-    if (selectedImport.import.status === 'applied') {
-      void saveAppliedMappings();
-    } else {
-      void confirmSelectedImport();
-    }
+    executeFinalAction(confirmationAction);
   }
 
   async function confirmSelectedImport(): Promise<void> {
@@ -573,6 +670,8 @@ export function OrderListMatchReview({
       || savingMappingsImportId) return;
 
     const selections = mappingSelections(draftMappings);
+    const newCards = newCardSelections(draftMappings);
+    const exclusions = exclusionSelections(draftMappings);
     setConfirmingImportId(selectedImport.import.id);
     setConfirmationOpen(false);
     setError(null);
@@ -581,11 +680,47 @@ export function OrderListMatchReview({
       await onConfirmImport(
         selectedImport.import.id,
         selections,
+        newCards,
+        exclusions,
         progress.unselected > 0,
       );
       setDraftMappingsByImport((current) => clearDraftMappings(current, selectedImport.import.id));
     } catch (confirmError) {
-      setError(confirmError instanceof Error ? confirmError.message : '反映の開始に失敗しました。');
+      setError(confirmError instanceof Error ? confirmError.message : '同期の開始に失敗しました。');
+    } finally {
+      setConfirmingImportId(null);
+    }
+  }
+
+  async function resyncSelectedImport(): Promise<void> {
+    if (!selectedImport
+      || !shouldResyncOrderListImport({
+        status: selectedImport.import.status,
+        appliedSummary: selectedImport.import.applied_summary,
+      })
+      || !canSyncSelectedImport
+      || confirmDisabled
+      || confirmingImportId
+      || savingMappingsImportId) return;
+
+    const selections = mappingSelections(draftMappings);
+    const newCards = newCardSelections(draftMappings);
+    const exclusions = exclusionSelections(draftMappings);
+    setConfirmingImportId(selectedImport.import.id);
+    setConfirmationOpen(false);
+    setError(null);
+    setMessage(null);
+    try {
+      await onResyncImport(
+        selectedImport.import.id,
+        selections,
+        newCards,
+        exclusions,
+        progress.unselected > 0,
+      );
+      setDraftMappingsByImport((current) => clearDraftMappings(current, selectedImport.import.id));
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : '再同期の開始に失敗しました。');
     } finally {
       setConfirmingImportId(null);
     }
@@ -593,11 +728,16 @@ export function OrderListMatchReview({
 
   async function saveAppliedMappings(): Promise<void> {
     if (!selectedImport
-      || selectedImport.import.status !== 'applied'
+      || !shouldResyncOrderListImport({
+        status: selectedImport.import.status,
+        appliedSummary: selectedImport.import.applied_summary,
+      })
       || savingMappingsImportId
       || confirmingImportId) return;
     const selections = mappingSelections(draftMappings);
-    if (selections.length === 0) return;
+    const newCards = newCardSelections(draftMappings);
+    const exclusions = exclusionSelections(draftMappings);
+    if (selections.length + newCards.length + exclusions.length === 0) return;
 
     setSavingMappingsImportId(selectedImport.import.id);
     setConfirmationOpen(false);
@@ -607,7 +747,7 @@ export function OrderListMatchReview({
       const response = await fetch(`${endpointBase}/api/order-list/imports/${encodeURIComponent(selectedImport.import.id)}/mappings`, {
         method: 'PATCH',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mappings: selections }),
+        body: JSON.stringify({ mappings: selections, new_cards: newCards, exclusions }),
       });
       const payload = parseJson(await response.text());
       if (!response.ok) throw new Error(errorMessage(payload, `対応表の保存に失敗しました（${response.status}）`));
@@ -615,7 +755,7 @@ export function OrderListMatchReview({
       setDraftMappingsByImport((current) => clearDraftMappings(current, selectedImport.import.id));
       setEditingItemId(null);
       setSelectedDbCardId('');
-      setMessage(`${selections.length.toLocaleString()}件の対応表を保存しました。次回以降のExcel取込から使用されます。`);
+      setMessage(`${(selections.length + newCards.length + exclusions.length).toLocaleString()}件を保存しました（新規DB商品${newCards.length.toLocaleString()}件・除外${exclusions.length.toLocaleString()}件）。次回以降のExcel取込から使用されます。`);
       await Promise.resolve(onImportUpdated?.(selectedImport.import.id)).catch(() => undefined);
       await loadImports();
       setItemsRevision((current) => current + 1);
@@ -645,22 +785,22 @@ export function OrderListMatchReview({
       <div ref={reviewTopRef} className="scroll-mt-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
         <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-bold text-text-primary truncate">{selectedImport.import.filename}</h3><span className="rounded-full border border-border-card bg-page-bg px-2.5 py-0.5 text-xs text-text-secondary">{statusLabel(selectedImport.import.status)}</span></div><p className="mt-1 text-xs text-text-secondary">取込ID: <span className="font-mono">{selectedImport.import.id}</span></p></div>
         <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
-          <p className="text-xs text-text-secondary">照合済み {selectedImport.summary.matched.toLocaleString()} / 今回選択 {progress.staged.toLocaleString()} / 未選択 {progress.unselected.toLocaleString()}{progress.invalid > 0 ? ` / 入力エラー ${progress.invalid.toLocaleString()}` : ''}</p>
+          <p className="text-xs text-text-secondary">照合済み {selectedImport.summary.matched.toLocaleString()} / 今回対応 {progress.staged.toLocaleString()}（既存対応 {stagedExistingCount.toLocaleString()}・新規登録 {stagedNewCards.length.toLocaleString()}） / 除外予定 {progress.excluded.toLocaleString()} / 除外済み {(selectedImport.summary.excluded ?? 0).toLocaleString()} / 未選択 {progress.unselected.toLocaleString()}{progress.invalid > 0 ? ` / 入力エラー ${progress.invalid.toLocaleString()}` : ''}</p>
           {finalActionAvailable && (
             <button
               type="button"
-              onClick={requestFinalAction}
+              onClick={() => requestFinalAction('sync')}
               disabled={confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null}
               className="rounded-full bg-text-primary px-4 py-2 text-xs font-semibold text-white disabled:bg-text-primary/40 disabled:cursor-not-allowed"
             >
-              {selectedImport.import.status === 'applied'
-                ? savingMappingsImportId === selectedImport.import.id ? '対応表を保存中...' : '選択した対応をまとめて保存'
-                : confirmingImportId === selectedImport.import.id ? '反映を開始中...' : 'この取込を確認して反映'}
+              {confirmingImportId === selectedImport.import.id
+                ? '同期を開始中...'
+                : selectedImport.import.status === 'confirmed' ? '同期を再試行' : 'この内容で同期'}
             </button>
           )}
         </div>
       </div>
-      {selectedImport.import.status === 'applied' && <div role="note" className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">反映済み取込で確定した対応は次回以降のExcel取込から使用されます。すでに反映済みの価格・画像には遡って適用されません。</div>}
+      {selectedImport.import.status === 'applied' && <div role="note" className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">「この内容で同期」は現在の照合・除外内容でこの取込を再同期します。「対応だけ保存」は過去の出力を変えず、次回以降のExcel取込から使用します。</div>}
       {(selectedImport.import.status === 'parsed' || selectedImport.import.status === 'failed')
         && selectedImport.import.structural_valid !== false
         && selectedImport.import.persistence_complete !== true && (
@@ -668,23 +808,29 @@ export function OrderListMatchReview({
             取込データの保存が完了していないため、この履歴からは反映を開始できません。同じExcelを再読み込みしてください。
           </div>
         )}
-      {!canMapImport(selectedImport.import.status) && <div role="note" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">現在は{statusLabel(selectedImport.import.status)}のため閲覧のみです。処理完了後に対応付けできます。</div>}
+      {!canMapImport(selectedImport.import.status) && <div role="note" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+        {selectedImport.import.status === 'confirmed'
+          ? '商品と対応表は確定済みです。同期ジョブが開始されていない場合は「同期を再試行」を押してください。'
+          : <>現在は{statusLabel(selectedImport.import.status)}のため閲覧のみです。処理完了後に対応付けできます。</>}
+      </div>}
       {reviewSteps.length > 0 ? <>
         <div role="note" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-amber-950 shadow-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-xs font-bold uppercase tracking-wide text-amber-800">確認工程 {activeStepIndex + 1} / {reviewSteps.length}</p>
               <p className="mt-1 text-base font-bold">{STATUS_OPTIONS.find((option) => option.value === activeStatus)?.label}を確認中</p>
-              <p className="mt-1 text-sm leading-relaxed">見落としを防ぐため、各工程を順番に確認してから最後にまとめて{selectedImport.import.status === 'applied' ? '保存' : '反映'}します。</p>
+              <p className="mt-1 text-sm leading-relaxed">対応や除外は任意です。選択0件でも「この内容で同期」から照合済み商品だけを同期できます。</p>
             </div>
             <div className="shrink-0 rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-bold">
               {activeStatus === 'invalid'
                 ? `確認対象 ${currentStatusProgress.total.toLocaleString()}件`
-                : `選択 ${currentStatusProgress.selected.toLocaleString()} / ${currentStatusProgress.total.toLocaleString()}件`}
+                : activeStatus === 'excluded'
+                  ? `除外済み ${currentStatusProgress.total.toLocaleString()}件`
+                  : `対応・除外 ${currentStatusProgress.selected.toLocaleString()} / ${currentStatusProgress.total.toLocaleString()}件`}
             </div>
           </div>
         </div>
-        <div className="grid gap-2 sm:grid-cols-3" role="group" aria-label="未解決商品の確認工程">
+        <div className="grid gap-2 sm:grid-cols-4" role="group" aria-label="商品の確認区分">
           {reviewSteps.map((option, index) => {
             const statusProgress = reviewStatusProgress(selectedImport.summary, draftMappings, option.value);
             const locked = index > unlockedStepIndex;
@@ -701,7 +847,9 @@ export function OrderListMatchReview({
               <span className={`mt-1 block text-xs ${active ? 'text-white/80' : 'text-text-secondary'}`}>
                 {option.value === 'invalid'
                   ? `${statusProgress.total.toLocaleString()}件を確認`
-                  : `${statusProgress.selected.toLocaleString()} / ${statusProgress.total.toLocaleString()}件を選択`}
+                  : option.value === 'excluded'
+                    ? `${statusProgress.total.toLocaleString()}件を除外済み`
+                    : `${statusProgress.selected.toLocaleString()} / ${statusProgress.total.toLocaleString()}件を対応・除外`}
               </span>
               {locked && <span className="mt-1 block text-[11px]">前の工程を終えると開きます</span>}
             </button>;
@@ -734,10 +882,25 @@ export function OrderListMatchReview({
             && selectedImport.import.structural_valid !== false
             && selectedImport.import.persistence_complete === true
             && !confirmDisabled && confirmingImportId === null && savingMappingsImportId === null;
+          const canExclude = canMap && (item.match_status === 'ambiguous' || item.match_status === 'unmatched');
           const isEditing = item.id === editingItemId;
           const draftMapping = draftMappings[item.id];
+          const selectedDraftCardId = draftMapping?.kind === 'existing' ? draftMapping.dbCardId : null;
           const selectedCard = cards.find((card) => card.id === selectedDbCardId);
           const excelImageUrl = safeImageUrl(item.image_url);
+          const excelImageAvailabilityKey = `${item.id}\u0000${excelImageUrl ?? ''}`;
+          const excelImageAvailable = Boolean(excelImageUrl) && excelImageAvailabilityByKey[excelImageAvailabilityKey] === true;
+          const tagOptions = [...new Set(cards.map((card) => card.tag?.trim()).filter((tag): tag is string => Boolean(tag)))].sort((left, right) => left.localeCompare(right, 'ja'));
+          const initialNewCard = draftMapping?.kind === 'new'
+            ? draftMapping.newCard
+            : {
+              item_id: item.id,
+              card_name: item.card_name,
+              grade: item.grade ?? '',
+              list_no: item.list_no ?? '',
+              tag: '',
+              alt_image_url: null,
+            };
           return <article key={item.id} className="rounded-xl border border-border-card bg-card-bg p-4">
             <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
               <div className="flex min-w-0 items-start gap-4">
@@ -746,20 +909,38 @@ export function OrderListMatchReview({
                   alt={`${item.card_name}のExcel画像`}
                   className="h-32 w-24 sm:h-36 sm:w-28"
                   emptyLabel="Excel画像なし"
+                  onAvailabilityChange={(available) => {
+                    setExcelImageAvailabilityByKey((current) => current[excelImageAvailabilityKey] === available
+                      ? current
+                      : { ...current, [excelImageAvailabilityKey]: available });
+                    if (!available && draftMapping?.kind === 'new' && !draftMapping.newCard.alt_image_url) {
+                      removeStagedMapping(item.id);
+                      setMessage('Excel画像を表示できなかったため、代替画像のない新規仮登録を解除しました。代替画像URLを入力して、もう一度仮登録してください。');
+                    }
+                  }}
                 />
                 <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold text-text-primary">{item.card_name}</h4><span className="rounded-full bg-warm-100 px-2 py-0.5 text-xs text-text-secondary">{franchiseLabel(item.franchise)}</span>{draftMapping && <span className="rounded-full border border-[#bfd4b8] bg-[#f3faf0] px-2 py-0.5 text-xs font-bold text-[#2d5a2f]">選択済み・未反映</span>}{item.match_status === 'invalid' && <span className="rounded-full border border-[#e3b0a2] bg-[#fff0ec] px-2 py-0.5 text-xs font-bold text-[#8d3a22]">対応付け不可</span>}</div>
+                  <div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold text-text-primary">{item.card_name}</h4><span className="rounded-full bg-warm-100 px-2 py-0.5 text-xs text-text-secondary">{franchiseLabel(item.franchise)}</span>{draftMapping && <span className="rounded-full border border-[#bfd4b8] bg-[#f3faf0] px-2 py-0.5 text-xs font-bold text-[#2d5a2f]">{draftMapping.kind === 'new'
+  ? '新規登録予定・未反映'
+  : draftMapping.kind === 'exclude'
+    ? '除外予定・未反映'
+    : item.match_status === 'excluded' ? '除外解除予定・未反映' : '既存商品選択済み・未反映'}</span>}{item.match_status === 'excluded' && !draftMapping && <span className="rounded-full border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs font-bold text-slate-700">除外済み</span>}{item.match_status === 'invalid' && <span className="rounded-full border border-[#e3b0a2] bg-[#fff0ec] px-2 py-0.5 text-xs font-bold text-[#8d3a22]">対応付け不可</span>}</div>
                   <p className="mt-1 text-xs text-text-secondary">Excel商品ID: <span className="font-mono">{item.excel_product_id}</span> / {item.sheet_name} {item.sheet_row_number}行目</p>
                   <p className="mt-1 text-xs text-text-secondary">{[item.grade, item.expansion, item.list_no, item.rarity].filter(Boolean).join(' / ') || '商品属性なし'} / {item.source_price === null ? '価格なし' : `${item.source_price.toLocaleString()}円`} / 募集数 {item.demand ?? 'なし'}</p>
                   {excelImageUrl && <a href={excelImageUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs text-blue-700 underline">Excel画像を別タブで開く</a>}
                 </div>
               </div>
-              {canMap && <button type="button" onClick={() => { void editItem(item); }} className="shrink-0 rounded-full border border-border-card px-3.5 py-2 text-xs font-semibold text-text-primary hover:bg-warm-100 disabled:opacity-40">{isEditing ? '商品を選択中' : draftMapping ? '選択を変更' : 'DB商品を選択'}</button>}
+              {canMap && <div className="flex shrink-0 flex-wrap gap-2 sm:justify-end">
+                <button type="button" onClick={() => { void editItem(item, 'existing'); }} className={`rounded-full border px-3.5 py-2 text-xs font-semibold ${isEditing && editingMode === 'existing' ? 'border-text-primary bg-text-primary text-white' : 'border-border-card text-text-primary hover:bg-warm-100'}`}>既存DB商品を選ぶ</button>
+                <button type="button" onClick={() => { void editItem(item, 'new'); }} className={`rounded-full border px-3.5 py-2 text-xs font-semibold ${isEditing && editingMode === 'new' ? 'border-blue-900 bg-blue-900 text-white' : 'border-blue-300 bg-blue-50 text-blue-900 hover:bg-blue-100'}`}>DBにないので新規登録</button>
+                {canExclude && <button type="button" aria-pressed={draftMapping?.kind === 'exclude'} onClick={() => stageExclusion(item)} className={`rounded-full border px-3.5 py-2 text-xs font-semibold ${draftMapping?.kind === 'exclude' ? 'border-amber-800 bg-amber-800 text-white' : 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100'}`}>{draftMapping?.kind === 'exclude' ? '除外予定を解除' : '買取表に載せない'}</button>}
+              </div>}
             </div>
             {item.match_note && <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">{item.match_note}</p>}
+            {item.match_status === 'excluded' && !draftMapping && <p className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">同じExcel商品IDは今後も自動で除外されます。解除する場合は既存DB商品または新規登録を選んで同期してください。</p>}
             {draftMapping && (
               <div role="status" className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#bfd4b8] bg-[#f3faf0] px-3 py-2 text-xs text-[#2d5a2f]">
-                <span>仮選択: {draftMapping.cardLabel}（まだDBには保存されていません）</span>
+                <span>{draftMapping.kind === 'new' ? '新規登録予定' : draftMapping.kind === 'exclude' ? '今後も自動除外予定' : item.match_status === 'excluded' ? '除外解除予定' : '仮選択'}: {draftMapping.cardLabel}（まだDBには保存されていません）</span>
                 <button type="button" onClick={() => removeStagedMapping(item.id)} className="rounded-full border border-[#bfd4b8] bg-white px-2.5 py-1 font-semibold">選択を解除</button>
               </div>
             )}
@@ -785,11 +966,11 @@ export function OrderListMatchReview({
                         {canMap && card && (
                           <button
                             type="button"
-                            aria-pressed={draftMapping?.dbCardId === card.id}
+                            aria-pressed={selectedDraftCardId === card.id}
                             onClick={() => stageMapping(item, card)}
-                            className={`rounded-full border px-2.5 py-1 font-semibold ${draftMapping?.dbCardId === card.id ? 'border-[#8eb286] bg-[#f3faf0] text-[#2d5a2f]' : 'border-border-card bg-card-bg text-text-primary'}`}
+                            className={`rounded-full border px-2.5 py-1 font-semibold ${selectedDraftCardId === card.id ? 'border-[#8eb286] bg-[#f3faf0] text-[#2d5a2f]' : 'border-border-card bg-card-bg text-text-primary'}`}
                           >
-                            {draftMapping?.dbCardId === card.id ? '選択済み' : 'この候補を選択'}
+                            {selectedDraftCardId === card.id ? '選択済み' : 'この候補を選択'}
                           </button>
                         )}
                       </li>
@@ -799,7 +980,7 @@ export function OrderListMatchReview({
               </div>
             )}
             {item.validation_issues.length > 0 && <div className="mt-3 border-t border-border-card pt-3 text-xs text-[#8d3a22]"><p className="font-semibold">入力エラー</p><ul className="mt-1 list-disc pl-5">{item.validation_issues.map((issue, index) => <li key={`${item.id}-issue-${index}`}>{issueLabel(issue)}</li>)}</ul></div>}
-            {isEditing && canMap && <div className="mt-4 rounded-xl border border-border-card bg-page-bg p-3">
+            {isEditing && editingMode === 'existing' && canMap && <div className="mt-4 rounded-xl border border-border-card bg-page-bg p-3">
               <label htmlFor={`db-card-search-${item.id}`} className="block text-xs font-semibold text-text-primary">DB商品を検索</label><input id={`db-card-search-${item.id}`} type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="商品名・リスト番号・グレード・タグ" className="mt-1.5 w-full rounded-lg border border-border-card bg-card-bg px-3 py-2 text-sm" />
               <label htmlFor={`db-card-select-${item.id}`} className="mt-3 block text-xs font-semibold text-text-primary">対応先（最大100件表示）</label><select id={`db-card-select-${item.id}`} value={selectedDbCardId} onChange={(event) => setSelectedDbCardId(event.target.value)} disabled={loadingFranchise === item.franchise} className="mt-1.5 w-full rounded-lg border border-border-card bg-card-bg px-3 py-2 text-sm disabled:opacity-50"><option value="">DB商品を選択してください</option>{filteredCards.map((card) => <option key={card.id} value={card.id}>{cardLabel(card)}</option>)}</select>
               {availableCards.length > 100 && !search.trim() && <p className="mt-1 text-xs text-text-secondary">候補が多いため検索欄で絞り込んでください。</p>}
@@ -817,10 +998,24 @@ export function OrderListMatchReview({
                   </div>
                 </div>
               )}
-              {selectedImport.import.status === 'applied' && <p className="mt-2 text-xs font-medium text-blue-800">次回のExcel取込から有効です。反映済み出力は変更しません。</p>}
+              {selectedImport.import.status === 'applied' && <p className="mt-2 text-xs font-medium text-blue-800">「この内容で同期」なら今回の再同期に反映し、「対応だけ保存」なら次回以降から有効になります。</p>}
               <p className="mt-2 text-xs text-text-secondary">ここでは仮選択だけ行い、DB保存は最後のボタンでまとめて実行します。</p>
               <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={() => { setEditingItemId(null); setSelectedDbCardId(''); }} className="rounded-full border border-border-card px-3.5 py-2 text-xs text-text-secondary disabled:opacity-40">キャンセル</button><button type="button" onClick={() => { if (selectedCard) stageMapping(item, selectedCard); }} disabled={!selectedCard} className="rounded-full bg-text-primary px-4 py-2 text-xs font-semibold text-white disabled:bg-text-primary/40">この商品を選択</button></div>
             </div>}
+            {isEditing && editingMode === 'new' && canMap && (
+              <OrderListNewCardForm
+                key={`${item.id}:${draftMapping?.kind === 'new' ? draftMapping.cardLabel : 'new'}`}
+                itemId={item.id}
+                franchiseLabel={franchiseLabel(item.franchise)}
+                initialValue={initialNewCard}
+                tagOptions={tagOptions}
+                imageAvailable={excelImageAvailable}
+                appliesFromNextImport={false}
+                disabled={confirmingImportId !== null || savingMappingsImportId !== null}
+                onCancel={() => setEditingItemId(null)}
+                onStage={(selection) => stageNewCard(item, selection)}
+              />
+            )}
           </article>;
         })}
       </div>}
@@ -852,30 +1047,32 @@ export function OrderListMatchReview({
           </button>
         </div>
       )}
-      {atFinalReviewStep && canConfirmImport(selectedImport, progress.staged) && (
-        <div className="mt-2 flex flex-col gap-3 rounded-xl border border-border-card bg-page-bg p-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-text-secondary">反映対象 {progress.reflectable.toLocaleString()}件（今回選択 {progress.staged.toLocaleString()}件） / 未選択 {progress.unselected.toLocaleString()}件{progress.invalid > 0 ? ` / 入力エラー ${progress.invalid.toLocaleString()}件` : ''}</p>
+      {canSyncSelectedImport && (
+        <div className="mt-2 flex flex-col gap-3 rounded-xl border-2 border-blue-400 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-blue-900">同期対象 {progress.reflectable.toLocaleString()}件（既存対応 {stagedExistingCount.toLocaleString()}件・新規登録 {stagedNewCards.length.toLocaleString()}件） / 今後も除外 {progress.excluded.toLocaleString()}件 / 未選択 {progress.unselected.toLocaleString()}件{progress.invalid > 0 ? ` / 入力エラー ${progress.invalid.toLocaleString()}件` : ''}</p>
           <button
             type="button"
-            aria-label="この取込を確認して反映（一覧下部）"
-            onClick={requestFinalAction}
+            aria-label={selectedImport.import.status === 'confirmed' ? '同期を再試行（一覧下部）' : 'この内容で同期（一覧下部）'}
+            onClick={() => requestFinalAction('sync')}
             disabled={confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null}
             className="shrink-0 rounded-full bg-text-primary px-5 py-2.5 text-sm font-semibold text-white disabled:bg-text-primary/40 disabled:cursor-not-allowed"
           >
-            {confirmingImportId === selectedImport.import.id ? '反映を開始中...' : 'この取込を確認して反映'}
+            {confirmingImportId === selectedImport.import.id
+              ? '同期を開始中...'
+              : selectedImport.import.status === 'confirmed' ? '同期を再試行' : 'この内容で同期'}
           </button>
         </div>
       )}
-      {atFinalReviewStep && canSaveAppliedMappings && (
+      {canSaveAppliedMappings && (
         <div className="mt-2 flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-blue-800">仮選択した{progress.staged.toLocaleString()}件を対応表へ保存します。過去の出力は変更せず、次回以降の取込から使用します。</p>
+          <p className="text-xs text-blue-800">既存対応{stagedExistingCount.toLocaleString()}件・新規DB商品{stagedNewCards.length.toLocaleString()}件・除外{stagedExclusions.length.toLocaleString()}件を保存します。過去の出力は変更せず、次回以降の取込から使用します。</p>
           <button
             type="button"
-            onClick={requestFinalAction}
+            onClick={() => requestFinalAction('save')}
             disabled={savingMappingsImportId !== null || confirmingImportId !== null}
-            className="shrink-0 rounded-full bg-text-primary px-5 py-2.5 text-sm font-semibold text-white disabled:bg-text-primary/40 disabled:cursor-not-allowed"
+            className="shrink-0 rounded-full border border-blue-300 bg-white px-5 py-2.5 text-sm font-semibold text-blue-900 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {savingMappingsImportId === selectedImport.import.id ? '対応表を保存中...' : '選択した対応をまとめて保存'}
+            {savingMappingsImportId === selectedImport.import.id ? '対応表を保存中...' : '対応だけ保存'}
           </button>
         </div>
       )}
@@ -883,11 +1080,19 @@ export function OrderListMatchReview({
     {confirmationOpen && selectedImport && (
       <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/55 p-4" role="presentation">
         <section ref={confirmationDialogRef} role="alertdialog" aria-modal="true" aria-labelledby="order-list-final-confirm-title" aria-describedby="order-list-final-confirm-description" className="w-full max-w-lg rounded-2xl border border-border-card bg-card-bg p-5 shadow-2xl sm:p-6">
-          <h3 id="order-list-final-confirm-title" className="text-lg font-bold text-text-primary">未選択または入力エラーが残っています</h3>
+          <h3 id="order-list-final-confirm-title" className="text-lg font-bold text-text-primary">
+            {progress.unselected > 0 || progress.invalid > 0
+              ? '未選択または入力エラーが残っています'
+              : confirmationAction === 'save' ? '対応内容を保存します' : 'この内容で同期します'}
+          </h3>
           <div id="order-list-final-confirm-description" className="mt-3 space-y-2 text-sm leading-relaxed text-text-secondary">
             {(finalWarning ?? '').split('\n').filter(Boolean).map((line) => <p key={line}>{line}</p>)}
           </div>
-          <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">残っている商品は今回{selectedImport.import.status === 'applied' ? '対応表へ保存されません' : '反映されません'}。</p>
+          {(progress.unselected > 0 || progress.invalid > 0) && (
+            <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+              残っている商品は今回{confirmationAction === 'save' ? '対応表へ保存されません' : '同期されません'}。
+            </p>
+          )}
           <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button ref={confirmationCancelRef} type="button" onClick={closeConfirmation} className="rounded-full border border-border-card px-4 py-2.5 text-sm font-semibold text-text-secondary hover:bg-warm-100">戻って確認</button>
             <button
@@ -896,7 +1101,9 @@ export function OrderListMatchReview({
               disabled={confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null}
               className="rounded-full bg-text-primary px-5 py-2.5 text-sm font-bold text-white hover:bg-warm-800 disabled:opacity-40"
             >
-              {selectedImport.import.status === 'applied' ? '残っている商品を除いて保存' : '残っている商品を除いて反映'}
+              {confirmationAction === 'save'
+                ? progress.unselected > 0 || progress.invalid > 0 ? '未選択を除いて対応だけ保存' : '対応だけ保存'
+                : progress.unselected > 0 || progress.invalid > 0 ? '未選択を除いて同期' : 'この内容で同期'}
             </button>
           </div>
         </section>

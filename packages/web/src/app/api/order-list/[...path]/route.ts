@@ -1,3 +1,9 @@
+import {
+  OPERATOR_SESSION_COOKIE,
+  operatorEmailAllowlistFromEnv,
+  readCookie,
+  verifyOperatorSession,
+} from '@/lib/operator-auth';
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 
 type RouteContext = {
@@ -22,6 +28,11 @@ async function proxyOrderListRequest(request: Request, context: RouteContext): P
 
   if (!apiToken || apiToken.length < 32) {
     return Response.json({ error: 'オーダーリスト取込の認証設定がありません' }, { status: 503 });
+  }
+  const session = readCookie(request.headers.get('cookie'), OPERATOR_SESSION_COOKIE);
+  const sessionResult = await verifyOperatorSession({ session, secret: apiToken });
+  if (!sessionResult.ok || !operatorEmailAllowlistFromEnv().has(sessionResult.value.email)) {
+    return Response.json({ error: 'Operator authentication required' }, { status: 401 });
   }
 
   const { path } = await context.params;

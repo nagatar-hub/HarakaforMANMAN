@@ -5,6 +5,13 @@ import Link from 'next/link';
 import { fetchImagesAsFiles, shareFiles, downloadFilesAsZip, isShareSupported } from '@/lib/download-images';
 import type { DownloadableImage } from '@/lib/download-images';
 import OrderListImportPanel from './order-list-import-panel';
+import {
+  findEligibleGenerationRun,
+  getRunDisplayStatus,
+  getRunPollingInterval,
+  isLaunchPendingGenerateResponse,
+  isRunActive,
+} from './run-generation-state';
 
 type Run = {
   id: string;
@@ -66,6 +73,10 @@ type ExcludedCards = {
   image_ng: ExcludedCard[];
 };
 
+type GenerateConfirmation = ExcludedCards & {
+  runId: string;
+};
+
 const STATUS_STYLES: Record<string, string> = {
   completed: 'bg-[#f3faf0] text-[#2d5a2f] border-[#bfd4b8]',
   running: 'bg-blue-50 text-blue-700 border-blue-200 animate-pulse',
@@ -103,7 +114,7 @@ export default function RunsPage() {
   const [detailCards, setDetailCards] = useState<DetailCard[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [generateConfirm, setGenerateConfirm] = useState<ExcludedCards | null>(null);
+  const [generateConfirm, setGenerateConfirm] = useState<GenerateConfirmation | null>(null);
   const [generateConfirmChecked, setGenerateConfirmChecked] = useState(false);
   const [generateConfirmLoading, setGenerateConfirmLoading] = useState(false);
   const [editingCard, setEditingCard] = useState<ExcludedCard | null>(null);
@@ -124,8 +135,6 @@ export default function RunsPage() {
   const [dlProgress, setDlProgress] = useState({ current: 0, total: 0 });
   const [readyFiles, setReadyFiles] = useState<File[] | null>(null);
   const [readyZipName, setReadyZipName] = useState('');
-  const runsRef = useRef(runs);
-  runsRef.current = runs;
   // 前回fetchで running だった run ID を記録
   const prevRunningRef = useRef<Set<string>>(new Set());
   // 既にトースト表示済みの run ID（重複防止）
@@ -170,7 +179,7 @@ export default function RunsPage() {
         }
 
         // 現在 running な ID を記録
-        prevRunningRef.current = new Set(newRuns.filter(r => r.status === 'running').map(r => r.id));
+        prevRunningRef.current = new Set(newRuns.filter(isRunActive).map(r => r.id));
         setRuns(newRuns);
       }
     } catch {
@@ -179,25 +188,24 @@ export default function RunsPage() {
     setLoading(false);
   }, []);
 
-  // 動的ポーリング: running中は2秒、それ以外は10秒
+  const runningRun = runs.find(isRunActive);
+  const hasRunning = Boolean(runningRun);
+  const eligibleGenerationRun = findEligibleGenerationRun(runs);
+  const hasCompletedSync = eligibleGenerationRun !== null;
+
+  // 初回取得は1回だけ。以後は単一intervalで、実行中だけ頻度を上げる。
   useEffect(() => {
-    fetchRuns();
-    const id = setInterval(() => {
-      fetchRuns();
-    }, runsRef.current.some(r => r.status === 'running') ? 2000 : 10000);
-    return () => clearInterval(id);
+    void fetchRuns();
   }, [fetchRuns]);
 
-  // running 状態が変わったらインターバルを再設定
-  const runningRun = runs.find(r => r.status === 'running');
-  const hasRunning = !!runningRun;
-  const hasCompletedSync = runs.some(r => r.status === 'completed' && r.plan_done_at && !r.generate_done_at);
   useEffect(() => {
-    const id = setInterval(fetchRuns, hasRunning ? 2000 : 10000);
+    const id = window.setInterval(() => {
+      void fetchRuns();
+    }, getRunPollingInterval(hasRunning));
     return () => clearInterval(id);
   }, [hasRunning, fetchRuns]);
 
-  async function triggerJob(jobName: string) {
+  async function triggerJob(jobName: 'sync') {
     setTriggering(jobName);
     try {
       const res = await fetch(`${API_URL}/api/jobs/${jobName}`, { method: 'POST' });
@@ -212,10 +220,7 @@ export default function RunsPage() {
         await fetchRuns();
         return;
       }
-      addToast({
-        type: 'success',
-        message: jobName === 'generate' ? '画像生成ジョブを起動しました。' : '同期ジョブを起動しました。',
-      });
+      addToast({ type: 'success', message: '同期ジョブを起動しました。' });
       await fetchRuns();
       setTimeout(fetchRuns, 1000);
     } catch {
@@ -225,25 +230,61 @@ export default function RunsPage() {
     }
   }
 
+  async function triggerGenerate(runId: string) {
+    setTriggering('generate');
+    try {
+      const response = await fetch('/api/run-actions/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_id: runId }),
+      });
+      let payload: { error?: string; launch_pending?: boolean; run_id?: string } = {};
+      try {
+        payload = await response.json() as typeof payload;
+      } catch {
+        // An empty or non-JSON upstream error still gets a useful fallback below.
+      }
+      if (!response.ok) {
+        // claim後にCloud Runの応答だけが不明になった場合も、running状態を即時反映する。
+        await fetchRuns();
+        const launchPending = isLaunchPendingGenerateResponse(payload);
+        addToast({
+          type: 'warning',
+          message: launchPending
+            ? '起動要求は受け付けました。実行状態を確認し続けます。'
+            : payload.error || `画像生成を開始できませんでした（HTTP ${response.status}）`,
+        });
+        return;
+      }
+      await fetchRuns();
+    } catch (error) {
+      addToast({
+        type: 'warning',
+        message: `画像生成を開始できませんでした: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    } finally {
+      setTriggering(null);
+    }
+  }
   async function handleGenerateClick() {
-    // 最新の completed run を取得して除外カード一覧を確認
-    const latestCompleted = runs.find(r => r.status === 'completed');
-    if (!latestCompleted) {
+    // 除外確認と起動で、同じ未生成Run IDを最後まで使う。
+    const targetRun = eligibleGenerationRun;
+    if (!targetRun) {
       addToast({ type: 'warning', message: '同期が完了したRunがありません。先に同期を実行してください。' });
       return;
     }
     setGenerateConfirmLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/runs/${latestCompleted.id}/excluded-cards`);
+      const res = await fetch(`${API_URL}/api/runs/${targetRun.id}/excluded-cards`);
       if (!res.ok) throw new Error('除外カード取得失敗');
       const excluded: ExcludedCards = await res.json();
       const total = excluded.untagged.length + excluded.price_missing.length + excluded.image_ng.length;
       if (total === 0) {
         // 除外カードなし → そのまま生成
-        await triggerJob('generate');
+        await triggerGenerate(targetRun.id);
       } else {
         // 除外カードあり → 確認モーダル表示
-        setGenerateConfirm(excluded);
+        setGenerateConfirm({ ...excluded, runId: targetRun.id });
         setGenerateConfirmChecked(false);
       }
     } catch {
@@ -601,8 +642,9 @@ export default function RunsPage() {
                 </button>
                 <button
                   onClick={() => {
+                    const runId = generateConfirm.runId;
                     setGenerateConfirm(null);
-                    triggerJob('generate');
+                    void triggerGenerate(runId);
                   }}
                   disabled={!generateConfirmChecked || triggering !== null}
                   className={`px-5 py-2 rounded-full text-sm font-semibold transition-all ${
@@ -723,8 +765,8 @@ export default function RunsPage() {
             <div key={run.id} className="bg-card-bg border border-border-card rounded-2xl p-4 sm:p-8">
               <div className="flex items-start justify-between mb-5">
                 <div className="flex items-center gap-3">
-                  <span className={`inline-block px-3 py-1 rounded-full text-sm font-semibold border ${STATUS_STYLES[run.status] || 'bg-warm-100 text-warm-500'}`}>
-                    {run.status}
+                  <span className={`inline-block px-3 py-1 rounded-full text-sm font-semibold border ${STATUS_STYLES[getRunDisplayStatus(run)] || 'bg-warm-100 text-warm-500'}`}>
+                    {getRunDisplayStatus(run)}
                   </span>
                   <span className="text-sm text-text-secondary">{run.triggered_by}</span>
                 </div>
@@ -741,7 +783,7 @@ export default function RunsPage() {
                       className={`sm:flex-1 rounded-lg px-2 py-2 text-xs text-center whitespace-nowrap transition-colors ${
                         done
                           ? 'bg-[#f3faf0] text-[#2d5a2f] border border-[#bfd4b8]'
-                          : run.status === 'running'
+                          : isRunActive(run)
                           ? 'bg-page-bg text-text-secondary border border-border-card'
                           : 'bg-page-bg/50 text-border-card border border-[#e8dccf]'
                       }`}
@@ -753,7 +795,7 @@ export default function RunsPage() {
               </div>
 
               {/* Progress bar */}
-              {run.status === 'running' && run.progress_total > 0 && (
+              {isRunActive(run) && run.progress_total > 0 && (
                 <div className="mb-5">
                   <div className="flex justify-between text-xs text-text-secondary mb-1.5">
                     <span>{run.progress_message || '処理中...'}</span>
@@ -769,7 +811,7 @@ export default function RunsPage() {
               )}
 
               {/* Running message (no progress data yet) */}
-              {run.status === 'running' && run.progress_total === 0 && (
+              {isRunActive(run) && run.progress_total === 0 && (
                 <div className="mb-5">
                   <div className="text-xs text-text-secondary mb-1.5">
                     {run.progress_message || '起動中...'}
@@ -797,7 +839,7 @@ export default function RunsPage() {
               </div>
 
               {/* Gallery link for completed generate runs */}
-              {run.status === 'completed' && (
+              {getRunDisplayStatus(run) === 'completed' && (
                 <div className="mt-4 flex flex-wrap gap-3">
                   {run.generate_done_at && (
                     <>
@@ -839,7 +881,7 @@ export default function RunsPage() {
               )}
 
               {/* Untagged / Image NG alerts */}
-              {run.status === 'completed' && (run.total_untagged > 0 || run.total_image_ng > 0) && (
+              {getRunDisplayStatus(run) === 'completed' && (run.total_untagged > 0 || run.total_image_ng > 0) && (
                 <div className="mt-4 flex gap-3">
                   {run.total_untagged > 0 && (
                     <button

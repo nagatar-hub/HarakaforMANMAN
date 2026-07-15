@@ -4,6 +4,8 @@ import { appendTagToHarakaDB } from '../lib/haraka-db-sheet.js';
 
 export const cardRoutes = new Hono();
 
+const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+
 /** タグ未設定カード一覧（最新run） */
 cardRoutes.get('/cards/untagged', async (c) => {
   const supabase = createSupabaseClient();
@@ -12,6 +14,7 @@ cardRoutes.get('/cards/untagged', async (c) => {
   const { data: latestRun } = await supabase
     .from('run')
     .select('id')
+    .eq('store', STORE_NAME)
     .eq('status', 'completed')
     .order('started_at', { ascending: false })
     .limit(1)
@@ -40,6 +43,7 @@ cardRoutes.get('/cards/tags', async (c) => {
   const { data: latestRun } = await supabase
     .from('run')
     .select('id')
+    .eq('store', STORE_NAME)
     .eq('status', 'completed')
     .order('started_at', { ascending: false })
     .limit(1)
@@ -76,17 +80,27 @@ cardRoutes.patch('/cards/:id/tag', async (c) => {
   // 1. カード情報を取得（シート書き戻しに必要）
   const { data: card, error: fetchError } = await supabase
     .from('prepared_card')
-    .select('id, franchise, card_name, grade, list_no, image_url, tag')
+    .select('id, run_id, franchise, card_name, grade, list_no, image_url, tag')
     .eq('id', id)
     .single();
 
   if (fetchError || !card) return c.json({ error: fetchError?.message || 'Card not found' }, 500);
+
+  const { data: ownedRun, error: ownedRunError } = await supabase
+    .from('run')
+    .select('id')
+    .eq('id', card.run_id)
+    .eq('store', STORE_NAME)
+    .maybeSingle();
+  if (ownedRunError) return c.json({ error: ownedRunError.message }, 500);
+  if (!ownedRun) return c.json({ error: 'Card not found' }, 404);
 
   // 2. prepared_card のタグを更新
   const { data, error } = await supabase
     .from('prepared_card')
     .update({ tag: trimmedTag })
     .eq('id', id)
+    .eq('run_id', card.run_id)
     .select('id, tag')
     .single();
 

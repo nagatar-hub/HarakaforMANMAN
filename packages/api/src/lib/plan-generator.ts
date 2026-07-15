@@ -1,6 +1,7 @@
 import { createSupabaseClient } from './supabase.js';
 import { resolveTemplate } from '@haraka/shared';
 import type { PostTemplateRow, PostBannerRow } from '@haraka/shared';
+import { getOwnedRun, STORE_NAME } from './store-scope.js';
 
 type GeneratedPage = {
   id: string;
@@ -12,6 +13,9 @@ type GeneratedPage = {
 
 export async function generatePostPlans(runId: string) {
   const supabase = createSupabaseClient();
+
+  const run = await getOwnedRun(supabase, runId);
+  if (!run) throw new Error('Run not found: ' + runId);
 
   // 1. Get generated pages grouped by franchise
   const { data: pages, error: pagesErr } = await supabase
@@ -35,6 +39,7 @@ export async function generatePostPlans(runId: string) {
   const { data: templatesRaw } = await supabase
     .from('post_template')
     .select('*')
+    .eq('store', STORE_NAME)
     .eq('is_default', true);
   const templates = templatesRaw as PostTemplateRow[] | null;
 
@@ -42,12 +47,14 @@ export async function generatePostPlans(runId: string) {
     .from('x_credential')
     .select('id')
     .eq('is_default', true)
+    .eq('store', STORE_NAME)
     .eq('status', 'active')
     .single();
 
   const { data: bannersRaw } = await supabase
     .from('post_banner')
     .select('*')
+    .eq('store', STORE_NAME)
     .eq('is_default', true);
   const banners = bannersRaw as PostBannerRow[] | null;
 
@@ -97,6 +104,7 @@ export async function generatePostPlans(runId: string) {
         x_credential_id: defaultCred?.id || null,
         header_text: headerText,
         status: 'draft',
+        store: STORE_NAME,
       } as any)
       .select()
       .single();
