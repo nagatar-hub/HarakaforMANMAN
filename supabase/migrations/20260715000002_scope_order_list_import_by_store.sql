@@ -51,8 +51,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uix_run_single_running_per_store
   ON public.run (store)
   WHERE status = 'running';
 
--- Store-scoped stale recovery for the MANMAN watchdog. The original RPC is
--- retained for the existing Oripark deployment until it is upgraded.
+-- Store-scoped stale recovery for the MANMAN watchdog.
 CREATE OR REPLACE FUNCTION public.recover_stale_order_list_imports_for_store(
   p_store TEXT,
   p_stale_before TIMESTAMPTZ
@@ -94,7 +93,7 @@ BEGIN
 
   UPDATE public.run
   SET status = 'failed',
-      error_message = '????????????',
+      error_message = '同期処理のリース期限切れ',
       completed_at = now()
   WHERE store = p_store
     AND order_list_import_id = ANY(v_import_ids)
@@ -103,7 +102,7 @@ BEGIN
   UPDATE public.order_list_import
   SET status = 'failed',
       failed_at = now(),
-      failure_message = '?????????????????2???????????????????',
+      failure_message = '同期起動または処理のハートビートが2時間途絶えたため再実行待ちに戻しました',
       heartbeat_at = NULL,
       updated_at = now()
   WHERE store = p_store
@@ -118,4 +117,27 @@ $$;
 REVOKE ALL ON FUNCTION public.recover_stale_order_list_imports_for_store(TEXT, TIMESTAMPTZ)
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.recover_stale_order_list_imports_for_store(TEXT, TIMESTAMPTZ)
+  TO service_role;
+
+-- The existing Oripark deployment still calls the original one-argument RPC.
+-- Preserve that signature while preventing it from recovering MANMAN imports.
+CREATE OR REPLACE FUNCTION public.recover_stale_order_list_imports(
+  p_stale_before TIMESTAMPTZ
+)
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  RETURN public.recover_stale_order_list_imports_for_store(
+    'oripark',
+    p_stale_before
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.recover_stale_order_list_imports(TIMESTAMPTZ)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.recover_stale_order_list_imports(TIMESTAMPTZ)
   TO service_role;

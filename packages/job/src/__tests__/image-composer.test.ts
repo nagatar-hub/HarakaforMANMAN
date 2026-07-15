@@ -23,6 +23,9 @@ function makeCard(overrides: Partial<PreparedCardRow> = {}): PreparedCardRow {
     id: 'card-1',
     run_id: 'run-1',
     raw_import_id: 'raw-1',
+    order_list_item_id: null,
+    excel_product_id: null,
+    db_card_id: null,
     franchise: 'ONE PIECE',
     card_name: 'テストカード',
     grade: 'PSA10',
@@ -36,6 +39,8 @@ function makeCard(overrides: Partial<PreparedCardRow> = {}): PreparedCardRow {
     price_low: 24000,
     image_status: 'ok',
     source: 'kecak',
+    price_source: 'kecak',
+    price_source_date: null,
     created_at: '2026-06-06T00:00:00Z',
     ...overrides,
   };
