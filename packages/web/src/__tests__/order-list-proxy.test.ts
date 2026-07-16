@@ -9,6 +9,7 @@ const originalApiToken = process.env.ORDER_LIST_IMPORT_API_TOKEN;
 const originalApiBaseUrl = process.env.API_BASE_URL;
 const originalPublicApiUrl = process.env.NEXT_PUBLIC_API_URL;
 const originalOperatorEmails = process.env.ORDER_LIST_OPERATOR_EMAILS;
+const originalAuthRequired = process.env.OPERATOR_AUTH_REQUIRED;
 const originalFetch = global.fetch;
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -20,6 +21,7 @@ function configureAuth(): void {
   process.env.ORDER_LIST_IMPORT_API_TOKEN = 'a'.repeat(32);
   process.env.API_BASE_URL = 'https://api.internal.example';
   process.env.ORDER_LIST_OPERATOR_EMAILS = 'operator@example.com';
+  process.env.OPERATOR_AUTH_REQUIRED = 'true';
 }
 
 async function authenticatedCookie(email = 'operator@example.com'): Promise<string> {
@@ -35,6 +37,7 @@ afterEach(() => {
   restoreEnv('API_BASE_URL', originalApiBaseUrl);
   restoreEnv('NEXT_PUBLIC_API_URL', originalPublicApiUrl);
   restoreEnv('ORDER_LIST_OPERATOR_EMAILS', originalOperatorEmails);
+  restoreEnv('OPERATOR_AUTH_REQUIRED', originalAuthRequired);
   global.fetch = originalFetch;
 });
 
@@ -54,6 +57,18 @@ test('unsigned proxy request returns 401 without upstream access', async () => {
   expect(response.status).toBe(401);
   expect(upstreamFetch).not.toHaveBeenCalled();
 });
+test('public mode forwards unsigned order-list requests with the server token', async () => {
+  configureAuth();
+  process.env.OPERATOR_AUTH_REQUIRED = 'false';
+  const upstreamFetch = jest.fn(async (_input: RequestInfo | URL) => Response.json({ ok: true }));
+  global.fetch = upstreamFetch as typeof fetch;
+
+  const response = await GET(new Request('http://localhost/api/order-list/imports'), context);
+
+  expect(response.status).toBe(200);
+  expect(upstreamFetch).toHaveBeenCalledTimes(1);
+});
+
 
 test('removing an operator from the allowlist immediately revokes the session', async () => {
   configureAuth();

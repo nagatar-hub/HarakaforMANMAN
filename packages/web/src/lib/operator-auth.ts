@@ -120,6 +120,10 @@ async function verifyValue(
   }
 }
 
+export function operatorAuthRequiredFromEnv(): boolean {
+  return process.env.OPERATOR_AUTH_REQUIRED?.trim().toLowerCase() !== 'false';
+}
+
 export function operatorAuthSecretFromEnv(): OperatorAuthResult<string> {
   const secret = process.env.ORDER_LIST_IMPORT_API_TOKEN?.trim() ?? '';
   if (secret.length < 32) {

@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   OPERATOR_SESSION_COOKIE,
+  operatorAuthRequiredFromEnv,
   operatorAuthSecretFromEnv,
   operatorEmailAllowlistFromEnv,
   verifyOperatorSession,
 } from '@/lib/operator-auth';
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {
+  if (!operatorAuthRequiredFromEnv()) {
+    return NextResponse.next();
+  }
+
   const secretResult = operatorAuthSecretFromEnv();
   const session = request.cookies.get(OPERATOR_SESSION_COOKIE)?.value;
   if (secretResult.ok && session) {

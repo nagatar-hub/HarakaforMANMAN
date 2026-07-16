@@ -1,5 +1,6 @@
 import {
   OPERATOR_SESSION_COOKIE,
+  operatorAuthRequiredFromEnv,
   operatorEmailAllowlistFromEnv,
   readCookie,
   verifyOperatorSession,
@@ -27,10 +28,12 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: '実行APIの認証設定がありません' }, { status: 503 });
   }
 
-  const session = readCookie(request.headers.get('cookie'), OPERATOR_SESSION_COOKIE);
-  const sessionResult = await verifyOperatorSession({ session, secret: apiToken });
-  if (!sessionResult.ok || !operatorEmailAllowlistFromEnv().has(sessionResult.value.email)) {
-    return Response.json({ error: 'Operator authentication required' }, { status: 401 });
+  if (operatorAuthRequiredFromEnv()) {
+    const session = readCookie(request.headers.get('cookie'), OPERATOR_SESSION_COOKIE);
+    const sessionResult = await verifyOperatorSession({ session, secret: apiToken });
+    if (!sessionResult.ok || !operatorEmailAllowlistFromEnv().has(sessionResult.value.email)) {
+      return Response.json({ error: 'Operator authentication required' }, { status: 401 });
+    }
   }
 
   let payload: GenerateRequest;

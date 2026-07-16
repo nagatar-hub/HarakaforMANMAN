@@ -1,5 +1,6 @@
 import {
   OPERATOR_SESSION_COOKIE,
+  operatorAuthRequiredFromEnv,
   operatorEmailAllowlistFromEnv,
   readCookie,
   verifyOperatorSession,
@@ -30,10 +31,12 @@ async function proxyOrderListRequest(request: Request, context: RouteContext): P
   if (!apiToken || apiToken.length < 32) {
     return Response.json({ error: 'オーダーリスト取込の認証設定がありません' }, { status: 503 });
   }
-  const session = readCookie(request.headers.get('cookie'), OPERATOR_SESSION_COOKIE);
-  const sessionResult = await verifyOperatorSession({ session, secret: apiToken });
-  if (!sessionResult.ok || !operatorEmailAllowlistFromEnv().has(sessionResult.value.email)) {
-    return Response.json({ error: 'Operator authentication required' }, { status: 401 });
+  if (operatorAuthRequiredFromEnv()) {
+    const session = readCookie(request.headers.get('cookie'), OPERATOR_SESSION_COOKIE);
+    const sessionResult = await verifyOperatorSession({ session, secret: apiToken });
+    if (!sessionResult.ok || !operatorEmailAllowlistFromEnv().has(sessionResult.value.email)) {
+      return Response.json({ error: 'Operator authentication required' }, { status: 401 });
+    }
   }
 
   const { path } = await context.params;
