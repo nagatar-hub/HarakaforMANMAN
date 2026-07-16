@@ -348,7 +348,7 @@ export async function runSync(): Promise<void> {
     const rawImportInserts = boxPriceResult.rows;
     if (boxPriceResult.missingNames.length > 0) {
       const sample = boxPriceResult.missingNames.slice(0, 10).join(', ');
-      console.warn(`[sync] Pokemon BOX価格DB 未マッチ: ${boxPriceResult.missingNames.length}件 (${sample})`);
+      console.warn(`[sync] Pokemon BOX価格DB 未マッチ: ${boxPriceResult.missingNames.length}件（オーダーリストはExcel価格を使用） (${sample})`);
     }
     await batchInsert(supabase, 'raw_import', rawImportInserts as unknown as Record<string, unknown>[]);
     const allRawImports = await fetchAllRunRawImports(supabase, run.id);

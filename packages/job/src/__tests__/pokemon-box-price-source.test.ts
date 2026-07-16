@@ -117,7 +117,7 @@ describe('applyPokemonBoxPriceOverrides', () => {
     expect(result.missingNames).toEqual([]);
   });
 
-  it('BOX価格DBにないオーダーリストのPokemon BOX行はExcel価格へフォールバックしない', () => {
+  it('BOX価格DBにないオーダーリストのPokemon BOX行はExcel価格へフォールバックする', () => {
     const result = applyPokemonBoxPriceOverrides(
       [makeRawImport({
         card_name: '【BOX】未登録BOX',
@@ -130,10 +130,10 @@ describe('applyPokemonBoxPriceOverrides', () => {
 
     expect(result.rows[0]).toMatchObject({
       kecak_price: null,
-      source_price: null,
+      source_price: 99999,
       price_source: 'order_list',
       raw_row: {
-        pokemon_box_price_source: 'missing',
+        pokemon_box_price_source: 'ORDER_LIST_FALLBACK',
         pokemon_box_price_lookup_name: '未登録BOX',
         pokemon_box_original_order_list_price: 99999,
       },

@@ -93,9 +93,21 @@ export function applyPokemonBoxPriceOverrides(
       : { pokemon_box_original_kecak_price: row.kecak_price };
     if (price == null) {
       missingNames.push(productName);
+      if (usesOrderListPrice) {
+        return {
+          ...row,
+          raw_row: {
+            ...(row.raw_row ?? {}),
+            pokemon_box_price_source: 'ORDER_LIST_FALLBACK',
+            pokemon_box_price_lookup_name: productName,
+            ...originalPriceMetadata,
+          },
+        };
+      }
+
       return {
         ...row,
-        ...(usesOrderListPrice ? { source_price: null } : { kecak_price: null }),
+        kecak_price: null,
         raw_row: {
           ...(row.raw_row ?? {}),
           pokemon_box_price_source: 'missing',

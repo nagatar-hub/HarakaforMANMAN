@@ -124,6 +124,25 @@ describe('prepareOrderListCards', () => {
     });
   });
 
+  it('BOX価格DB未登録でもExcel価格があればPokemon BOX価格を計算する', () => {
+    const result = prepareOrderListCards(
+      [makeRawImport({
+        card_name: '【BOX】未登録BOX',
+        grade: 'BOX',
+        source_price: 100_000,
+        raw_row: { pokemon_box_price_source: 'ORDER_LIST_FALLBACK' },
+      })],
+      new Map([['db-1', makeDbCard({ card_name: '未登録BOX', grade: 'BOX', tag: 'BOX' })]]),
+      '2026-07-14',
+    );
+
+    expect(result[0]).toMatchObject({
+      price_high: 100_500,
+      price_low: 85_500,
+      tag: 'BOX',
+    });
+  });
+
   it('db_card_id がない行を名前照合で補完せず失敗させる', () => {
     expect(() => prepareOrderListCards(
       [makeRawImport({ db_card_id: null })],

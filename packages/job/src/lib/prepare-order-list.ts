@@ -38,7 +38,8 @@ export function prepareOrderListCards(
       }
     }
 
-    // 既存MANMAN同期と同様、BOX価格DB未登録行は0円で監査対象へ残し、後段でページから除外する。
+    // 過去に作成済みのBOX価格DB未登録行も読み出せるよう、旧null行だけは0円の監査対象として扱う。
+    // 現在のオーダーリスト取込ではBOX価格DB未登録時もExcel価格がsource_priceに保持される。
     const sourcePrice = rawImport.source_price ?? 0;
     const franchise = rawImport.franchise as Franchise;
     const isBox = isBoxRow(rawImport);
