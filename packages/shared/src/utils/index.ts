@@ -16,3 +16,16 @@ export {
 } from './price.js';
 export type { BoxConditionDiscountRates, BoxDiscountRates, Psa10DiscountRates, StorePricingSettings } from './price.js';
 export { normalizeText } from './normalize.js';
+export {
+  TAG_COMBINATION_SEPARATOR,
+  MAX_TAG_COMPONENTS,
+  MAX_TAG_COMBINATION_LENGTH,
+  TagCombinationError,
+  normalizeTagComponent,
+  splitTagCombination,
+  joinTagComponents,
+  appendTagComponent,
+  moveTagComponent,
+  tagComponentsFromCombinations,
+  normalizeTagCombinations,
+} from './tag-combination.js';

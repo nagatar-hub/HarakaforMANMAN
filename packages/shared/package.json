@@ -16,6 +16,13 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "jest --no-coverage"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.0.0"
   }
 }

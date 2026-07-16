@@ -117,6 +117,16 @@ describe('planPages - 基本動作', () => {
     expect(result[0].layoutTemplateId).toBe('layout-6');
   });
 
+  it('uses only the first tag as the page group for an ordered combination', () => {
+    const card = makeCard({ id: 'yokohama-pikachu', tag: 'Pikachu/Promo/Pokemon Center' });
+
+    const result = planPages([card], [], LAYOUTS);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].label).toBe('Pikachu');
+    expect(result[0].cardIds).toEqual(['yokohama-pikachu']);
+  });
+
   it('40 枚超のタグはページ数最小で複数ページに分割される', () => {
     // 62 枚 → [40, 40]（pc=2 最優先、余剰 18 はカード裏面で埋める）
     const cards = Array.from({ length: 62 }, (_, i) =>

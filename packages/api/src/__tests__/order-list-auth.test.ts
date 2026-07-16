@@ -222,6 +222,13 @@ test('新規DB商品は必須タグと許可済みHTTPS代替画像を検証す�
   }]);
   assert.equal(unsafePort.ok, false);
   if (!unsafePort.ok) assert.match(unsafePort.error, /許可された画像ホスト/);
+
+  const tagCombination = parseOrderListNewCardSelections([{
+    item_id: 'item-1', card_name: 'New product', grade: '', list_no: '',
+    tag: 'Pikachu/Promo/Pokemon Center', alt_image_url: null,
+  }]);
+  assert.equal(tagCombination.ok, true);
+  if (tagCombination.ok) assert.equal(tagCombination.value[0].tag, 'Pikachu/Promo/Pokemon Center');
 });
 
 test('同じitem_idを既存DB対応と新規DB商品の両方には指定できない', () => {
