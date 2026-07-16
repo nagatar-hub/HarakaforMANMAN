@@ -124,6 +124,20 @@ test('forwards only the selected run ID with a server-side Bearer token', async 
   expect(JSON.parse(forwardedBody)).toEqual({ run_id: 'run-1' });
 });
 
+test('strips a leading BOM from API_BASE_URL before calling the generate API', async () => {
+  configureAuth();
+  process.env.API_BASE_URL = '\uFEFFhttps://api.internal.example';
+  const upstreamFetch = jest.fn(async (_input: RequestInfo | URL) => Response.json({ status: 'triggered' }));
+  global.fetch = upstreamFetch as typeof fetch;
+
+  const response = await POST(await generateRequest({ cookie: await authenticatedCookie() }));
+
+  expect(response.status).toBe(200);
+  expect(String(upstreamFetch.mock.calls[0][0])).toBe(
+    'https://api.internal.example/api/jobs/generate',
+  );
+});
+
 test('preserves an upstream non-2xx response for the UI', async () => {
   configureAuth();
   global.fetch = jest.fn(async () => Response.json(

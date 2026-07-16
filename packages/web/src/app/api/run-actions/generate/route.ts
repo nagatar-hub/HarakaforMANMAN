@@ -4,6 +4,7 @@ import {
   readCookie,
   verifyOperatorSession,
 } from '@/lib/operator-auth';
+import { serverApiBaseUrl } from '@/lib/server-api-url';
 
 type GenerateRequest = {
   run_id?: unknown;
@@ -42,7 +43,7 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: 'run_idは必須です' }, { status: 400 });
   }
 
-  const apiBaseUrl = process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+  const apiBaseUrl = serverApiBaseUrl();
   const upstreamUrl = new URL('/api/jobs/generate', apiBaseUrl);
 
   let upstream: Response;

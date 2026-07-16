@@ -4,6 +4,7 @@ import {
   readCookie,
   verifyOperatorSession,
 } from '@/lib/operator-auth';
+import { serverApiBaseUrl } from '@/lib/server-api-url';
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 
 type RouteContext = {
@@ -23,7 +24,7 @@ async function proxyOrderListRequest(request: Request, context: RouteContext): P
     return Response.json({ error: '同一画面からの操作のみ受け付けます' }, { status: 403 });
   }
 
-  const apiBaseUrl = process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+  const apiBaseUrl = serverApiBaseUrl();
   const apiToken = process.env.ORDER_LIST_IMPORT_API_TOKEN?.trim();
 
   if (!apiToken || apiToken.length < 32) {

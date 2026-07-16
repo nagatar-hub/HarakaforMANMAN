@@ -85,6 +85,22 @@ test('ブラウザ側の共有キーなしでserver Bearerとqueryを安全に�
   expect(headers.get('authorization')).toBe(`Bearer ${'a'.repeat(32)}`);
   expect(headers.has('x-order-list-operator-key')).toBe(false);
 });
+test('strips a leading BOM from API_BASE_URL before building the upstream URL', async () => {
+  configureAuth();
+  process.env.API_BASE_URL = '\uFEFFhttps://api.internal.example';
+  const upstreamFetch = jest.fn(async (_input: RequestInfo | URL) => Response.json({ ok: true }));
+  global.fetch = upstreamFetch as typeof fetch;
+
+  const response = await GET(new Request('http://localhost/api/order-list/imports', {
+    headers: { Cookie: await authenticatedCookie() },
+  }), context);
+
+  expect(response.status).toBe(200);
+  expect(String(upstreamFetch.mock.calls[0][0])).toBe(
+    'https://api.internal.example/api/order-list/imports',
+  );
+});
+
 
 test('Content-Lengthなしのchunked bodyも16MB超過時にstreamingで拒否する', async () => {
   configureAuth();
