@@ -6,12 +6,15 @@ import {
   draftsForImport,
   firstReviewStatus,
   getOrCreateOrderListSyncRequestId,
+  isLatestOrderListImportId,
+  latestUsableOrderListImportId,
   isLaunchPendingConfirmation,
   mappingSelections,
   newCardSelections,
   nextReviewStatus,
   resetFileInputValue,
   reviewStatusProgress,
+  selectDefaultOrderListImportId,
   selectionProgress,
   shouldResyncOrderListImport,
   stageDraftMapping,
@@ -19,6 +22,72 @@ import {
   unstageDraftMapping,
   type DraftMappingsByImport,
 } from '../app/runs/order-list-match-review-state';
+
+test('履歴の初期選択は未解決件数ではなく最初の正常保存済み取込を選ぶ', () => {
+  const imports = [
+    { id: 'latest-parsed', status: 'parsed' },
+    { id: 'older-applied-with-unresolved', status: 'applied' },
+  ];
+
+  expect(selectDefaultOrderListImportId(imports)).toBe('latest-parsed');
+});
+
+test('一覧先頭が反映済みでも状態に関係なく先頭を選ぶ', () => {
+  expect(selectDefaultOrderListImportId([
+    { id: 'latest-applied', status: 'applied' },
+    { id: 'processing', status: 'processing' },
+    { id: 'older-parsed', status: 'parsed' },
+  ])).toBe('latest-applied');
+
+  expect(selectDefaultOrderListImportId([
+    { id: 'historical-failed-resync', status: 'failed' },
+    { id: 'new-parsed', status: 'parsed' },
+  ])).toBe('historical-failed-resync');
+
+
+  expect(selectDefaultOrderListImportId([
+    { id: 'latest-applied', status: 'applied' },
+    { id: 'older-applied', status: 'applied' },
+  ])).toBe('latest-applied');
+});
+
+test('操作者が選んだ履歴は更新後も存在する限り保持する', () => {
+  const imports = [
+    { id: 'latest-parsed', status: 'parsed' },
+    { id: 'selected-applied', status: 'applied' },
+  ];
+
+  expect(selectDefaultOrderListImportId(imports, 'selected-applied')).toBe('selected-applied');
+  expect(selectDefaultOrderListImportId(imports, 'removed-import')).toBe('latest-parsed');
+  expect(selectDefaultOrderListImportId([], 'removed-import')).toBe('');
+});
+
+test('同期可能な最新取込は共通helperのIDだけで判定する', () => {
+  const imports = [
+    { id: 'latest-applied', status: 'applied' },
+    { id: 'historical-parsed', status: 'parsed' },
+  ];
+
+  expect(isLatestOrderListImportId(imports, 'latest-applied')).toBe(true);
+  expect(isLatestOrderListImportId(imports, 'historical-parsed')).toBe(false);
+  expect(isLatestOrderListImportId([], 'latest-applied')).toBe(false);
+  expect(isLatestOrderListImportId(imports, '')).toBe(false);
+});
+
+test('先頭が構造不正または保存未完了なら次の正常保存済み取込を選ぶ', () => {
+  const imports = [
+    { id: 'latest-invalid', status: 'failed', structural_valid: false, persistence_complete: true },
+    { id: 'latest-incomplete', status: 'failed', structural_valid: true, persistence_complete: false },
+    { id: 'latest-usable', status: 'applied', structural_valid: true, persistence_complete: true },
+    { id: 'older-usable', status: 'applied', structural_valid: true, persistence_complete: true },
+  ];
+
+  expect(latestUsableOrderListImportId(imports)).toBe('latest-usable');
+  expect(selectDefaultOrderListImportId(imports)).toBe('latest-usable');
+  expect(isLatestOrderListImportId(imports, 'latest-usable')).toBe(true);
+  expect(isLatestOrderListImportId(imports, 'latest-invalid')).toBe(false);
+  expect(latestUsableOrderListImportId(imports.slice(0, 2))).toBe('latest-invalid');
+});
 
 test('仮選択は取込ごとに保持し、同じ商品を選び直すと上書きする', () => {
   let state: DraftMappingsByImport = {};

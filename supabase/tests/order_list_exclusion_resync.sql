@@ -757,7 +757,7 @@ INSERT INTO public.order_list_import (
   storage_path, persistence_complete, structural_valid,
   total_rows, valid_rows, matched_rows, unmatched_rows
 ) VALUES (
-  '42000000-0000-0000-0000-000000000004', DATE '2099-02-04', 'parsed',
+  '42000000-0000-0000-0000-000000000004', DATE '2099-02-08', 'parsed',
   'exclusion-confirm-processing.xlsx', 1, repeat('9', 64),
   'tests/exclusion-confirm-processing.xlsx',
   TRUE, TRUE, 2, 2, 1, 1

@@ -26,6 +26,11 @@ import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import { getOptionalEnvOrSecret } from '../lib/env.js';
 import { applyCurrentPsa10DiscountRates, loadPsa10DiscountRates } from '../lib/pricing-settings.js';
 import { isBoxRow } from '../lib/box-row.js';
+import {
+  formatGenerationDate,
+  getJstDateParts,
+  resolveGenerationDisplayDate,
+} from '../lib/generation-date.js';
 import type {
   Database,
   PreparedCardRow,
@@ -80,21 +85,6 @@ const BOX_TEMPLATE_DRIVE_ID: Record<string, string> = {
   'YU-GI-OH!': '1uhJt5rFJyZgOX9wMvl4vLAckotKpmC_n',
 };
 
-function getJstDateParts(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Tokyo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date);
-  const part = (type: string) => parts.find(p => p.type === type)?.value ?? '';
-  return {
-    year: part('year'),
-    month: part('month'),
-    day: part('day'),
-  };
-}
-
 function isBoxLabel(label: string | null): boolean {
   return label === 'BOX' || !!label?.startsWith('BOX-');
 }
@@ -148,12 +138,30 @@ export async function runGenerate() {
     );
   }
   console.log(`[generate] Run claim参加: ${run.id}`);
-  // 日付ベースのストレージパス
-  const jstDate = getJstDateParts();
-  const datePath = `${jstDate.year}/${jstDate.month}/${jstDate.day}`;
+  const generationStartedAt = new Date();
+  // Storage は従来どおり生成日のJSTパスを維持し、画像表示日だけExcel業務日を使う。
+  const storageDate = getJstDateParts(generationStartedAt);
+  const datePath = `${storageDate.year}/${storageDate.month}/${storageDate.day}`;
   const generationVersion = Date.now();
 
   try {
+    const displayDate = await resolveGenerationDisplayDate({
+      orderListImportId: run.order_list_import_id,
+      now: generationStartedAt,
+      loadBusinessDate: async (importId) => {
+        const { data, error } = await supabase
+          .from('order_list_import')
+          .select('business_date')
+          .eq('id', importId)
+          .eq('store', STORE_NAME)
+          .maybeSingle<{ business_date: string }>();
+        if (error) {
+          throw new Error(`オーダーリスト業務日取得失敗: ${error.message}`);
+        }
+        return data?.business_date ?? null;
+      },
+    });
+
     // ---- 2. Storage クリーンアップ ----
     await updateProgress(supabase, run.id, 0, 100, 'クリーンアップ中...');
     console.log('[generate] Storage クリーンアップ中...');
@@ -269,7 +277,7 @@ export async function runGenerate() {
     // ---- 4. franchise ごとに画像生成 ----
     let pagesGenerated = 0;
 
-    const dateText = `${jstDate.month}/${jstDate.day}`;
+    const dateText = formatGenerationDate(displayDate);
     let rarityIconMap: Map<string, string> | null = null;
     const rarityIconCache = new Map<string, Buffer>();
 

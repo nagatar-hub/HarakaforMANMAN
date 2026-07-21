@@ -1,4 +1,8 @@
-import type { Database, Franchise } from '@haraka/shared';
+import {
+  DEFAULT_STORE_PRICING_SETTINGS,
+  type Database,
+  type Franchise,
+} from '@haraka/shared';
 import { prepareOrderListCards } from '../lib/prepare-order-list';
 
 type RawImportRow = Database['public']['Tables']['raw_import']['Row'];
@@ -48,6 +52,37 @@ function makeDbCard(overrides: Partial<DbCardRow> = {}): DbCardRow {
 }
 
 describe('prepareOrderListCards', () => {
+  it('OP08-106は最新Excelの78,540円と5%設定から75,000円を生成する', () => {
+    const pricingSettings = {
+      ...DEFAULT_STORE_PRICING_SETTINGS,
+      psa10_discount_rates: {
+        ...DEFAULT_STORE_PRICING_SETTINGS.psa10_discount_rates,
+        'ONE PIECE': 0.05,
+      },
+    };
+    const result = prepareOrderListCards(
+      [makeRawImport({
+        franchise: 'ONE PIECE',
+        card_name: 'ナミ',
+        list_no: 'OP08-106',
+        source_price: 78_540,
+      })],
+      new Map([['db-1', makeDbCard({
+        franchise: 'ONE PIECE',
+        card_name: 'ナミ',
+        list_no: 'OP08-106',
+      })]]),
+      '2026-07-20',
+      pricingSettings,
+    );
+
+    expect(result[0]).toMatchObject({
+      price_high: 75_000,
+      price_source: 'order_list',
+      price_source_date: '2026-07-20',
+    });
+  });
+
   it.each<[Franchise, number, number]>([
     ['Pokemon', 44_500, 39_000],
     ['ONE PIECE', 44_500, 39_000],

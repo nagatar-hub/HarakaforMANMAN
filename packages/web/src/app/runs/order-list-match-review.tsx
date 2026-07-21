@@ -10,10 +10,13 @@ import {
   exclusionSelections,
   draftsForImport,
   firstReviewStatus,
+  isLatestOrderListImportId,
+  latestUsableOrderListImportId,
   mappingSelections,
   newCardSelections,
   nextReviewStatus,
   reviewStatusProgress,
+  selectDefaultOrderListImportId,
   selectionProgress,
   shouldResyncOrderListImport,
   stageDraftMapping,
@@ -120,6 +123,26 @@ function franchiseLabel(value: string): string {
 function statusLabel(value: string): string {
   return ({ parsed: '確認待ち', confirmed: '反映待ち', processing: '反映中', applied: '反映済み', failed: '失敗' } as Record<string, string>)[value] ?? value;
 }
+function formatImportedAt(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('ja-JP', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Tokyo',
+  }).format(date);
+}
+
+function syncActionLabel(status: string, requiresResync: boolean): string {
+  if (requiresResync) return status === 'applied' ? 'この過去取込を再同期' : 'この取込を再同期';
+  if (status === 'confirmed') return 'この取込の同期を再試行';
+  return 'この取込を同期';
+}
+
 
 function unresolvedCount(item: RecentImport): number {
   return item.summary.ambiguous + item.summary.unmatched + item.summary.invalid;
@@ -267,7 +290,13 @@ export function OrderListMatchReview({
 
   const confirmationCancelRef = useRef<HTMLButtonElement>(null);
 
+  const importSelectionCandidates = imports.map((item) => item.import);
+  const latestImportId = latestUsableOrderListImportId(importSelectionCandidates);
   const selectedImport = imports.find((item) => item.import.id === selectedImportId) ?? null;
+  const latestImport = imports.find((item) => item.import.id === latestImportId) ?? null;
+  const selectedImportIsLatest = isLatestOrderListImportId(
+    importSelectionCandidates, selectedImportId,
+  );
   const editingItem = items.find((item) => item.id === editingItemId) ?? null;
   const draftMappings = draftsForImport(draftMappingsByImport, selectedImportId);
   const stagedNewCards = newCardSelections(draftMappings);
@@ -313,13 +342,27 @@ export function OrderListMatchReview({
   const canSaveAppliedMappings = selectedImport?.import.status === 'applied' && progress.handled > 0;
   const retryingConfirmedLaunch = Boolean(selectedImport?.import.status === 'confirmed'
     && canConfirmImport(selectedImport, progress.staged));
-  const canSyncSelectedImport = Boolean(selectedImport && canSyncOrderListImport({
+  const canSyncSelectedImport = Boolean(selectedImportIsLatest && selectedImport && canSyncOrderListImport({
     status: selectedImport.import.status,
     structuralValid: selectedImport.import.structural_valid,
     persistenceComplete: selectedImport.import.persistence_complete,
     matchedCount: selectedImport.summary.matched,
     stagedCount: progress.staged,
   }));
+  const selectedImportBusinessDate = selectedImport?.import.business_date ?? '未設定';
+  const selectedImportImportedAt = selectedImport ? formatImportedAt(selectedImport.import.imported_at) : '';
+  const selectedImportRequiresResync = Boolean(selectedImport && shouldResyncOrderListImport({
+    status: selectedImport.import.status,
+    appliedSummary: selectedImport.import.applied_summary,
+  }));
+  const selectedImportIsApplied = selectedImport?.import.status === 'applied';
+  const selectedSyncActionLabel = selectedImport
+    ? syncActionLabel(selectedImport.import.status, selectedImportRequiresResync)
+    : 'この取込を同期';
+  const selectedSyncButtonLabel = confirmingImportId === selectedImport?.import.id
+    ? '同期を開始中...'
+    : selectedSyncActionLabel;
+
   const finalActionAvailable = canSyncSelectedImport;
   const syncUnresolvedWarning = unselectedConfirmationMessage(progress, 'sync');
   const saveUnresolvedWarning = unselectedConfirmationMessage(progress, 'save');
@@ -329,8 +372,12 @@ export function OrderListMatchReview({
   const exclusionWarning = stagedExclusions.length > 0
     ? `${stagedExclusions.length.toLocaleString()}件を買取表から除外し、同じExcel商品IDが今後出た場合も自動で除外します。`
     : null;
-  const syncWarning = retryingConfirmedLaunch
-    ? null : [newCardWarning, exclusionWarning, syncUnresolvedWarning].filter(Boolean).join('\n') || null;
+  const resyncWarning = selectedImportRequiresResync && selectedImport
+    ? `反映済みの取込「${selectedImport.import.filename}」（業務日 ${selectedImportBusinessDate}／取込日時 ${selectedImportImportedAt}）を再同期し、当時のExcel価格で買取表を作り直します。対象が正しいか確認してください。`
+    : null;
+  const syncWarning = retryingConfirmedLaunch && !selectedImportRequiresResync
+    ? null
+    : [resyncWarning, newCardWarning, exclusionWarning, syncUnresolvedWarning].filter(Boolean).join('\n') || null;
   const saveWarning = [newCardWarning, exclusionWarning, saveUnresolvedWarning].filter(Boolean).join('\n') || null;
   const finalWarning = confirmationAction === 'save' ? saveWarning : syncWarning;
 
@@ -344,9 +391,9 @@ export function OrderListMatchReview({
       if (!Array.isArray(payload)) throw new Error('取込履歴の形式が正しくありません。');
       const entries = payload.filter(isRecentImport);
       setImports(entries);
-      setSelectedImportId((current) => entries.some((entry) => entry.import.id === current)
-        ? current
-        : entries.find((entry) => unresolvedCount(entry) > 0)?.import.id ?? entries[0]?.import.id ?? '');
+      setSelectedImportId((current) => selectDefaultOrderListImportId(
+        entries.map((entry) => entry.import), current,
+      ));
     } catch (loadError) {
       if ((loadError as Error).name !== 'AbortError') setError(loadError instanceof Error ? loadError.message : '取込履歴の取得に失敗しました。');
     } finally {
@@ -631,7 +678,7 @@ export function OrderListMatchReview({
   }
 
   function executeFinalAction(action: 'sync' | 'save'): void {
-    if (!selectedImport) return;
+    if (!selectedImport || (action === 'sync' && !selectedImportIsLatest)) return;
     if (action === 'save') {
       void saveAppliedMappings();
     } else if (shouldResyncOrderListImport({
@@ -645,7 +692,7 @@ export function OrderListMatchReview({
   }
 
   function requestFinalAction(action: 'sync' | 'save' = 'sync'): void {
-    if (!selectedImport) return;
+    if (!selectedImport || (action === 'sync' && !selectedImportIsLatest)) return;
     setConfirmationAction(action);
     const warning = action === 'save' ? saveWarning : syncWarning;
     if (warning) {
@@ -664,6 +711,7 @@ export function OrderListMatchReview({
 
   async function confirmSelectedImport(): Promise<void> {
     if (!selectedImport
+      || !selectedImportIsLatest
       || !canConfirmImport(selectedImport, progress.staged)
       || confirmDisabled
       || confirmingImportId
@@ -694,6 +742,7 @@ export function OrderListMatchReview({
 
   async function resyncSelectedImport(): Promise<void> {
     if (!selectedImport
+      || !selectedImportIsLatest
       || !shouldResyncOrderListImport({
         status: selectedImport.import.status,
         appliedSummary: selectedImport.import.applied_summary,
@@ -783,7 +832,11 @@ export function OrderListMatchReview({
 
     {selectedImport && <>
       <div ref={reviewTopRef} className="scroll-mt-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
-        <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-bold text-text-primary truncate">{selectedImport.import.filename}</h3><span className="rounded-full border border-border-card bg-page-bg px-2.5 py-0.5 text-xs text-text-secondary">{statusLabel(selectedImport.import.status)}</span></div><p className="mt-1 text-xs text-text-secondary">取込ID: <span className="font-mono">{selectedImport.import.id}</span></p></div>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2"><h3 className="truncate font-bold text-text-primary">{selectedImport.import.filename}</h3><span className="rounded-full border border-border-card bg-page-bg px-2.5 py-0.5 text-xs text-text-secondary">{statusLabel(selectedImport.import.status)}</span></div>
+          <p className="mt-1 text-xs font-semibold text-text-primary">業務日 <time dateTime={selectedImport.import.business_date}>{selectedImportBusinessDate}</time> / 取込日時 <time dateTime={selectedImport.import.imported_at}>{selectedImportImportedAt}</time></p>
+          <p className="mt-1 text-xs text-text-secondary">取込ID: <span className="font-mono">{selectedImport.import.id}</span></p>
+        </div>
         <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
           <p className="text-xs text-text-secondary">照合済み {selectedImport.summary.matched.toLocaleString()} / 今回対応 {progress.staged.toLocaleString()}（既存対応 {stagedExistingCount.toLocaleString()}・新規登録 {stagedNewCards.length.toLocaleString()}） / 除外予定 {progress.excluded.toLocaleString()} / 除外済み {(selectedImport.summary.excluded ?? 0).toLocaleString()} / 未選択 {progress.unselected.toLocaleString()}{progress.invalid > 0 ? ` / 入力エラー ${progress.invalid.toLocaleString()}` : ''}</p>
           {finalActionAvailable && (
@@ -793,14 +846,35 @@ export function OrderListMatchReview({
               disabled={confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null}
               className="rounded-full bg-text-primary px-4 py-2 text-xs font-semibold text-white disabled:bg-text-primary/40 disabled:cursor-not-allowed"
             >
-              {confirmingImportId === selectedImport.import.id
-                ? '同期を開始中...'
-                : selectedImport.import.status === 'confirmed' ? '同期を再試行' : 'この内容で同期'}
+              {selectedSyncButtonLabel}
             </button>
           )}
         </div>
       </div>
-      {selectedImport.import.status === 'applied' && <div role="note" className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">「この内容で同期」は現在の照合・除外内容でこの取込を再同期します。「対応だけ保存」は過去の出力を変えず、次回以降のExcel取込から使用します。</div>}
+      {!selectedImportIsLatest && latestImport && (
+        <div role="alert" className="flex flex-col gap-3 rounded-xl border-2 border-amber-500 bg-amber-50 p-4 text-amber-950 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm">
+            <p className="font-bold">
+              これは過去取込のため同期不可です。最新取込を選択してください。
+              {selectedImportIsApplied ? ' この反映済み取込は、対応だけ保存できます。' : ''}
+            </p>
+            <p className="mt-1 text-xs">最新取込: {latestImport.import.business_date ?? latestImport.import.imported_at.slice(0, 10)} / <span className="break-all">{latestImport.import.filename}</span></p>
+          </div>
+          <button
+            type="button"
+            onClick={() => selectRecentImport(latestImport.import.id)}
+            disabled={confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null}
+            className="shrink-0 rounded-full bg-amber-950 px-4 py-2 text-sm font-bold text-white hover:bg-black disabled:opacity-40"
+          >
+            最新取込を選ぶ
+          </button>
+        </div>
+      )}
+      {selectedImportIsApplied && selectedImportIsLatest && (
+        <div role="note" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3 text-sm font-semibold text-amber-950">
+          最新の反映済み取込です。「この過去取込を再同期」は、上記ファイル・業務日・取込日時のExcel価格で買取表を作り直します。「対応だけ保存」は過去の出力を変えません。
+        </div>
+      )}
       {(selectedImport.import.status === 'parsed' || selectedImport.import.status === 'failed')
         && selectedImport.import.structural_valid !== false
         && selectedImport.import.persistence_complete !== true && (
@@ -1049,17 +1123,19 @@ export function OrderListMatchReview({
       )}
       {canSyncSelectedImport && (
         <div className="mt-2 flex flex-col gap-3 rounded-xl border-2 border-blue-400 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-blue-900">同期対象 {progress.reflectable.toLocaleString()}件（既存対応 {stagedExistingCount.toLocaleString()}件・新規登録 {stagedNewCards.length.toLocaleString()}件） / 今後も除外 {progress.excluded.toLocaleString()}件 / 未選択 {progress.unselected.toLocaleString()}件{progress.invalid > 0 ? ` / 入力エラー ${progress.invalid.toLocaleString()}件` : ''}</p>
+          <div className="min-w-0 text-xs text-blue-950">
+            <p className="font-bold">同期するExcel: <span className="break-all">{selectedImport.import.filename}</span></p>
+            <p className="mt-1 font-semibold">業務日 <time dateTime={selectedImport.import.business_date}>{selectedImportBusinessDate}</time> / 取込日時 <time dateTime={selectedImport.import.imported_at}>{selectedImportImportedAt}</time></p>
+            <p className="mt-1 text-blue-900">同期対象 {progress.reflectable.toLocaleString()}件（既存対応 {stagedExistingCount.toLocaleString()}件・新規登録 {stagedNewCards.length.toLocaleString()}件） / 今後も除外 {progress.excluded.toLocaleString()}件 / 未選択 {progress.unselected.toLocaleString()}件{progress.invalid > 0 ? ` / 入力エラー ${progress.invalid.toLocaleString()}件` : ''}</p>
+          </div>
           <button
             type="button"
-            aria-label={selectedImport.import.status === 'confirmed' ? '同期を再試行（一覧下部）' : 'この内容で同期（一覧下部）'}
+            aria-label={`${selectedSyncActionLabel}: ${selectedImport.import.filename}（一覧下部）`}
             onClick={() => requestFinalAction('sync')}
             disabled={confirmDisabled || confirmingImportId !== null || savingMappingsImportId !== null}
             className="shrink-0 rounded-full bg-text-primary px-5 py-2.5 text-sm font-semibold text-white disabled:bg-text-primary/40 disabled:cursor-not-allowed"
           >
-            {confirmingImportId === selectedImport.import.id
-              ? '同期を開始中...'
-              : selectedImport.import.status === 'confirmed' ? '同期を再試行' : 'この内容で同期'}
+            {selectedSyncButtonLabel}
           </button>
         </div>
       )}
@@ -1077,16 +1153,22 @@ export function OrderListMatchReview({
         </div>
       )}
     </>}
-    {confirmationOpen && selectedImport && (
+    {confirmationOpen && selectedImport && (confirmationAction === 'save' || selectedImportIsLatest) && (
       <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/55 p-4" role="presentation">
         <section ref={confirmationDialogRef} role="alertdialog" aria-modal="true" aria-labelledby="order-list-final-confirm-title" aria-describedby="order-list-final-confirm-description" className="w-full max-w-lg rounded-2xl border border-border-card bg-card-bg p-5 shadow-2xl sm:p-6">
           <h3 id="order-list-final-confirm-title" className="text-lg font-bold text-text-primary">
-            {progress.unselected > 0 || progress.invalid > 0
-              ? '未選択または入力エラーが残っています'
-              : confirmationAction === 'save' ? '対応内容を保存します' : 'この内容で同期します'}
+            {confirmationAction === 'sync' && selectedImportRequiresResync
+              ? '反映済みの過去取込を再同期します'
+              : progress.unselected > 0 || progress.invalid > 0
+                ? '未選択または入力エラーが残っています'
+                : confirmationAction === 'save' ? '対応内容を保存します' : 'この取込を同期します'}
           </h3>
           <div id="order-list-final-confirm-description" className="mt-3 space-y-2 text-sm leading-relaxed text-text-secondary">
             {(finalWarning ?? '').split('\n').filter(Boolean).map((line) => <p key={line}>{line}</p>)}
+            <div className={`rounded-lg border p-3 ${confirmationAction === 'sync' && selectedImportRequiresResync ? 'border-amber-400 bg-amber-50 text-amber-950' : 'border-border-card bg-page-bg text-text-primary'}`}>
+              <p className="font-bold">操作対象Excel: <span className="break-all">{selectedImport.import.filename}</span></p>
+              <p className="mt-1 text-xs font-semibold">業務日 <time dateTime={selectedImport.import.business_date}>{selectedImportBusinessDate}</time> / 取込日時 <time dateTime={selectedImport.import.imported_at}>{selectedImportImportedAt}</time></p>
+            </div>
           </div>
           {(progress.unselected > 0 || progress.invalid > 0) && (
             <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
@@ -1103,7 +1185,7 @@ export function OrderListMatchReview({
             >
               {confirmationAction === 'save'
                 ? progress.unselected > 0 || progress.invalid > 0 ? '未選択を除いて対応だけ保存' : '対応だけ保存'
-                : progress.unselected > 0 || progress.invalid > 0 ? '未選択を除いて同期' : 'この内容で同期'}
+                : progress.unselected > 0 || progress.invalid > 0 ? `未選択を除いて${selectedImportRequiresResync ? '再同期' : '同期'}` : selectedSyncActionLabel}
             </button>
           </div>
         </section>

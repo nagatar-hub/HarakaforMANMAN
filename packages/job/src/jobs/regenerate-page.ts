@@ -15,13 +15,22 @@ import { downloadTemplateAsset } from '../lib/asset-storage.js';
 import { makeBoxLayout } from '../lib/box-layout.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
 import { applyCurrentPsa10DiscountRates, loadPsa10DiscountRates } from '../lib/pricing-settings.js';
+import {
+  formatGenerationDate,
+  getJstDateParts,
+  resolveGenerationDisplayDate,
+} from '../lib/generation-date.js';
 import type {
+  Database,
   PreparedCardRow,
   AssetProfileRow,
   LayoutConfig,
   GeneratedPageRow,
   LayoutTemplateRow,
 } from '@haraka/shared';
+
+type RunRow = Database['public']['Tables']['run']['Row'];
+type OwnedPageRun = Pick<RunRow, 'id' | 'order_list_import_id'>;
 
 const LABEL_MAP: Record<string, string> = {
   'ピカチュウ': 'pikachu',
@@ -78,25 +87,10 @@ export function resolveRegenerateAdjustments(params: {
   };
 }
 
-function getJstDateParts(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Tokyo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date);
-  const part = (type: string) => parts.find(p => p.type === type)?.value ?? '';
-  return {
-    year: part('year'),
-    month: part('month'),
-    day: part('day'),
-  };
-}
-
 async function findOwnedPageRunId(
   supabase: Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>,
   pageId: string,
-): Promise<string> {
+): Promise<OwnedPageRun> {
   const { data: page, error: pageError } = await supabase
     .from('generated_page')
     .select('run_id')
@@ -106,12 +100,12 @@ async function findOwnedPageRunId(
 
   const { data: run, error: runError } = await supabase
     .from('run')
-    .select('id')
+    .select('id, order_list_import_id')
     .eq('id', page.run_id)
     .eq('store', STORE_NAME)
-    .maybeSingle<{ id: string }>();
+    .maybeSingle<OwnedPageRun>();
   if (runError || !run) throw new Error(`この店舗のページではありません: ${runError?.message ?? pageId}`);
-  return run.id;
+  return run;
 }
 
 export async function runRegeneratePage() {
@@ -120,17 +114,17 @@ export async function runRegeneratePage() {
 
   const supabase = await createSupabaseClientFromSecrets();
   console.log(`[regenerate-page] ページ再生成開始: ${pageId}`);
-  const ownedRunId = await findOwnedPageRunId(supabase, pageId);
+  const ownedRun = await findOwnedPageRunId(supabase, pageId);
 
   try {
-    await _runRegeneratePage(supabase, pageId, ownedRunId);
+    await _runRegeneratePage(supabase, pageId, ownedRun);
   } catch (err) {
     // 失敗時: status は 'generated' を維持（ギャラリーから消えないように）し、error_message に記録
     const errMsg = err instanceof Error ? err.message : String(err);
     await supabase.from('generated_page').update({
       status: 'generated',
       error_message: `再生成失敗: ${errMsg}`,
-    }).eq('id', pageId).eq('run_id', ownedRunId);
+    }).eq('id', pageId).eq('run_id', ownedRun.id);
     throw err;
   }
 }
@@ -138,7 +132,7 @@ export async function runRegeneratePage() {
 async function _runRegeneratePage(
   supabase: Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>,
   pageId: string,
-  ownedRunId: string,
+  ownedRun: OwnedPageRun,
 ) {
 
   // ---- 1. ページ情報取得 ----
@@ -146,10 +140,30 @@ async function _runRegeneratePage(
     .from('generated_page')
     .select('*')
     .eq('id', pageId)
-    .eq('run_id', ownedRunId)
+    .eq('run_id', ownedRun.id)
     .single<GeneratedPageRow>();
 
   if (pageErr || !page) throw new Error(`ページが見つかりません: ${pageErr?.message}`);
+
+  const regenerationStartedAt = new Date();
+  // Storage は従来どおり再生成日のJSTパスを維持し、画像表示日は元RunのExcel業務日を使う。
+  const storageDate = getJstDateParts(regenerationStartedAt);
+  const displayDate = await resolveGenerationDisplayDate({
+    orderListImportId: ownedRun.order_list_import_id,
+    now: regenerationStartedAt,
+    loadBusinessDate: async (importId) => {
+      const { data, error } = await supabase
+        .from('order_list_import')
+        .select('business_date')
+        .eq('id', importId)
+        .eq('store', STORE_NAME)
+        .maybeSingle<{ business_date: string }>();
+      if (error) {
+        throw new Error(`オーダーリスト業務日取得失敗: ${error.message}`);
+      }
+      return data?.business_date ?? null;
+    },
+  });
 
   // ---- 2. カードデータ取得 ----
   const { data: cards, error: cardErr } = await supabase
@@ -345,8 +359,7 @@ async function _runRegeneratePage(
     ? { 1: 8, 2: 3, 3: 3, 4: 3 } as Record<number, number>
     : undefined;
 
-  const jstDate = getJstDateParts();
-  const dateText = `${jstDate.month}/${jstDate.day}`;
+  const dateText = formatGenerationDate(displayDate);
   const adjustments = resolveRegenerateAdjustments({
     layout,
     isBOX,
@@ -376,7 +389,7 @@ async function _runRegeneratePage(
 
   // ---- 8. Storage アップロード ----
   // 既存のimage_keyがあればそのまま上書き、なければ新規作成
-  const datePath = `${jstDate.year}/${jstDate.month}/${jstDate.day}`;
+  const datePath = `${storageDate.year}/${storageDate.month}/${storageDate.day}`;
   const safeFranchise = page.franchise.replace(/[^a-zA-Z0-9._-]/g, '') || 'franchise';
   const safeLabel = romanizeLabel(label);
   const storageKey = `generated/${STORE_NAME}/${datePath}/${safeFranchise}/page_${page.page_index}_${safeLabel}_${Date.now()}.png`;

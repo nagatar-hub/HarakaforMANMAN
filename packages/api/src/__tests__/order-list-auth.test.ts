@@ -4,6 +4,7 @@ import {
   orderListImportRoutes,
   canEditOrderListMappings,
   orderListSyncRequestFingerprint,
+  isNewerUsableOrderListImport,
   isDefinitiveCloudRunJobRejection,
   parseOrderListConfirmPayload,
   parseOrderListExclusionSelections,
@@ -14,10 +15,18 @@ import {
 } from '../routes/order-list-imports.js';
 
 const originalToken = process.env.ORDER_LIST_IMPORT_API_TOKEN;
+const originalSupabaseUrl = process.env.SUPABASE_URL;
+const originalSupabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   if (originalToken === undefined) delete process.env.ORDER_LIST_IMPORT_API_TOKEN;
   else process.env.ORDER_LIST_IMPORT_API_TOKEN = originalToken;
+  if (originalSupabaseUrl === undefined) delete process.env.SUPABASE_URL;
+  else process.env.SUPABASE_URL = originalSupabaseUrl;
+  if (originalSupabaseServiceRoleKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  else process.env.SUPABASE_SERVICE_ROLE_KEY = originalSupabaseServiceRoleKey;
+  globalThis.fetch = originalFetch;
 });
 
 test('オーダーリストAPIは認証設定がなければfail closedする', async () => {
@@ -55,6 +64,123 @@ test('staged mapping PATCH is available only after the import is applied', () =>
   assert.equal(canEditOrderListMappings('failed'), false);
   assert.equal(canEditOrderListMappings('confirmed'), false);
   assert.equal(canEditOrderListMappings('processing'), false);
+});
+
+test('より新しい有効な取込だけが旧取込を置き換える', () => {
+  const target = {
+    id: 'old-import',
+    business_date: '2026-07-19',
+    created_at: '2026-07-19T01:00:00.000Z',
+  };
+  const candidate = {
+    id: 'new-import',
+    business_date: '2026-07-20',
+    created_at: '2026-07-20T01:00:00.000Z',
+    original_filename: '2026-07-20.xlsx',
+    status: 'parsed' as const,
+    structural_valid: true,
+    persistence_complete: true,
+  };
+
+  assert.equal(isNewerUsableOrderListImport(target, candidate), true);
+  assert.equal(isNewerUsableOrderListImport(target, {
+    ...candidate,
+    business_date: target.business_date,
+    created_at: '2026-07-19T02:00:00.000Z',
+  }), true);
+  assert.equal(isNewerUsableOrderListImport(target, {
+    ...candidate,
+    business_date: target.business_date,
+    created_at: '2026-07-19T00:00:00.000Z',
+  }), false);
+  assert.equal(isNewerUsableOrderListImport(target, {
+    ...candidate,
+    structural_valid: false,
+  }), false);
+  assert.equal(isNewerUsableOrderListImport(target, {
+    ...candidate,
+    persistence_complete: false,
+  }), false);
+  assert.equal(isNewerUsableOrderListImport(target, {
+    ...candidate,
+    status: 'failed',
+  }), true);
+});
+
+function mockSupersededImportFetch() {
+  const requests: string[] = [];
+  const target = {
+    id: 'old-import',
+    business_date: '2026-07-19',
+    created_at: '2026-07-19T01:00:00.000Z',
+  };
+  const latest = {
+    id: 'new-import',
+    business_date: '2026-07-20',
+    created_at: '2026-07-20T01:00:00.000Z',
+    original_filename: '現場価格_2026-07-20.xlsx',
+    status: 'applied',
+    structural_valid: true,
+    persistence_complete: true,
+  };
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+    requests.push(url);
+    if (!url.includes('/rest/v1/order_list_import')) {
+      throw new Error(`unexpected Supabase request: ${url}`);
+    }
+    const body = url.includes('structural_valid=eq.true') ? latest : target;
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+  return requests;
+}
+
+test('confirmとresyncはより新しい有効な取込を409で案内しRPCを呼ばない', async () => {
+  const token = 'a'.repeat(32);
+  process.env.ORDER_LIST_IMPORT_API_TOKEN = token;
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
+
+  for (const request of [
+    {
+      path: '/order-list/imports/old-import/confirm',
+      body: {},
+    },
+    {
+      path: '/order-list/imports/old-import/resync',
+      body: { request_id: '550e8400-e29b-41d4-a716-446655440000' },
+    },
+  ]) {
+    const requests = mockSupersededImportFetch();
+    const response = await orderListImportRoutes.request(request.path, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request.body),
+    });
+    assert.equal(response.status, 409);
+    const payload = await response.json() as {
+      error: string;
+      latest_import: { original_filename: string; business_date: string };
+    };
+    assert.match(payload.error, /現場価格_2026-07-20\.xlsx/);
+    assert.match(payload.error, /2026-07-20/);
+    assert.equal(payload.latest_import.original_filename, '現場価格_2026-07-20.xlsx');
+    assert.equal(payload.latest_import.business_date, '2026-07-20');
+    assert.equal(requests.length, 2);
+    assert.equal(requests.some((url) => url.includes('/rpc/')), false);
+    assert.equal(requests[1].includes('store=eq.manman'), true);
+    assert.equal(requests[1].includes('persistence_complete=eq.true'), true);
+  }
 });
 
 

@@ -45,6 +45,20 @@ type OrderListImportRow = Database['public']['Tables']['order_list_import']['Row
 type OrderListItemRow = Database['public']['Tables']['order_list_item']['Row'];
 type ExcelProductMappingRow = Database['public']['Tables']['excel_product_mapping']['Row'];
 type DbCardRow = Database['public']['Tables']['db_card']['Row'];
+type OrderListImportRecencyRow = Pick<
+  OrderListImportRow,
+  | 'id'
+  | 'business_date'
+  | 'created_at'
+  | 'original_filename'
+  | 'status'
+  | 'structural_valid'
+  | 'persistence_complete'
+>;
+type OrderListImportRecencyTarget = Pick<
+  OrderListImportRow,
+  'id' | 'business_date' | 'created_at'
+>;
 
 type UploadedFile = {
   name: string;
@@ -94,6 +108,91 @@ const allowedNewCardImageHosts = new Set<string>([
 
 export function canEditOrderListMappings(importStatus: unknown): boolean {
   return importStatus === 'applied';
+}
+
+// A failed import can still be a structurally valid, fully persisted workbook
+// whose sync failed and is eligible for resync. Keep it in the superseding set;
+// parser/persistence failures are excluded by the two integrity flags below.
+const SUPERSEDING_ORDER_LIST_IMPORT_STATUSES: OrderListImportRow['status'][] = [
+  'parsed',
+  'confirmed',
+  'processing',
+  'applied',
+  'failed',
+];
+
+export function isNewerUsableOrderListImport(
+  target: OrderListImportRecencyTarget,
+  candidate: OrderListImportRecencyRow,
+): boolean {
+  if (candidate.id === target.id
+    || !candidate.structural_valid
+    || !candidate.persistence_complete
+    || !SUPERSEDING_ORDER_LIST_IMPORT_STATUSES.includes(candidate.status)) {
+    return false;
+  }
+  if (candidate.business_date !== target.business_date) {
+    return candidate.business_date > target.business_date;
+  }
+
+  const candidateCreatedAt = Date.parse(candidate.created_at);
+  const targetCreatedAt = Date.parse(target.created_at);
+  return Number.isFinite(candidateCreatedAt)
+    && Number.isFinite(targetCreatedAt)
+    && candidateCreatedAt > targetCreatedAt;
+}
+
+type NewerImportGuardResult =
+  | { ok: true }
+  | {
+    ok: false;
+    status: 409 | 500;
+    body: {
+      error: string;
+      latest_import?: {
+        id: string;
+        original_filename: string;
+        business_date: string;
+      };
+    };
+  };
+
+async function guardAgainstNewerOrderListImport(
+  supabase: SupabaseClient<Database>,
+  target: OrderListImportRecencyTarget,
+): Promise<NewerImportGuardResult> {
+  const { data: candidate, error } = await supabase
+    .from('order_list_import')
+    .select('id, business_date, created_at, original_filename, status, structural_valid, persistence_complete')
+    .eq('store', STORE_NAME)
+    .eq('structural_valid', true)
+    .eq('persistence_complete', true)
+    .in('status', SUPERSEDING_ORDER_LIST_IMPORT_STATUSES)
+    .neq('id', target.id)
+    .gte('business_date', target.business_date)
+    .order('business_date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle<OrderListImportRecencyRow>();
+  if (error) {
+    return { ok: false, status: 500, body: { error: error.message } };
+  }
+  if (!candidate || !isNewerUsableOrderListImport(target, candidate)) {
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    status: 409,
+    body: {
+      error: `より新しい有効なオーダーリスト「${candidate.original_filename}」（業務日: ${candidate.business_date}）が存在するため、この取込は確定・再同期できません`,
+      latest_import: {
+        id: candidate.id,
+        original_filename: candidate.original_filename,
+        business_date: candidate.business_date,
+      },
+    },
+  };
 }
 
 export { isDefinitiveCloudRunJobRejection } from '../lib/cloud-run-errors.js';
@@ -791,6 +890,7 @@ orderListImportRoutes.get('/order-list/imports', async (c) => {
     .from('order_list_import')
     .select('*')
     .eq('store', STORE_NAME)
+    .order('business_date', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(limit)
     .returns<OrderListImportRow[]>();
@@ -1334,12 +1434,17 @@ orderListImportRoutes.post('/order-list/imports/:id/confirm', async (c) => {
   const supabase = createSupabaseClient();
   const { data: scopedImport, error: scopedImportError } = await supabase
     .from('order_list_import')
-    .select('id')
+    .select('id, business_date, created_at')
     .eq('id', importId)
     .eq('store', STORE_NAME)
-    .maybeSingle();
+    .maybeSingle<OrderListImportRecencyTarget>();
   if (scopedImportError) return c.json({ error: scopedImportError.message }, 500);
   if (!scopedImport) return c.json({ error: 'オーダーリスト取込が見つかりません' }, 404);
+
+  const newerImportGuard = await guardAgainstNewerOrderListImport(supabase, scopedImport);
+  if (!newerImportGuard.ok) {
+    return c.json(newerImportGuard.body, newerImportGuard.status);
+  }
 
   const staleBefore = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
   const { error: staleRecoveryError } = await supabase.rpc('recover_stale_order_list_imports_for_store', {
@@ -1377,12 +1482,17 @@ orderListImportRoutes.post('/order-list/imports/:id/resync', async (c) => {
   const supabase = createSupabaseClient();
   const { data: scopedImport, error: scopedImportError } = await supabase
     .from('order_list_import')
-    .select('id')
+    .select('id, business_date, created_at')
     .eq('id', importId)
     .eq('store', STORE_NAME)
-    .maybeSingle();
+    .maybeSingle<OrderListImportRecencyTarget>();
   if (scopedImportError) return c.json({ error: scopedImportError.message }, 500);
   if (!scopedImport) return c.json({ error: 'オーダーリスト取込が見つかりません' }, 404);
+
+  const newerImportGuard = await guardAgainstNewerOrderListImport(supabase, scopedImport);
+  if (!newerImportGuard.ok) {
+    return c.json(newerImportGuard.body, newerImportGuard.status);
+  }
 
   const staleBefore = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
   const { error: staleRecoveryError } = await supabase.rpc('recover_stale_order_list_imports_for_store', {
