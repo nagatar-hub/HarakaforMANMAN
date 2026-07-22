@@ -16,6 +16,7 @@ export {
 } from './price.js';
 export type { BoxConditionDiscountRates, BoxDiscountRates, Psa10DiscountRates, StorePricingSettings } from './price.js';
 export { normalizeText } from './normalize.js';
+export { isBuiltInOrderListExclusion } from './order-list-exclusion.js';
 export {
   TAG_COMBINATION_SEPARATOR,
   MAX_TAG_COMPONENTS,

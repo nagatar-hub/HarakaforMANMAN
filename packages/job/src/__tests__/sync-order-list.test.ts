@@ -1,11 +1,18 @@
-import type { Database } from '@haraka/shared';
+import {
+  DEFAULT_STORE_PRICING_SETTINGS,
+  type Database,
+} from '@haraka/shared';
 import {
   buildOrderListRawImports,
   fetchAllMatchedOrderListItems,
+  filterPublishableOrderListRows,
+  preparePublishableOrderListCards,
   runSync,
 } from '../jobs/sync';
 
 type OrderListItemRow = Database['public']['Tables']['order_list_item']['Row'];
+type RawImportRow = Database['public']['Tables']['raw_import']['Row'];
+type DbCardRow = Database['public']['Tables']['db_card']['Row'];
 
 function makeItem(overrides: Partial<OrderListItemRow> = {}): OrderListItemRow {
   return {
@@ -34,6 +41,26 @@ function makeItem(overrides: Partial<OrderListItemRow> = {}): OrderListItemRow {
     match_note: null,
     selection_fingerprint: null,
     matched_at: '2026-07-14T00:00:00.000Z',
+    created_at: '2026-07-14T00:00:00.000Z',
+    updated_at: '2026-07-14T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function makeDbCard(overrides: Partial<DbCardRow> = {}): DbCardRow {
+  return {
+    id: 'db-1',
+    store: 'manman',
+    franchise: 'Pokemon',
+    tag: 'TOP',
+    card_name: 'リザードン',
+    grade: 'PSA10',
+    list_no: '001',
+    image_url: 'https://db.example/card.jpg',
+    alt_image_url: null,
+    rarity_icon: null,
+    sheet_row_number: 2,
+    image_status: 'ok',
     created_at: '2026-07-14T00:00:00.000Z',
     updated_at: '2026-07-14T00:00:00.000Z',
     ...overrides,
@@ -82,6 +109,56 @@ describe('order-list sync helpers', () => {
       kecak_price: null,
       image_url: 'https://excel.example/card.jpg',
     })]);
+  });
+
+  it('旧版でmatchedになった組み込み除外行は監査に残しつつPreparedCardに入れない', () => {
+    const legacyExcludedItem = makeItem({
+      id: 'item-legacy-excluded',
+      excel_product_id: 'excel-legacy-excluded',
+      card_name: '【対象外】　なにかの P S A 1 0',
+      db_card_id: null,
+      mapping_id: 'legacy-mapping',
+      match_status: 'matched',
+    });
+    const publishableItem = makeItem({ id: 'item-publishable' });
+    const auditInserts = buildOrderListRawImports(
+      [legacyExcludedItem, publishableItem],
+      'run-1',
+    );
+    const persistedAuditRows = auditInserts.map((insert, index) => ({
+      ...insert,
+      id: `raw-${index + 1}`,
+      created_at: '2026-07-14T00:00:00.000Z',
+    })) as RawImportRow[];
+
+    expect(auditInserts).toHaveLength(2);
+    expect(auditInserts[0]).toMatchObject({
+      order_list_item_id: 'item-legacy-excluded',
+      card_name: '【対象外】　なにかの P S A 1 0',
+      db_card_id: null,
+    });
+    expect(filterPublishableOrderListRows([legacyExcludedItem, publishableItem]))
+      .toEqual([publishableItem]);
+
+    const prepared = preparePublishableOrderListCards(
+      persistedAuditRows,
+      new Map([['db-1', makeDbCard()]]),
+      '2026-07-14',
+      DEFAULT_STORE_PRICING_SETTINGS,
+    );
+
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]).toMatchObject({
+      order_list_item_id: 'item-publishable',
+      card_name: 'リザードン',
+    });
+
+    expect(preparePublishableOrderListCards(
+      [persistedAuditRows[0]],
+      new Map(),
+      '2026-07-14',
+      DEFAULT_STORE_PRICING_SETTINGS,
+    )).toEqual([]);
   });
 
   it('Supabaseの1000件上限を越えて全照合済み行をページング取得する', async () => {

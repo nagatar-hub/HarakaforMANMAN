@@ -1,4 +1,4 @@
-import type { Franchise } from '@haraka/shared';
+import { isBuiltInOrderListExclusion, type Franchise } from '@haraka/shared';
 
 export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'excluded' | 'invalid';
 export type OrderListMatchMethod = 'existing_mapping' | 'exact_image' | 'exact_identity' | null;
@@ -191,6 +191,18 @@ export function matchOrderListRows<T extends MatchableOrderListRow>(
         mappingId: exclusion.id,
         candidateDbCardIds: [],
         note: 'このExcel商品IDは買取表に載せない設定です',
+      };
+    }
+
+    if (isBuiltInOrderListExclusion(row.cardName)) {
+      return {
+        row,
+        status: 'excluded',
+        method: null,
+        dbCardId: null,
+        mappingId: null,
+        candidateDbCardIds: [],
+        note: 'この商品は買取表に載せない共通設定です',
       };
     }
 

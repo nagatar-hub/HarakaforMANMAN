@@ -176,9 +176,16 @@ function roundDiscountedPriceHigh(raw: number): number {
   return remainder <= 500 ? base + 500 : base + 1000;
 }
 
+// Preserve MANMAN step rounding while enforcing a stepped source-price ceiling.
+function capAtSourcePriceFloor(roundedPrice: number, sourcePrice: number): number {
+  return roundedPrice <= sourcePrice
+    ? roundedPrice
+    : niceLowerBound(sourcePrice);
+}
+
 export function calculateBuyPriceHigh(basePrice: number, discountRate: number = DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE): number {
   if (!basePrice || basePrice <= 0) return 0;
-  return roundDiscountedPriceHigh(basePrice * (1 - discountRate));
+  return capAtSourcePriceFloor(roundDiscountedPriceHigh(basePrice * (1 - discountRate)), basePrice);
 }
 
 /**
@@ -188,7 +195,7 @@ export function calculateBuyPriceHigh(basePrice: number, discountRate: number = 
  */
 export function calculateBoxPrice(price: number, discountRate: number = 0): number {
   if (!price || price <= 0) return 0;
-  return roundDiscountedPriceHigh(price * (1 - discountRate));
+  return capAtSourcePriceFloor(roundDiscountedPriceHigh(price * (1 - discountRate)), price);
 }
 
 export function calculateBoxPriceLow(priceHigh: number, discountRate: number = DEFAULT_BOX_SHRINK_DISCOUNT_RATE): number {

@@ -1,3 +1,4 @@
+import { calculateBoxPrice, calculateBuyPriceHigh } from '@haraka/shared';
 import {
   calculateSteppedDiscountPreview,
   normalizePreviewBasePrice,
@@ -15,6 +16,21 @@ describe('settings preview helpers', () => {
     expect(calculateSteppedDiscountPreview(12800, 5)).toBe(12500);
     expect(calculateSteppedDiscountPreview(19000, 15)).toBe(16500);
   });
+
+  it.each([
+    [78_540, 5, 75_000],
+    [12_800, 5, 12_500],
+    [109_999, 1, 109_000],
+    [30_000, 0, 30_000],
+  ])(
+    'keeps preview/runtime parity for source %i at %i%%',
+    (sourcePrice, ratePercent, expected) => {
+      const preview = calculateSteppedDiscountPreview(sourcePrice, ratePercent);
+      expect(preview).toBe(expected);
+      expect(preview).toBe(calculateBuyPriceHigh(sourcePrice, ratePercent / 100));
+      expect(preview).toBe(calculateBoxPrice(sourcePrice, ratePercent / 100));
+    },
+  );
 
   it('normalizes invalid preview input to zero', () => {
     expect(normalizePreviewBasePrice('¥12,345')).toBe(12345);

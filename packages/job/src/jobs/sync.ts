@@ -39,8 +39,9 @@ import type {
   PreparedCardRow,
   AssetProfileRow,
   RuleRow,
+  StorePricingSettings,
 } from '@haraka/shared';
-import { FRANCHISES } from '@haraka/shared';
+import { FRANCHISES, isBuiltInOrderListExclusion } from '@haraka/shared';
 
 type RunRow = Database['public']['Tables']['run']['Row'];
 type RawImportRow = Database['public']['Tables']['raw_import']['Row'];
@@ -143,6 +144,35 @@ export function buildOrderListRawImports(
     price_source: 'order_list',
     raw_row: item.raw_row,
   }));
+}
+
+/**
+ * 旧バージョンで matched になった組み込み除外行を、
+ * 監査データは残したまま公開準備対象から除く。
+ */
+export function filterPublishableOrderListRows<T extends { card_name: string | null }>(
+  rows: readonly T[],
+): T[] {
+  return rows.filter((row) => !isBuiltInOrderListExclusion(row.card_name));
+}
+
+/**
+ * Sync本体が prepared_card へ保存する最終対象だけを変換する。
+ *
+ * raw_import はこの関数より前に全件保存されるため、除外した旧matched行も監査に残る。
+ */
+export function preparePublishableOrderListCards(
+  rawImports: RawImportRow[],
+  dbCardsById: Map<string, DbCardRow>,
+  businessDate: string,
+  pricingSettings: StorePricingSettings,
+): ReturnType<typeof prepareOrderListCards> {
+  return prepareOrderListCards(
+    filterPublishableOrderListRows(rawImports),
+    dbCardsById,
+    businessDate,
+    pricingSettings,
+  );
 }
 
 async function fetchAllRunRawImports(
@@ -404,15 +434,21 @@ export async function runSync(): Promise<void> {
     // ---- 6. PreparedCard 変換 + 保存（Excel ID の永続対応先だけを使用） ----
     await lease.renewNow();
     await updateProgress(supabase, run.id, 30, 100, 'PreparedCard 変換中...');
-    const dbCardsById = await fetchMappedDbCards(supabase, orderListItems);
-    const prepared = prepareOrderListCards(
+    const publishableOrderListItems = filterPublishableOrderListRows(orderListItems);
+    const publishableRawImports = filterPublishableOrderListRows(allRawImports);
+    const builtInExcludedCount = allRawImports.length - publishableRawImports.length;
+    if (builtInExcludedCount > 0) {
+      console.warn(`[sync] 組み込み除外行: ${builtInExcludedCount}件（raw_import監査には保持）`);
+    }
+    const dbCardsById = await fetchMappedDbCards(supabase, publishableOrderListItems);
+    const prepared = preparePublishableOrderListCards(
       allRawImports,
       dbCardsById,
       orderListImport.business_date,
       pricingSettings,
     );
-    if (prepared.length !== allRawImports.length) {
-      throw new Error(`PreparedCard変換件数が一致しません: raw=${allRawImports.length}, prepared=${prepared.length}`);
+    if (prepared.length !== publishableRawImports.length) {
+      throw new Error(`PreparedCard変換件数が一致しません: publishable=${publishableRawImports.length}, prepared=${prepared.length}`);
     }
     await batchInsert(supabase, 'prepared_card', prepared as unknown as Record<string, unknown>[]);
     let totalPrepared = prepared.length;

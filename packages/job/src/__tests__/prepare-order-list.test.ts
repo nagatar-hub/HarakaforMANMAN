@@ -172,7 +172,7 @@ describe('prepareOrderListCards', () => {
     );
 
     expect(result[0]).toMatchObject({
-      price_high: 100_500,
+      price_high: 100_000,
       price_low: 85_500,
       tag: 'BOX',
     });

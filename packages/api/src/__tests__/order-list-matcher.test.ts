@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { isBuiltInOrderListExclusion } from '@haraka/shared';
 import {
   matchOrderListRows,
   normalizeImageUrl,
@@ -73,6 +74,39 @@ describe('matchOrderListRows', () => {
     assert.equal(result.dbCardId, null);
     assert.equal(result.mappingId, 'excluded-mapping');
     assert.deepEqual(result.candidateDbCardIds, []);
+  });
+
+  it('組み込み対象外商品はDB候補があっても監査可能なexcluded結果にする', () => {
+    const [result] = matchOrderListRows(
+      [row({ cardName: 'なにかのPSA10' })],
+      [dbCard({ card_name: 'なにかのPSA10', image_url: 'https://excel.example/card.jpg' })],
+      [],
+    );
+
+    assert.equal(result.status, 'excluded');
+    assert.equal(result.method, null);
+    assert.equal(result.dbCardId, null);
+    assert.equal(result.mappingId, null);
+    assert.deepEqual(result.candidateDbCardIds, []);
+    assert.match(result.note ?? '', /共通設定/);
+  });
+
+  it('組み込み対象でも保存済みdisabled除外の監査IDを保持する', () => {
+    const [result] = matchOrderListRows(
+      [row({ cardName: 'なにかのPSA10' })],
+      [dbCard({ card_name: 'なにかのPSA10' })],
+      [{
+        id: 'excluded-mapping',
+        franchise: 'Pokemon',
+        excel_product_id: 'excel-1',
+        db_card_id: null,
+        status: 'disabled',
+      }],
+    );
+
+    assert.equal(result.status, 'excluded');
+    assert.equal(result.mappingId, 'excluded-mapping');
+    assert.match(result.note ?? '', /Excel商品ID/);
   });
 
   it('同一商材で画像URLが1件だけ完全一致すれば自動照合する', () => {
@@ -161,6 +195,23 @@ describe('matchOrderListRows', () => {
 
     assert.equal(result.status, 'invalid');
     assert.deepEqual(result.candidateDbCardIds, []);
+  });
+});
+
+describe('isBuiltInOrderListExclusion', () => {
+  it('完全一致を対象外とする', () => {
+    assert.equal(isBuiltInOrderListExclusion('なにかのPSA10'), true);
+  });
+
+  it('先頭装飾と半角・全角空白を正規化する', () => {
+    assert.equal(isBuiltInOrderListExclusion('【対象外】 なにかの PSA10'), true);
+    assert.equal(isBuiltInOrderListExclusion('【対象外】　なにかの　P S A 1 0　'), true);
+  });
+
+  it('部分一致や似た商品名は対象外にしない', () => {
+    assert.equal(isBuiltInOrderListExclusion('なにかのPSA10カード'), false);
+    assert.equal(isBuiltInOrderListExclusion('なにかのPSA100'), false);
+    assert.equal(isBuiltInOrderListExclusion('ピカチュウ PSA10'), false);
   });
 });
 
