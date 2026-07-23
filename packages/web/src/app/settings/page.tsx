@@ -166,6 +166,24 @@ export default function SettingsPage() {
         )}
 
         <div className="space-y-10">
+          <section className="bg-warm-100 rounded-xl px-5 py-4">
+            <h2 className="text-sm font-bold text-text-primary">
+              割引後価格の端数処理（BOX・商材別共通）
+            </h2>
+            <p className="text-sm text-text-secondary mt-2">
+              元価格に割引率を適用し、その「割引後価格」の金額帯で切り捨てます。元価格の金額帯では判定しません。
+            </p>
+            <ul className="mt-3 grid gap-1 text-sm text-text-secondary sm:grid-cols-2">
+              <li>〜9,999円：100円単位（十の位以下を切り捨て）</li>
+              <li>10,000〜99,999円：1,000円単位（百の位以下を切り捨て）</li>
+              <li>100,000〜999,999円：10,000円単位（千の位以下を切り捨て）</li>
+              <li>1,000,000円〜：100,000円単位（一万の位以下を切り捨て）</li>
+            </ul>
+            <p className="text-xs text-text-secondary mt-3">
+              例: 元価格 ¥105,000・10%引き → 割引後 ¥94,500 → 10万円未満のルールで ¥94,000
+            </p>
+          </section>
+
           <section>
             <h2 className="text-lg font-bold text-text-primary mb-6">BOX 割引率</h2>
 
@@ -224,7 +242,7 @@ export default function SettingsPage() {
                         <span className="text-xl font-bold text-text-primary">¥{previewBoxNoShrink.toLocaleString()}</span>
                       </div>
                       <p className="text-xs text-text-secondary mt-1">
-                        それぞれ元価格に割引率を適用し、100円単位で切り捨て
+                        それぞれ割引後価格の金額帯に応じ、上記の単位で切り捨て
                       </p>
                     </div>
                   </div>

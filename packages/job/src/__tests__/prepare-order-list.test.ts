@@ -52,7 +52,7 @@ function makeDbCard(overrides: Partial<DbCardRow> = {}): DbCardRow {
 }
 
 describe('prepareOrderListCards', () => {
-  it('OP08-106は最新Excelの78,540円と5%設定から75,000円を生成する', () => {
+  it('OP08-106は最新Excelの78,540円と5%設定から74,000円を生成する', () => {
     const pricingSettings = {
       ...DEFAULT_STORE_PRICING_SETTINGS,
       psa10_discount_rates: {
@@ -77,16 +77,37 @@ describe('prepareOrderListCards', () => {
     );
 
     expect(result[0]).toMatchObject({
-      price_high: 75_000,
+      price_high: 74_000,
       price_source: 'order_list',
       price_source_date: '2026-07-20',
     });
   });
 
+  it('アイリスの闘志は10,098円と5%設定から9,500円を生成する', () => {
+    const pricingSettings = {
+      ...DEFAULT_STORE_PRICING_SETTINGS,
+      psa10_discount_rates: {
+        ...DEFAULT_STORE_PRICING_SETTINGS.psa10_discount_rates,
+        Pokemon: 0.05,
+      },
+    };
+    const result = prepareOrderListCards(
+      [makeRawImport({
+        card_name: 'アイリスの闘志',
+        source_price: 10_098,
+      })],
+      new Map([['db-1', makeDbCard({ card_name: 'アイリスの闘志' })]]),
+      '2026-07-23',
+      pricingSettings,
+    );
+
+    expect(result[0].price_high).toBe(9_500);
+  });
+
   it.each<[Franchise, number, number]>([
-    ['Pokemon', 44_500, 39_000],
-    ['ONE PIECE', 44_500, 39_000],
-    ['YU-GI-OH!', 42_500, 36_000],
+    ['Pokemon', 44_000, 38_000],
+    ['ONE PIECE', 44_000, 38_000],
+    ['YU-GI-OH!', 42_000, 35_000],
   ])('%s はMANMAN既定の商材別率で価格を計算する', (franchise, expectedHigh, expectedLow) => {
     const raw = makeRawImport({ franchise });
     const result = prepareOrderListCards(
@@ -173,7 +194,7 @@ describe('prepareOrderListCards', () => {
 
     expect(result[0]).toMatchObject({
       price_high: 100_000,
-      price_low: 85_500,
+      price_low: 85_000,
       tag: 'BOX',
     });
   });

@@ -62,40 +62,40 @@ describe('parseSpectreRows', () => {
   it('price_high を BUY_PRICE（index 7）に商材別減額率を反映して取得する', () => {
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID);
-    expect(result[0].price_high).toBe(26500);
+    expect(result[0].price_high).toBe(26000);
   });
 
   it('price_high に指定された商材別減額率を反映する', () => {
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID, { Pokemon: 0.10, 'ONE PIECE': 0.20 });
-    expect(result[0].price_high).toBe(27500);
+    expect(result[0].price_high).toBe(27000);
   });
 
   it('price_high が ¥ 記号付きでも正しく数値に変換する', () => {
     const rows = [HEADER, ROW_WITH_YEN];
     const result = parseSpectreRows(rows, franchise, RUN_ID);
-    expect(result[0].price_high).toBe(6500);
+    expect(result[0].price_high).toBe(6100);
   });
 
   it('price_low が calculateBuyPriceLow で計算される', () => {
-    // 商材別 12% 減額: 30000 -> 26400 -> price_high 26500
-    // Pokemon: 26500 >= 20000 → rate=0.88 → 26500*0.88=23320 → niceLowerBound=23000
+    // 商材別 12% 減額: 30000 -> 26400 -> price_high 26000
+    // Pokemon: 26000 >= 20000 → rate=0.88 → 26000*0.88=22880 → niceLowerBound=22000
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID);
-    expect(result[0].price_low).toBe(23000);
+    expect(result[0].price_low).toBe(22000);
   });
 
   it('商材別減額率が指定された場合はその率で price_high を計算する', () => {
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, franchise, RUN_ID, { Pokemon: 0.10 });
-    expect(result[0].price_high).toBe(27500);
-    expect(result[0].price_low).toBe(24000);
+    expect(result[0].price_high).toBe(27000);
+    expect(result[0].price_low).toBe(23000);
   });
 
-  it('price_high は商材別減額率を適用後に500円または1000円へ切り上げる', () => {
+  it('price_high は割引後の金額帯に応じて切り捨てる', () => {
     const rows = [HEADER, ['TOP', 'ナミ', '¥30,090', 'https://img/nami.jpg', 'ナミ', 'PSA10', 'OP00-001', '30090']];
     const result = parseSpectreRows(rows, 'ONE PIECE', RUN_ID, { 'ONE PIECE': 0.06 });
-    expect(result[0].price_high).toBe(28500);
+    expect(result[0].price_high).toBe(28000);
   });
 
   it('source = "spectre" が設定される', () => {
@@ -166,8 +166,8 @@ describe('parseSpectreRows', () => {
     const rows = [HEADER, ROW_CHARIZARD];
     const result = parseSpectreRows(rows, 'YU-GI-OH!', RUN_ID);
     expect(result[0].franchise).toBe('YU-GI-OH!');
-    // 買取上限 15% 減額: 30000 -> 25500
-    // YU-GI-OH!: 25500 * 0.85 = 21675 → niceLowerBound → 21000
+    // 買取上限 15% 減額: 30000 -> 25500 -> price_high 25000
+    // YU-GI-OH!: 25000 * 0.85 = 21250 → niceLowerBound → 21000
     expect(result[0].price_low).toBe(21000);
   });
 });

@@ -168,34 +168,43 @@ export function calculatePsa10PriceLow(priceHigh: number, discountRate: number):
   return niceLowerBound(priceHigh * (1 - discountRate));
 }
 
-function roundDiscountedPriceHigh(raw: number): number {
-  if (!raw || raw <= 0) return 0;
+/**
+ * 設定画面の割引率を適用した「後」の金額帯に応じて切り捨てる。
+ *
+ * - 9,999円以下: 100円単位（十の位以下を切り捨て）
+ * - 10,000〜99,999円: 1,000円単位（百の位以下を切り捨て）
+ * - 100,000〜999,999円: 10,000円単位（千の位以下を切り捨て）
+ * - 1,000,000円以上: 100,000円単位（一万の位以下を切り捨て）
+ */
+export function floorDiscountedPriceByTier(discountedPrice: number): number {
+  if (!Number.isFinite(discountedPrice) || discountedPrice <= 0) return 0;
 
-  const base = Math.floor(raw / 1000) * 1000;
-  const remainder = raw - base;
-  return remainder <= 500 ? base + 500 : base + 1000;
+  const step =
+    discountedPrice < 10_000 ? 100 :
+    discountedPrice < 100_000 ? 1_000 :
+    discountedPrice < 1_000_000 ? 10_000 :
+    100_000;
+
+  return Math.floor(discountedPrice / step) * step;
 }
 
-// Preserve MANMAN step rounding while enforcing a stepped source-price ceiling.
-function capAtSourcePriceFloor(roundedPrice: number, sourcePrice: number): number {
-  return roundedPrice <= sourcePrice
-    ? roundedPrice
-    : niceLowerBound(sourcePrice);
+function discountedPriceCappedAtSource(sourcePrice: number, discountRate: number): number {
+  return Math.min(sourcePrice * (1 - discountRate), sourcePrice);
 }
 
 export function calculateBuyPriceHigh(basePrice: number, discountRate: number = DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE): number {
   if (!basePrice || basePrice <= 0) return 0;
-  return capAtSourcePriceFloor(roundDiscountedPriceHigh(basePrice * (1 - discountRate)), basePrice);
+  return floorDiscountedPriceByTier(discountedPriceCappedAtSource(basePrice, discountRate));
 }
 
 /**
  * BOX 価格を計算
  * discountRate: 0.15 = 15% OFF（設定画面で変更可能）
- * PSA の price_high と同じ 500/1000 円境界へ丸める
+ * PSA の price_high と同じく、割引後の金額帯に応じて切り捨てる
  */
 export function calculateBoxPrice(price: number, discountRate: number = 0): number {
   if (!price || price <= 0) return 0;
-  return capAtSourcePriceFloor(roundDiscountedPriceHigh(price * (1 - discountRate)), price);
+  return floorDiscountedPriceByTier(discountedPriceCappedAtSource(price, discountRate));
 }
 
 export function calculateBoxPriceLow(priceHigh: number, discountRate: number = DEFAULT_BOX_SHRINK_DISCOUNT_RATE): number {

@@ -5,22 +5,24 @@ import {
 } from '@/lib/settings-preview';
 
 describe('settings preview helpers', () => {
-  it('calculates merchant discount preview by rounding discounted price up to the next 500 or 1000 yen boundary', () => {
-    expect(calculateSteppedDiscountPreview(30000, 6)).toBe(28500);
-    expect(calculateSteppedDiscountPreview(12345, 12)).toBe(11000);
-    expect(calculateSteppedDiscountPreview(12345, 15)).toBe(10500);
-    expect(calculateSteppedDiscountPreview(1417800, 6)).toBe(1333000);
+  it('calculates merchant discount preview by flooring from the post-discount price tier', () => {
+    expect(calculateSteppedDiscountPreview(30000, 6)).toBe(28000);
+    expect(calculateSteppedDiscountPreview(12345, 12)).toBe(10000);
+    expect(calculateSteppedDiscountPreview(12345, 15)).toBe(10000);
+    expect(calculateSteppedDiscountPreview(1417800, 6)).toBe(1300000);
   });
 
-  it('calculates BOX preview with the same 500/1000 yen stepped rounding', () => {
-    expect(calculateSteppedDiscountPreview(12800, 5)).toBe(12500);
-    expect(calculateSteppedDiscountPreview(19000, 15)).toBe(16500);
+  it('calculates BOX preview with the same post-discount tier flooring', () => {
+    expect(calculateSteppedDiscountPreview(12800, 5)).toBe(12000);
+    expect(calculateSteppedDiscountPreview(19000, 15)).toBe(16000);
   });
 
   it.each([
-    [78_540, 5, 75_000],
-    [12_800, 5, 12_500],
-    [109_999, 1, 109_000],
+    [78_540, 5, 74_000],
+    [12_800, 5, 12_000],
+    [10_098, 5, 9_500],
+    [105_000, 10, 94_000],
+    [109_999, 1, 100_000],
     [30_000, 0, 30_000],
   ])(
     'keeps preview/runtime parity for source %i at %i%%',

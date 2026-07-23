@@ -8,6 +8,7 @@ export {
   niceLowerBound,
   normalizeStorePricingSettings,
   mergeStorePricingSettings,
+  floorDiscountedPriceByTier,
   calculateBuyPriceHigh,
   calculateBuyPriceLow,
   calculatePsa10PriceLow,
