@@ -14,7 +14,8 @@
 import sharp from 'sharp';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
-import { getAccessToken } from '../lib/auth.js';
+import { publishManmanBuybackSheet } from '../lib/buyback-sheet.js';
+import { getAccessToken, getBuybackSheetAccessToken } from '../lib/auth.js';
 import { composePage } from '../lib/image-composer.js';
 import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-drive.js';
 import { downloadTemplateAsset } from '../lib/asset-storage.js';
@@ -660,22 +661,47 @@ export async function runGenerate() {
       .eq('status', 'failed');
 
     const failedPages = failedPageCount ?? 0;
-    const hasFailures = failedPages > 0;
 
-    if (hasFailures) {
+    let sheetPublishMessage = '未実行';
+    let sheetPublishFailed = false;
+    try {
+      const buybackSheetAccessToken = await getBuybackSheetAccessToken();
+      const publishResult = await publishManmanBuybackSheet({
+        supabase,
+        runId: run.id,
+        accessToken: buybackSheetAccessToken,
+      });
+      sheetPublishMessage = publishResult.status === 'completed'
+        ? `${publishResult.rowCount}商品を更新`
+        : '対象外のためスキップ';
+    } catch (sheetError) {
+      sheetPublishFailed = true;
+      sheetPublishMessage = sheetError instanceof Error ? sheetError.message : String(sheetError);
+      console.error(`[generate] Google Sheet更新失敗（生成画像は完了状態を維持）: ${sheetPublishMessage}`);
+    }
+
+    const hasFailures = failedPages > 0 || sheetPublishFailed;
+
+    if (failedPages > 0) {
       console.warn(`[generate] ⚠️ 失敗ページ: ${failedPages}`);
     }
+
+    const completionWarnings = [
+      ...(failedPages > 0 ? [`${failedPages}ページが失敗`] : []),
+      ...(sheetPublishFailed ? ['Google Sheet更新に失敗'] : []),
+    ];
 
     // Discord 通知: 成功（失敗ありなら警告色）
     await sendDiscordNotification({
       title: hasFailures ? '🟡 Generate ジョブ完了（一部失敗あり）' : '🟢 Generate ジョブ完了',
       description: hasFailures
-        ? `画像生成完了。${failedPages}ページが失敗しました。`
+        ? `画像生成完了。${completionWarnings.join(' / ')}。`
         : '画像生成が正常に完了しました。',
       color: hasFailures ? COLOR.WARNING : COLOR.SUCCESS,
       fields: [
         { name: '生成ページ数', value: `${totalPages}`, inline: true },
-        ...(hasFailures ? [{ name: '失敗ページ数', value: `${failedPages}`, inline: true }] : []),
+        ...(failedPages > 0 ? [{ name: '失敗ページ数', value: `${failedPages}`, inline: true }] : []),
+        { name: 'Google Sheet', value: sheetPublishMessage.slice(0, 1024), inline: false },
         { name: '所要時間', value: `${elapsed}s`, inline: true },
       ],
     });

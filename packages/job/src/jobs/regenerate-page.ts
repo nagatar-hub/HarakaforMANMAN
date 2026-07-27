@@ -8,7 +8,8 @@
 
 import sharp from 'sharp';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
-import { getAccessToken } from '../lib/auth.js';
+import { getAccessToken, getBuybackSheetAccessToken } from '../lib/auth.js';
+import { publishManmanBuybackSheet } from '../lib/buyback-sheet.js';
 import { composePage } from '../lib/image-composer.js';
 import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-drive.js';
 import { downloadTemplateAsset } from '../lib/asset-storage.js';
@@ -417,6 +418,21 @@ async function _runRegeneratePage(
     image_url: publicUrl.publicUrl,
     error_message: null,
   }).eq('id', pageId);
+
+  try {
+    const buybackSheetAccessToken = await getBuybackSheetAccessToken();
+    const publishResult = await publishManmanBuybackSheet({
+      supabase,
+      runId: page.run_id,
+      accessToken: buybackSheetAccessToken,
+    });
+    if (publishResult.status === 'completed') {
+      console.log(`[regenerate-page] Google Sheet更新完了: ${publishResult.rowCount}商品`);
+    }
+  } catch (sheetError) {
+    const message = sheetError instanceof Error ? sheetError.message : String(sheetError);
+    console.error(`[regenerate-page] Google Sheet更新失敗（再生成画像は完了状態を維持）: ${message}`);
+  }
 
   console.log(`[regenerate-page] 完了: ${storageKey}`);
 }

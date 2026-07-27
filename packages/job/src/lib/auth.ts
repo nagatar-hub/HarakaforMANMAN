@@ -44,3 +44,31 @@ export async function getAccessToken(): Promise<string> {
   const creds = await getCredentials();
   return refreshAccessToken(creds);
 }
+
+/**
+ * MANMAN買取表を書き込むGoogleアカウントのaccess tokenを取得する。
+ *
+ * 画像・KECAK参照用のアカウントとは分離し、指定シートを所有する
+ * nagata.r@tomstocks.net の refresh token を使う。
+ */
+export async function getBuybackSheetAccessToken(): Promise<string> {
+  if (
+    process.env.GOOGLE_BUYBACK_REFRESH_TOKEN
+    && process.env.GOOGLE_CLIENT_ID
+    && process.env.GOOGLE_CLIENT_SECRET
+  ) {
+    return refreshAccessToken({
+      refreshToken: process.env.GOOGLE_BUYBACK_REFRESH_TOKEN,
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    });
+  }
+
+  const { getSecret } = await import('./secret-manager.js');
+  const [refreshToken, clientId, clientSecret] = await Promise.all([
+    getSecret('haraka-oauth-refresh-token'),
+    getSecret('haraka-oauth-client-id'),
+    getSecret('haraka-oauth-client-secret'),
+  ]);
+  return refreshAccessToken({ refreshToken, clientId, clientSecret });
+}
