@@ -3,6 +3,7 @@ import { runSync } from './jobs/sync.js';
 import { runGenerate } from './jobs/generate.js';
 import { runRegeneratePage } from './jobs/regenerate-page.js';
 import { runWatchdog } from './jobs/watchdog.js';
+import { runPublishBuybackSheet } from './jobs/publish-buyback-sheet.js';
 import { sendDiscordNotification, COLOR } from './lib/discord.js';
 
 async function main() {
@@ -22,6 +23,9 @@ async function main() {
         break;
       case 'watchdog':
         await runWatchdog();
+        break;
+      case 'publish-buyback-sheet':
+        await runPublishBuybackSheet();
         break;
       case 'healthcheck':
         await runHealthcheck();

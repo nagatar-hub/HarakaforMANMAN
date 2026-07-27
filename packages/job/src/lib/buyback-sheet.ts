@@ -39,6 +39,7 @@ type PublishPage = Pick<
 type PublishPreparedCard = Pick<
   PreparedCardRow,
   | 'id'
+  | 'run_id'
   | 'order_list_item_id'
   | 'franchise'
   | 'card_name'
@@ -137,6 +138,7 @@ function effectiveRarity(
 }
 
 export function buildBuybackSheetValues(params: {
+  runId: string;
   orderedCardIds: string[];
   cards: PublishPreparedCard[];
   orderListItems: PublishOrderListItem[];
@@ -149,6 +151,9 @@ export function buildBuybackSheetValues(params: {
   const dataRows = params.orderedCardIds.map((cardId): SheetCell[] => {
     const card = cardById.get(cardId);
     if (!card) throw new Error(`prepared_card に出力対象商品がありません: ${cardId}`);
+    if (card.run_id !== params.runId) {
+      throw new Error(`別のRunに属する商品です: ${card.card_name} (${cardId})`);
+    }
     if (!card.order_list_item_id) {
       throw new Error(`出力対象商品にオーダーリスト行がありません: ${card.card_name} (${cardId})`);
     }
@@ -169,7 +174,7 @@ export function buildBuybackSheetValues(params: {
     if (card.price_high === null || card.price_high <= 0) {
       throw new Error(`買取価格が不正です: ${item.excel_product_id}`);
     }
-    if (card.price_source_date && card.price_source_date !== params.businessDate) {
+    if (card.price_source_date !== params.businessDate) {
       throw new Error(`価格日とオーダーリスト業務日が一致しません: ${item.excel_product_id}`);
     }
 
@@ -198,7 +203,7 @@ async function fetchPreparedCards(
     const batch = ids.slice(i, i + QUERY_BATCH_SIZE);
     const { data, error } = await supabase
       .from('prepared_card')
-      .select('id, order_list_item_id, franchise, card_name, grade, list_no, image_url, alt_image_url, rarity, tag, price_high, image_status, price_source_date')
+      .select('id, run_id, order_list_item_id, franchise, card_name, grade, list_no, image_url, alt_image_url, rarity, tag, price_high, image_status, price_source_date')
       .in('id', batch)
       .returns<PublishPreparedCard[]>();
     if (error) throw new Error(`出力対象商品の取得に失敗しました: ${error.message}`);
@@ -239,18 +244,25 @@ export async function publishManmanBuybackSheet(params: {
   const spreadsheetId = process.env.MANMAN_BUYBACK_SPREADSHEET_ID?.trim()
     || DEFAULT_SPREADSHEET_ID;
 
-  const { data: latestRun, error: latestRunError } = await params.supabase
+  const findLatestCompletedRun = async () => params.supabase
     .from('run')
     .select('id')
     .eq('store', MANMAN_STORE_NAME)
+    .eq('status', 'completed')
+    .not('generate_done_at', 'is', null)
     .not('order_list_import_id', 'is', null)
     .order('started_at', { ascending: false })
     .limit(1)
     .maybeSingle<Pick<Database['public']['Tables']['run']['Row'], 'id'>>();
+
+  const { data: latestRun, error: latestRunError } = await findLatestCompletedRun();
   if (latestRunError) {
     throw new Error(`最新のMANMAN実行取得に失敗しました: ${latestRunError.message}`);
   }
-  if (latestRun && latestRun.id !== params.runId) {
+  if (!latestRun) {
+    throw new Error('公開可能な完了済みMANMAN実行がありません');
+  }
+  if (latestRun.id !== params.runId) {
     console.log(`[buyback-sheet] skipped historical run=${params.runId}; latest=${latestRun.id}`);
     return { status: 'skipped', rowCount: 0, contentHash: null, spreadsheetId };
   }
@@ -260,6 +272,8 @@ export async function publishManmanBuybackSheet(params: {
     .select('id, store, order_list_import_id')
     .eq('id', params.runId)
     .eq('store', MANMAN_STORE_NAME)
+    .eq('status', 'completed')
+    .not('generate_done_at', 'is', null)
     .single<Pick<Database['public']['Tables']['run']['Row'], 'id' | 'store' | 'order_list_import_id'>>();
   if (runError || !run) {
     throw new Error(`MANMAN実行が見つかりません: ${runError?.message ?? params.runId}`);
@@ -296,6 +310,7 @@ export async function publishManmanBuybackSheet(params: {
     .filter((id): id is string => Boolean(id));
   const orderListItems = await fetchOrderListItems(params.supabase, [...new Set(itemIds)]);
   const values = buildBuybackSheetValues({
+    runId: params.runId,
     orderedCardIds,
     cards,
     orderListItems,
@@ -303,6 +318,19 @@ export async function publishManmanBuybackSheet(params: {
     businessDate: orderListImport.business_date,
   });
   const contentHash = createHash('sha256').update(JSON.stringify(values)).digest('hex');
+
+  // データ収集中に新しいRunが完了していた場合、古いRunで上書きしない。
+  const { data: latestRunBeforeWrite, error: latestRunBeforeWriteError } =
+    await findLatestCompletedRun();
+  if (latestRunBeforeWriteError) {
+    throw new Error(`書き込み前の最新MANMAN実行確認に失敗しました: ${latestRunBeforeWriteError.message}`);
+  }
+  if (!latestRunBeforeWrite || latestRunBeforeWrite.id !== params.runId) {
+    console.log(
+      `[buyback-sheet] skipped stale write run=${params.runId}; latest=${latestRunBeforeWrite?.id ?? 'none'}`,
+    );
+    return { status: 'skipped', rowCount: 0, contentHash: null, spreadsheetId };
+  }
 
   await replaceSheetValues({
     accessToken: params.accessToken,

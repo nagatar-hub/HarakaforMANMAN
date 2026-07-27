@@ -111,6 +111,7 @@ describe('MANMAN buyback sheet', () => {
 
   it('A:I の商品情報、買取価格、更新日を生成する', () => {
     const values = buildBuybackSheetValues({
+      runId: 'run-1',
       orderedCardIds: ['pokemon-1'],
       cards: [makeCard()],
       orderListItems: [makeItem()],
@@ -136,6 +137,7 @@ describe('MANMAN buyback sheet', () => {
 
   it('フォールバック画像と単一タグのレアリティ補完を使う', () => {
     const values = buildBuybackSheetValues({
+      runId: 'run-1',
       orderedCardIds: ['pokemon-1'],
       cards: [makeCard({ image_status: 'fallback', rarity: "'-", tag: 'SAR' })],
       orderListItems: [makeItem({ rarity: "'-" })],
@@ -149,11 +151,34 @@ describe('MANMAN buyback sheet', () => {
 
   it('価格日が業務日と異なる商品を拒否する', () => {
     expect(() => buildBuybackSheetValues({
+      runId: 'run-1',
       orderedCardIds: ['pokemon-1'],
       cards: [makeCard({ price_source_date: '2026-07-26' })],
       orderListItems: [makeItem()],
       orderListImportId: 'import-1',
       businessDate: '2026-07-27',
     })).toThrow('価格日とオーダーリスト業務日が一致しません');
+  });
+
+  it('価格日が空の商品を拒否する', () => {
+    expect(() => buildBuybackSheetValues({
+      runId: 'run-1',
+      orderedCardIds: ['pokemon-1'],
+      cards: [makeCard({ price_source_date: null })],
+      orderListItems: [makeItem()],
+      orderListImportId: 'import-1',
+      businessDate: '2026-07-27',
+    })).toThrow('価格日とオーダーリスト業務日が一致しません');
+  });
+
+  it('別のRunに属する商品を拒否する', () => {
+    expect(() => buildBuybackSheetValues({
+      runId: 'run-1',
+      orderedCardIds: ['pokemon-1'],
+      cards: [makeCard({ run_id: 'run-older' })],
+      orderListItems: [makeItem()],
+      orderListImportId: 'import-1',
+      businessDate: '2026-07-27',
+    })).toThrow('別のRunに属する商品です');
   });
 });
