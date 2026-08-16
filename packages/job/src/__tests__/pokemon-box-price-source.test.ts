@@ -38,6 +38,31 @@ describe('parsePokemonBoxPriceRows', () => {
   it('KECAKの[1BOX]表記とBOX価格DBの商品名を同じ照合名に正規化する', () => {
     expect(normalizePokemonBoxProductName('[1BOX]ホワイトフレア')).toBe('ホワイトフレア');
     expect(normalizePokemonBoxProductName('拡張パック「ホワイトフレア」(SV11W)')).toBe('ホワイトフレア');
+    expect(normalizePokemonBoxProductName('拡張パックデラックス「ホワイトフレア」(SV11W)'))
+      .toBe('ホワイトフレア|deluxe');
+  });
+
+  it('25th ゴールデンボックスの日英表記を年数を残して同じ照合名に正規化する', () => {
+    const orderListName = normalizePokemonBoxProductName('[1BOX]25th ゴールデンボックス');
+    expect(orderListName).toBe('25thgolden');
+    expect(normalizePokemonBoxProductName('25th ANNIVERSARY GOLDEN BOX')).toBe(orderListName);
+    expect(normalizePokemonBoxProductName('20th ANNIVERSARY GOLDEN BOX')).not.toBe(orderListName);
+
+    const result = applyPokemonBoxPriceOverrides(
+      [makeRawImport({
+        card_name: '[1BOX]25th ゴールデンボックス',
+        grade: 'BOX',
+        kecak_price: null,
+        source_price: 99999,
+        price_source: 'order_list',
+      })],
+      parsePokemonBoxPriceRows([
+        ['\\', '商品名', '画像URL', '買取価格'],
+        ['BOX', '25th ANNIVERSARY GOLDEN BOX', 'https://example.com/golden', '250,000'],
+      ]),
+    );
+    expect(result.rows[0].source_price).toBe(250_000);
+    expect(result.missingNames).toEqual([]);
   });
 });
 
@@ -87,7 +112,7 @@ describe('applyPokemonBoxPriceOverrides', () => {
     );
 
     expect(result.rows[0].kecak_price).toBeNull();
-    expect(result.missingNames).toEqual(['未登録BOX']);
+    expect(result.missingNames).toEqual(['未登録']);
   });
 
   it('オーダーリストのPokemon BOX行はsource_priceをBOX価格DBの価格へ差し替える', () => {
@@ -134,11 +159,11 @@ describe('applyPokemonBoxPriceOverrides', () => {
       price_source: 'order_list',
       raw_row: {
         pokemon_box_price_source: 'ORDER_LIST_FALLBACK',
-        pokemon_box_price_lookup_name: '未登録BOX',
+        pokemon_box_price_lookup_name: '未登録',
         pokemon_box_original_order_list_price: 99999,
       },
     });
-    expect(result.missingNames).toEqual(['未登録BOX']);
+    expect(result.missingNames).toEqual(['未登録']);
   });
 
   it('オーダーリストの非BOX行とPokemon以外のBOX行は変更しない', () => {

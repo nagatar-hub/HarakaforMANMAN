@@ -18,19 +18,33 @@ function safeNumber(value: string | undefined): number | null {
 
 export function normalizePokemonBoxProductName(value: string): string {
   let productName = normalizeText(value)
-    .replace(/【\s*BOX\s*】/gi, '')
-    .replace(/^\[\s*1?\s*BOX\s*\]/i, '')
-    .replace(/[ 　\t\r\n]/g, '')
+    .normalize('NFKC')
+    .replace(/^\s*[\[【]\s*1?\s*box\s*[\]】]\s*/i, '')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/\([a-z0-9+&/\-]+\)$/i, '')
     .trim();
 
-  productName = productName.replace(/[（(][A-Z0-9a-z＋+&/\-]+[）)]$/g, '');
-
+  const isDeluxe = productName.includes('デラックス');
   const quotedName = productName.match(BOX_PRICE_PRODUCT_PREFIX_RE)?.[0]
     ? productName.match(/「([^」]+)」/)?.[1]
     : null;
-  if (quotedName) return normalizePokemonBoxProductName(quotedName);
+  if (quotedName) productName = quotedName;
 
-  return productName;
+  const normalized = productName.toLowerCase().replaceAll('é', 'e');
+  const identity = normalized
+    .replaceAll('ポケットモンスターカードゲーム', '')
+    .replaceAll('ポケモンカードゲーム', '')
+    .replace(/(強化拡張パック|拡張パックデラックス|拡張パック|コンセプトパック|ハイクラスパック|ムービースペシャルパック)/g, '')
+    .replace(/第[0-9]+弾/g, '')
+    .replaceAll('デラックス', '')
+    .replace(/(?:anniversary|アニバーサリー)/g, '')
+    .replaceAll('ゴールデン', 'golden')
+    .replace(/[\p{P}\p{S}\s]/gu, '')
+    .replace(/^tagteamgx/, '')
+    .replace(/イチゴーイチ$/, '')
+    .replace(/(?:box|ボックス)$/, '')
+    .replaceAll('vスター', 'vstar');
+  return isDeluxe ? `${identity}|deluxe` : identity;
 }
 
 function setUniquePrice(
