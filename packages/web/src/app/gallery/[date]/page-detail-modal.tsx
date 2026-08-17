@@ -18,6 +18,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { formatGalleryCardList } from '@/lib/gallery-card-list';
 
 type CardDetail = {
   id: string;
@@ -852,6 +853,16 @@ export function PageDetailModal({
     }
   }
 
+  async function handleCopyCardList() {
+    try {
+      await navigator.clipboard.writeText(formatGalleryCardList(cards));
+      setMessage({ type: 'success', text: `${cards.length}件をコピーしました` });
+      setTimeout(() => setMessage(null), 3000);
+    } catch {
+      setMessage({ type: 'error', text: 'コピーに失敗しました' });
+    }
+  }
+
   async function handleDeleteCard(cardId: string) {
     if (busy) return;
     if (!confirm('このカードをページから削除しますか？')) return;
@@ -896,6 +907,13 @@ export function PageDetailModal({
               </p>
             </div>
             <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+              <button
+                onClick={handleCopyCardList}
+                disabled={loading || cards.length === 0}
+                className="px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-semibold border border-border-card text-text-primary hover:bg-warm-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                一覧コピー
+              </button>
               <button
                 onClick={handleRegenerate}
                 disabled={regenerating}
