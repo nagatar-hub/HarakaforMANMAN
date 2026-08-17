@@ -358,14 +358,14 @@ export default function GalleryDatePage() {
                                 />
                               )}
                             </button>
-                            <div className="px-4 py-3 flex items-center justify-between">
-                              <div>
-                                <p className="text-base font-semibold text-text-primary truncate">{page.page_label || `page-${page.page_index}`}</p>
+                            <div className="px-4 py-3 flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <p className="text-base font-semibold text-text-primary truncate" title={page.page_label || ''}>{page.page_label || `page-${page.page_index}`}</p>
                                 <p className="text-sm text-text-secondary mt-0.5">{page.card_ids.length}枚</p>
                               </div>
                               <button
                                 onClick={(e) => { e.stopPropagation(); setDetailPageId(page.id); }}
-                                className="text-xs px-3 py-1.5 rounded-lg border border-border-card text-text-secondary hover:bg-warm-100 hover:text-text-primary transition-colors"
+                                className="flex-shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-lg border border-border-card text-text-secondary hover:bg-warm-100 hover:text-text-primary transition-colors"
                                 title="データ詳細"
                               >
                                 詳細
