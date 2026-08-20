@@ -13,7 +13,7 @@
   "dependencies": {
     "@google-cloud/secret-manager": "^6.1.0",
     "@haraka/shared": "*",
-    "@supabase/supabase-js": "^2.49.0",
+    "@supabase/supabase-js": "2.112.3",
     "sharp": "^0.34.5"
   },
   "devDependencies": {

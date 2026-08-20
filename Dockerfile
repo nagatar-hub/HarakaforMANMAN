@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:22-slim
 WORKDIR /app
 
 # Sharp のネイティブビルド依存 + 日本語フォント（SVG価格テキスト描画に必須）

@@ -1,11 +1,17 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { Database } from '@haraka/shared';
+import { createSupabaseApiKeyFetch, type Database } from '@haraka/shared';
+
+function createConfiguredClient(url: string, key: string): SupabaseClient<Database> {
+  return createClient<Database>(url, key, {
+    global: { fetch: createSupabaseApiKeyFetch(key) },
+  });
+}
 
 export function createSupabaseClient() {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required');
-  return createClient<Database>(url, key);
+  return createConfiguredClient(url, key);
 }
 
 /**
@@ -17,7 +23,7 @@ export async function createSupabaseClientFromSecrets(): Promise<SupabaseClient<
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (url && key) {
-    return createClient<Database>(url, key);
+    return createConfiguredClient(url, key);
   }
 
   // Secret Manager フォールバック
@@ -29,5 +35,5 @@ export async function createSupabaseClientFromSecrets(): Promise<SupabaseClient<
     throw new Error('SUPABASE credentials not found in env vars or Secret Manager');
   }
 
-  return createClient<Database>(smUrl, smKey);
+  return createConfiguredClient(smUrl, smKey);
 }

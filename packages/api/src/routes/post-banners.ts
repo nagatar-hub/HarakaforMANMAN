@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { createSupabaseClient } from '../lib/supabase.js';
 import { hasForbiddenFields, pickAllowedFields, STORE_NAME } from '../lib/store-scope.js';
-import type { BannerPositionType } from '@haraka/shared';
+import type { BannerPositionType, Database } from '@haraka/shared';
 
 export const postBannerRoutes = new Hono();
 
@@ -73,7 +73,7 @@ postBannerRoutes.patch('/post/banners/:id', async (c) => {
   const supabase = createSupabaseClient();
   const { data, error } = await supabase
     .from('post_banner')
-    .update(update)
+    .update(update as Database['public']['Tables']['post_banner']['Update'])
     .eq('id', id)
     .eq('store', STORE_NAME)
     .select()

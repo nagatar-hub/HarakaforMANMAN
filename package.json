@@ -1,6 +1,9 @@
 {
   "name": "haraka-webapp",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "workspaces": [
     "packages/shared",
     "packages/web",

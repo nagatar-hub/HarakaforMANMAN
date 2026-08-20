@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { fork } from 'child_process';
 import path from 'path';
+import type { Database } from '@haraka/shared';
 import { createSupabaseClient } from '../lib/supabase.js';
 import {
   summarizeGalleryDates,
@@ -295,7 +296,7 @@ galleryRoutes.patch('/gallery/pages/:pageId/cards/:cardId', async (c) => {
 
   const { data: updated, error } = await supabase
     .from('prepared_card')
-    .update(updates)
+    .update(updates as Database['public']['Tables']['prepared_card']['Update'])
     .eq('id', cardId)
     .eq('run_id', cardOwnership.runId)
     .select()

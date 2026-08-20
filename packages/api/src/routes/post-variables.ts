@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Database } from '@haraka/shared';
 import { createSupabaseClient } from '../lib/supabase.js';
 import { hasForbiddenFields, pickAllowedFields, STORE_NAME } from '../lib/store-scope.js';
 
@@ -79,7 +80,7 @@ postVariableRoutes.patch('/post/variables/:id', async (c) => {
   if (Object.keys(update).length === 0) return c.json({ error: 'No editable fields supplied' }, 400);
   const { data, error } = await supabase
     .from('variable_registry')
-    .update(update)
+    .update(update as Database['public']['Tables']['variable_registry']['Update'])
     .eq('id', id)
     .eq('store', STORE_NAME)
     .select()

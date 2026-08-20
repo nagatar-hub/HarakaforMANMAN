@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Database } from '@haraka/shared';
 import { createSupabaseClient } from '../lib/supabase.js';
 import { generatePostPlans } from '../lib/plan-generator.js';
 import { getXCredentials } from '../lib/x-auth.js';
@@ -213,7 +214,7 @@ postPlanRoutes.patch('/post/item/:id', async (c) => {
     if (!item) return c.json({ error: 'Item not found' }, 404);
     const { data, error } = await supabase
       .from('post_item')
-      .update(update)
+      .update(update as Database['public']['Tables']['post_item']['Update'])
       .eq('id', id)
       .eq('post_plan_id', item.post_plan_id)
       .select()

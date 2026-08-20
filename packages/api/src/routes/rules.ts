@@ -41,7 +41,7 @@ ruleRoutes.patch('/rules/:id', async (c) => {
   const supabase = createSupabaseClient();
   const { data, error } = await supabase
     .from('rule')
-    .update(update)
+    .update(update as RuleUpdate)
     .eq('id', id)
     .eq('store', STORE_NAME)
     .select()

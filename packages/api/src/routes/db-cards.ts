@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Database } from '@haraka/shared';
 import { createSupabaseClient } from '../lib/supabase.js';
 import { updateDbSheetCell } from '../lib/haraka-db-sheet.js';
 
@@ -228,7 +229,7 @@ dbCardRoutes.patch('/db-cards/:id', async (c) => {
   // Supabase 更新
   const { data, error } = await supabase
     .from('db_card')
-    .update(updates)
+    .update(updates as Database['public']['Tables']['db_card']['Update'])
     .eq('id', id)
     .eq('store', STORE_NAME)
     .select('id, franchise, tag, card_name, grade, list_no, image_url, alt_image_url, rarity_icon, sheet_row_number, image_status')

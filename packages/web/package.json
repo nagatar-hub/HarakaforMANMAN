@@ -16,7 +16,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@haraka/shared": "*",
     "@supabase/ssr": "^0.6.0",
-    "@supabase/supabase-js": "^2.49.0",
+    "@supabase/supabase-js": "2.112.3",
     "jszip": "^3.10.1",
     "next": "^15.2.0",
     "react": "^19.0.0",
