@@ -1,7 +1,7 @@
 import {
+  persistPreflightedManmanProfileGeometries,
   resolveManmanProfileGeometry,
   scaleManmanStoreLayout,
-  withManmanProfileGeometry,
   type ManmanProfileGeometry,
 } from '../lib/manman-store-layout';
 import type { LayoutConfig } from '@haraka/shared';
@@ -74,11 +74,16 @@ describe('resolveManmanProfileGeometry', () => {
       .toThrow('1240x1760 MANMAN BOX profile geometry is required');
   });
 
-  it('does not invoke persistence for an uncalibrated template size', async () => {
+  it('does not persist an earlier valid template when a later template is invalid', async () => {
     const persist = jest.fn(async () => undefined);
-    await expect(withManmanProfileGeometry(
-      'DRAGON BALL',
-      { ...detected, img_height: 1080 },
+    await expect(persistPreflightedManmanProfileGeometries([
+      { franchise: 'WEISS SCHWARZ', detected, payload: 'valid-first' },
+      {
+        franchise: 'DRAGON BALL',
+        detected: { ...detected, img_height: 1080 },
+        payload: 'invalid-later',
+      },
+    ],
       persist,
     )).rejects.toThrow('1240x1760 MANMAN BOX profile geometry is required');
     expect(persist).not.toHaveBeenCalled();

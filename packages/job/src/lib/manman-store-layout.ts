@@ -59,11 +59,23 @@ export function resolveManmanProfileGeometry(
   };
 }
 
-export async function withManmanProfileGeometry<T>(
-  franchise: Franchise,
-  detected: ManmanProfileGeometry,
-  persist: (resolved: ManmanProfileGeometry) => Promise<T>,
-): Promise<T> {
-  const resolved = resolveManmanProfileGeometry(franchise, detected);
-  return persist(resolved);
+export type ManmanProfileGeometryInput<T> = {
+  franchise: Franchise;
+  detected: ManmanProfileGeometry;
+  payload: T;
+};
+
+export async function persistPreflightedManmanProfileGeometries<T, R>(
+  inputs: ManmanProfileGeometryInput<T>[],
+  persist: (input: ManmanProfileGeometryInput<T> & {
+    resolved: ManmanProfileGeometry;
+  }) => Promise<R>,
+): Promise<R[]> {
+  const preflighted = inputs.map(input => ({
+    ...input,
+    resolved: resolveManmanProfileGeometry(input.franchise, input.detected),
+  }));
+  const results: R[] = [];
+  for (const input of preflighted) results.push(await persist(input));
+  return results;
 }
