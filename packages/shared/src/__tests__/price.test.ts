@@ -2,6 +2,7 @@ import {
   calculateBoxPrice,
   calculateBoxPriceLow,
   calculateBuyPriceHigh,
+  calculatePelekaAlignedBuyPriceRange,
   floorDiscountedPriceByTier,
 } from '../utils/price';
 
@@ -75,5 +76,25 @@ describe('post-discount tier flooring', () => {
   it('uses the same post-discount tiers for BOX price_low', () => {
     expect(calculateBoxPriceLow(100_000, 0.05)).toBe(95_000);
     expect(calculateBoxPriceLow(10_000, 0.05)).toBe(9_500);
+  });
+
+  it.each([
+    [100_000, 94_000, 87_000],
+    [78_540, 73_500, 68_000],
+    [508_980, 478_000, 442_500],
+    [599_760, 563_500, 521_500],
+    [275_000, 258_500, 239_000],
+    [550_000, 517_000, 478_500],
+    [1_100_000, 1_034_000, 957_000],
+    [0, 0, 0],
+  ])('Peleka trekaman Pokemon と同じ率・500円切捨てを %p 円へ適用する', (
+    sourcePrice,
+    expectedUpper,
+    expectedLower,
+  ) => {
+    expect(calculatePelekaAlignedBuyPriceRange(sourcePrice)).toEqual({
+      upper: expectedUpper,
+      lower: expectedLower,
+    });
   });
 });

@@ -36,6 +36,27 @@ export const DEFAULT_STORE_PRICING_SETTINGS: StorePricingSettings = {
   psa10_discount_rates: DEFAULT_PSA10_DISCOUNT_RATES,
 };
 
+const PELEKA_TREKAMAN_POKEMON_UPPER_PERCENT = 94;
+const PELEKA_TREKAMAN_POKEMON_LOWER_PERCENT = 87;
+const PELEKA_TREKAMAN_ROUNDING_UNIT = 500;
+
+/** Peleka の trekaman / Pokemon と同じ価格規則。 */
+export function calculatePelekaAlignedBuyPriceRange(sourcePrice: number): {
+  upper: number;
+  lower: number;
+} {
+  if (!Number.isFinite(sourcePrice) || sourcePrice <= 0) return { upper: 0, lower: 0 };
+  // Peleka uses SQL NUMERIC. Integer ratios avoid JS turning an exact
+  // boundary such as 275,000 * 0.94 into 258,499.99999999997.
+  const floorPercent = (percent: number) =>
+    Math.floor((sourcePrice * percent) / (100 * PELEKA_TREKAMAN_ROUNDING_UNIT))
+      * PELEKA_TREKAMAN_ROUNDING_UNIT;
+  return {
+    upper: floorPercent(PELEKA_TREKAMAN_POKEMON_UPPER_PERCENT),
+    lower: floorPercent(PELEKA_TREKAMAN_POKEMON_LOWER_PERCENT),
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

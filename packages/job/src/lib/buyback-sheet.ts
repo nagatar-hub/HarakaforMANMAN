@@ -75,6 +75,12 @@ export type BuybackSheetPublishResult = {
   spreadsheetId: string | null;
 };
 
+export function isBuybackSheetPublishDisabled(): boolean {
+  return ['1', 'true'].includes(
+    process.env.BUYBACK_SHEET_PUBLISH_DISABLED?.trim().toLowerCase() ?? '',
+  );
+}
+
 function franchiseRank(franchise: string): number {
   const rank = FRANCHISE_ORDER[franchise];
   if (rank === undefined) {
@@ -237,6 +243,11 @@ export async function publishManmanBuybackSheet(params: {
   runId: string;
   accessToken: string;
 }): Promise<BuybackSheetPublishResult> {
+  if (isBuybackSheetPublishDisabled()) {
+    console.log('[buyback-sheet] publish explicitly disabled');
+    return { status: 'skipped', rowCount: 0, contentHash: null, spreadsheetId: null };
+  }
+
   const storeName = process.env.STORE_NAME?.trim() || MANMAN_STORE_NAME;
   if (storeName !== MANMAN_STORE_NAME) {
     console.log(`[buyback-sheet] skipped for store=${storeName}`);

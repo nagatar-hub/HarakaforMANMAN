@@ -8,6 +8,7 @@ import { DB_COLS } from '@haraka/shared';
 
 export type DbCardInsert = {
   franchise: string;
+  source_product_id: string;
   tag: string | null;
   card_name: string;
   grade: string;       // upsert用ユニーク制約のため空文字で格納（NULLは不可）
@@ -58,6 +59,7 @@ export function buildDbCardRows(dbDataRows: string[][]): DbCardInsert[] {
 
     dedup.set(key, {
       franchise,
+      source_product_id: '',
       tag: toNullable(getCell(row, DB_COLS.GROUP)),
       card_name: cardName,
       grade,       // 空文字のまま（upsert用）

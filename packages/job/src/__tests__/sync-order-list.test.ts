@@ -52,6 +52,7 @@ function makeDbCard(overrides: Partial<DbCardRow> = {}): DbCardRow {
     id: 'db-1',
     store: 'manman',
     franchise: 'Pokemon',
+    source_product_id: '',
     tag: 'TOP',
     card_name: 'リザードン',
     grade: 'PSA10',

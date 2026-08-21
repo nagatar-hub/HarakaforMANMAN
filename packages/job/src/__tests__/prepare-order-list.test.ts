@@ -36,6 +36,7 @@ function makeDbCard(overrides: Partial<DbCardRow> = {}): DbCardRow {
     id: 'db-1',
     store: 'manman',
     franchise: 'Pokemon',
+    source_product_id: '',
     tag: 'TOP',
     card_name: 'リザードン',
     grade: 'PSA10',
@@ -108,8 +109,8 @@ describe('prepareOrderListCards', () => {
     ['Pokemon', 44_000, 38_000],
     ['ONE PIECE', 44_000, 38_000],
     ['YU-GI-OH!', 42_000, 35_000],
-    ['WEISS SCHWARZ', 44_000, 38_000],
-    ['DRAGON BALL', 44_000, 38_000],
+    ['WEISS SCHWARZ', 47_000, 43_500],
+    ['DRAGON BALL', 47_000, 43_500],
   ])('%s はMANMAN既定の商材別率で価格を計算する', (franchise, expectedHigh, expectedLow) => {
     const raw = makeRawImport({ franchise });
     const result = prepareOrderListCards(
@@ -132,8 +133,33 @@ describe('prepareOrderListCards', () => {
     expect(result[0]).toMatchObject({
       franchise: 'DRAGON BALL',
       grade: 'シングル',
-      price_high: 44_000,
-      price_low: 38_000,
+      price_high: 47_000,
+      price_low: 43_500,
+    });
+  });
+
+  it('新2商材のBOXもHaraka固有設定を使わずPeleka規則へ揃える', () => {
+    const pricingSettings = {
+      ...DEFAULT_STORE_PRICING_SETTINGS,
+      box_discount_rates: {
+        ...DEFAULT_STORE_PRICING_SETTINGS.box_discount_rates,
+        'WEISS SCHWARZ': { shrink: 0.99, no_shrink: 0.99 },
+      },
+    };
+    const result = prepareOrderListCards(
+      [makeRawImport({
+        franchise: 'WEISS SCHWARZ',
+        grade: 'BOX',
+        source_price: 78_540,
+      })],
+      new Map([['db-1', makeDbCard({ franchise: 'WEISS SCHWARZ', grade: 'BOX' })]]),
+      '2026-08-19',
+      pricingSettings,
+    );
+
+    expect(result[0]).toMatchObject({
+      price_high: 73_500,
+      price_low: 68_000,
     });
   });
 

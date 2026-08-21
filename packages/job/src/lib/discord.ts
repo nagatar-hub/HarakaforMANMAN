@@ -72,6 +72,11 @@ async function getWebhookUrl(): Promise<string | null> {
  * - 失敗時: console.warn のみ。ジョブは続行。
  */
 export async function sendDiscordNotification(params: DiscordNotification): Promise<void> {
+  if (['1', 'true'].includes(process.env.DISCORD_NOTIFICATIONS_DISABLED?.trim().toLowerCase() ?? '')) {
+    console.log(`[discord] 通知を明示的にスキップ: ${params.title}`);
+    return;
+  }
+
   const webhookUrl = await getWebhookUrl();
 
   if (!webhookUrl) {

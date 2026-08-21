@@ -412,7 +412,7 @@ export async function runSync(): Promise<void> {
         supabase,
         'db_card',
         dbCardRows as unknown as Record<string, unknown>[],
-        'store,franchise,card_name,grade,list_no',
+        'store,franchise,card_name,grade,list_no,source_product_id',
       );
       console.log(`[sync] db_card upsert 完了: ${dbCardRows.length}件`);
     }

@@ -1,5 +1,6 @@
 import type { Database, Franchise, StorePricingSettings } from '@haraka/shared';
 import {
+  calculatePelekaAlignedBuyPriceRange,
   calculateBuyPriceHigh,
   calculateBuyPriceLow,
   calculateBoxPrice,
@@ -44,12 +45,15 @@ export function prepareOrderListCards(
     const franchise = rawImport.franchise as Franchise;
     const isBox = isBoxRow(rawImport);
     const boxRates = pricingSettings.box_discount_rates[franchise];
-    const priceHigh = isBox
+    const pelekaAlignedRange = franchise === 'WEISS SCHWARZ' || franchise === 'DRAGON BALL'
+      ? calculatePelekaAlignedBuyPriceRange(sourcePrice)
+      : null;
+    const priceHigh = pelekaAlignedRange?.upper ?? (isBox
       ? calculateBoxPrice(sourcePrice, boxRates.shrink)
-      : calculateBuyPriceHigh(sourcePrice, pricingSettings.psa10_discount_rates[franchise]);
-    const priceLow = isBox
+      : calculateBuyPriceHigh(sourcePrice, pricingSettings.psa10_discount_rates[franchise]));
+    const priceLow = pelekaAlignedRange?.lower ?? (isBox
       ? calculateBoxPrice(sourcePrice, boxRates.no_shrink)
-      : calculateBuyPriceLow(priceHigh, franchise);
+      : calculateBuyPriceLow(priceHigh, franchise));
 
     return {
       run_id: rawImport.run_id,

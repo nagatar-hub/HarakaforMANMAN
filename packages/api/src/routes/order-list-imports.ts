@@ -587,6 +587,7 @@ function toPublicIssues(issues: unknown[]): Array<{
 type DbCardSyncRow = {
   store: string;
   franchise: string;
+  source_product_id: string;
   tag: string | null;
   card_name: string;
   grade: string;
@@ -625,6 +626,7 @@ async function refreshDbCardsFromHarakaSheet(
     deduped.set([franchise, cardName, grade, listNo].join('|'), {
       store: STORE_NAME,
       franchise,
+      source_product_id: '',
       tag: nullableSheetCell(row, DB_COLS.GROUP),
       card_name: cardName,
       grade,
@@ -644,7 +646,7 @@ async function refreshDbCardsFromHarakaSheet(
       .from('db_card')
       .upsert(
         rows.slice(index, index + 400) as unknown as Database['public']['Tables']['db_card']['Insert'][],
-        { onConflict: 'store,franchise,card_name,grade,list_no' },
+        { onConflict: 'store,franchise,card_name,grade,list_no,source_product_id' },
       );
     if (error) throw new Error('db_card最新化失敗: ' + error.message);
   }

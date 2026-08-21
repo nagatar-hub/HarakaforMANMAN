@@ -320,6 +320,7 @@ export type DbCardRow = {
   id: string;
   store: string;
   franchise: string;
+  source_product_id: string;
   tag: string | null;
   card_name: string;
   grade: string | null;
@@ -531,8 +532,8 @@ export type Database = {
       };
       db_card: {
         Row: DbCardRow;
-        Insert: Omit<DbCardRow, 'id' | 'created_at' | 'updated_at'> & {
-          id?: string; created_at?: string; updated_at?: string;
+        Insert: Omit<DbCardRow, 'id' | 'created_at' | 'updated_at' | 'source_product_id'> & {
+          id?: string; created_at?: string; updated_at?: string; source_product_id?: string;
         };
         Update: Partial<Omit<DbCardRow, 'id' | 'created_at'>>;
         Relationships: [];

@@ -3,9 +3,38 @@ import {
   buildBuybackSheetValues,
   BUYBACK_SHEET_HEADERS,
   flattenGeneratedStorePageCardIds,
+  publishManmanBuybackSheet,
 } from '../lib/buyback-sheet';
 
 type PublishPage = Pick<GeneratedPageRow, 'franchise' | 'page_index' | 'card_ids' | 'status' | 'kind'>;
+
+describe('buyback Sheet publication isolation', () => {
+  const originalDisabled = process.env.BUYBACK_SHEET_PUBLISH_DISABLED;
+
+  afterEach(() => {
+    if (originalDisabled === undefined) delete process.env.BUYBACK_SHEET_PUBLISH_DISABLED;
+    else process.env.BUYBACK_SHEET_PUBLISH_DISABLED = originalDisabled;
+    jest.restoreAllMocks();
+  });
+
+  it('明示無効時はDBとGoogle Sheetへ触れずskipする', async () => {
+    process.env.BUYBACK_SHEET_PUBLISH_DISABLED = '1';
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const supabase = { from: jest.fn() };
+
+    await expect(publishManmanBuybackSheet({
+      supabase: supabase as never,
+      runId: 'preview-run',
+      accessToken: '',
+    })).resolves.toEqual({
+      status: 'skipped',
+      rowCount: 0,
+      contentHash: null,
+      spreadsheetId: null,
+    });
+    expect(supabase.from).not.toHaveBeenCalled();
+  });
+});
 
 function makePage(overrides: Partial<PublishPage> = {}): PublishPage {
   return {

@@ -41,7 +41,7 @@ async function main() {
       supabase,
       'db_card',
       dbCardRows as unknown as Record<string, unknown>[],
-      'store,franchise,card_name,grade,list_no',
+      'store,franchise,card_name,grade,list_no,source_product_id',
     );
     console.log(`[seed-db-card] upsert 完了: ${dbCardRows.length}件`);
   }

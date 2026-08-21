@@ -14,7 +14,10 @@
 import sharp from 'sharp';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
-import { publishManmanBuybackSheet } from '../lib/buyback-sheet.js';
+import {
+  isBuybackSheetPublishDisabled,
+  publishManmanBuybackSheet,
+} from '../lib/buyback-sheet.js';
 import { getAccessToken, getBuybackSheetAccessToken } from '../lib/auth.js';
 import { composePage } from '../lib/image-composer.js';
 import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-drive.js';
@@ -659,7 +662,10 @@ export async function runGenerate() {
 
     let sheetPublishMessage = '未実行';
     let sheetPublishFailed = false;
-    try {
+    if (isBuybackSheetPublishDisabled()) {
+      sheetPublishMessage = '明示的にスキップ';
+      console.log('[generate] Google Sheet更新を明示的にスキップ');
+    } else try {
       const buybackSheetAccessToken = await getBuybackSheetAccessToken();
       const publishResult = await publishManmanBuybackSheet({
         supabase,
