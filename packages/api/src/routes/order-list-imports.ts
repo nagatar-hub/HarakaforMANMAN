@@ -106,6 +106,23 @@ const allowedNewCardImageHosts = new Set<string>([
   ...ORDER_LIST_ALLOWED_IMAGE_HOSTS,
 ]);
 
+export async function findCurrentParserDuplicate(
+  supabase: SupabaseClient<Database>,
+  businessDate: string,
+  sha256: string,
+) {
+  return supabase
+    .from('order_list_import')
+    .select('*')
+    .eq('store', STORE_NAME)
+    .eq('business_date', businessDate)
+    .eq('parser_version', PARSER_VERSION)
+    .eq('sha256', sha256)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle<OrderListImportRow>();
+}
+
 export function canEditOrderListMappings(importStatus: unknown): boolean {
   return importStatus === 'applied';
 }
@@ -986,15 +1003,13 @@ orderListImportRoutes.post('/order-list/imports', bodyLimit({
   const businessDate = businessDateFromFilename(candidate.name);
   const supabase = createSupabaseClient();
 
-  const { data: duplicate, error: duplicateError } = await supabase
-    .from('order_list_import')
-    .select('*')
-    .eq('store', STORE_NAME)
-    .eq('business_date', businessDate)
-    .eq('sha256', sha256)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle<OrderListImportRow>();
+  // The same workbook may need to be parsed again when the parser contract
+  // changes (for example, v1 ignored newly supported franchise sheets).
+  const { data: duplicate, error: duplicateError } = await findCurrentParserDuplicate(
+    supabase,
+    businessDate,
+    sha256,
+  );
   if (duplicateError) return c.json({ error: duplicateError.message }, 500);
   if (duplicate) {
     const persistenceError = persistenceErrorFromImport(duplicate);

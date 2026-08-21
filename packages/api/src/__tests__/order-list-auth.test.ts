@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test';
 import {
   orderListImportRoutes,
   canEditOrderListMappings,
+  findCurrentParserDuplicate,
   orderListSyncRequestFingerprint,
   isNewerUsableOrderListImport,
   isDefinitiveCloudRunJobRejection,
@@ -64,6 +65,54 @@ test('staged mapping PATCH is available only after the import is applied', () =>
   assert.equal(canEditOrderListMappings('failed'), false);
   assert.equal(canEditOrderListMappings('confirmed'), false);
   assert.equal(canEditOrderListMappings('processing'), false);
+});
+
+test('同一SHAでも旧parserの取込はcurrent parserのduplicateとして再利用しない', async () => {
+  const rows = [
+    {
+      id: 'v1-import',
+      store: 'manman',
+      business_date: '2026-08-19',
+      parser_version: 'order-list-v1',
+      sha256: 'same-sha',
+      created_at: '2026-08-19T00:00:00.000Z',
+    },
+    {
+      id: 'v2-import',
+      store: 'manman',
+      business_date: '2026-08-19',
+      parser_version: 'order-list-v2',
+      sha256: 'same-sha',
+      created_at: '2026-08-20T00:00:00.000Z',
+    },
+  ];
+  const filters: Array<[string, unknown]> = [];
+  const query = {
+    select() { return query; },
+    eq(column: string, value: unknown) { filters.push([column, value]); return query; },
+    order() { return query; },
+    limit() { return query; },
+    async maybeSingle() {
+      return {
+        data: rows.find((row) => filters.every(([column, value]) => (
+          row[column as keyof typeof row] === value
+        ))) ?? null,
+        error: null,
+      };
+    },
+  };
+  const supabase = { from: () => query };
+
+  const result = await findCurrentParserDuplicate(
+    supabase as never,
+    '2026-08-19',
+    'same-sha',
+  );
+
+  assert.equal(result.data?.id, 'v2-import');
+  assert.equal(filters.some(([column, value]) => (
+    column === 'parser_version' && value === 'order-list-v2'
+  )), true);
 });
 
 test('より新しい有効な取込だけが旧取込を置き換える', () => {
