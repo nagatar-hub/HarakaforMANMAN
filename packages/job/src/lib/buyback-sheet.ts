@@ -29,6 +29,8 @@ const FRANCHISE_ORDER: Record<string, number> = {
   Pokemon: 0,
   'YU-GI-OH!': 1,
   'ONE PIECE': 2,
+  'WEISS SCHWARZ': 3,
+  'DRAGON BALL': 4,
 };
 
 type SheetCell = string | number | boolean | null;

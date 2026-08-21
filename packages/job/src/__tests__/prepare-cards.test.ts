@@ -198,6 +198,8 @@ describe('prepareCards', () => {
           Pokemon: { shrink: 0.05, no_shrink: 0.15 },
           'ONE PIECE': { shrink: 0.10, no_shrink: 0.20 },
           'YU-GI-OH!': { shrink: 0.12, no_shrink: 0.25 },
+          'WEISS SCHWARZ': { shrink: 0, no_shrink: 0.15 },
+          'DRAGON BALL': { shrink: 0, no_shrink: 0.15 },
         },
       );
 
@@ -222,6 +224,8 @@ describe('prepareCards', () => {
           Pokemon: { shrink: 0.05, no_shrink: 0.15 },
           'ONE PIECE': { shrink: 0.10, no_shrink: 0.20 },
           'YU-GI-OH!': { shrink: 0.12, no_shrink: 0.25 },
+          'WEISS SCHWARZ': { shrink: 0, no_shrink: 0.15 },
+          'DRAGON BALL': { shrink: 0, no_shrink: 0.15 },
         },
         { Pokemon: 0.30 },
       );

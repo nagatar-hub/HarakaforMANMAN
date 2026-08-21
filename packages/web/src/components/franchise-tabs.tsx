@@ -1,11 +1,11 @@
 'use client';
 
+import { FRANCHISES, FRANCHISE_JA } from '@haraka/shared';
+
 const BASE_TABS = [
   { key: 'all', label: 'すべて' },
-  { key: 'Pokemon', label: 'ポケモン' },
-  { key: 'ONE PIECE', label: 'ワンピース' },
-  { key: 'YU-GI-OH!', label: '遊戯王' },
-] as const;
+  ...FRANCHISES.map((key) => ({ key, label: FRANCHISE_JA[key] })),
+];
 
 type TabItem = { key: string; label: string; badge?: number };
 

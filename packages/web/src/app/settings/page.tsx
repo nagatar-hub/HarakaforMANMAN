@@ -6,8 +6,8 @@ import {
   calculateSteppedDiscountPreview,
   normalizePreviewBasePrice,
 } from '@/lib/settings-preview';
+import { FRANCHISES, FRANCHISE_JA, type Franchise } from '@haraka/shared';
 
-type Franchise = 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
 type Psa10Rates = Record<Franchise, number>;
 type BoxConditionRates = {
   shrink: number;
@@ -23,16 +23,14 @@ interface StoreConfig {
   };
 }
 
-const FRANCHISE_OPTIONS: { key: Franchise; label: string }[] = [
-  { key: 'Pokemon', label: 'ポケカ' },
-  { key: 'YU-GI-OH!', label: '遊戯王' },
-  { key: 'ONE PIECE', label: 'ワンピースカード' },
-];
+const FRANCHISE_OPTIONS = FRANCHISES.map((key) => ({ key, label: FRANCHISE_JA[key] }));
 
 const DEFAULT_PSA10_RATES: Psa10Rates = {
   Pokemon: 12,
   'ONE PIECE': 12,
   'YU-GI-OH!': 15,
+  'WEISS SCHWARZ': 12,
+  'DRAGON BALL': 12,
 };
 
 const DEFAULT_BOX_CONDITION_RATES: BoxConditionRates = {
@@ -43,6 +41,8 @@ const DEFAULT_BOX_RATES: BoxRates = {
   Pokemon: { ...DEFAULT_BOX_CONDITION_RATES },
   'ONE PIECE': { ...DEFAULT_BOX_CONDITION_RATES },
   'YU-GI-OH!': { ...DEFAULT_BOX_CONDITION_RATES },
+  'WEISS SCHWARZ': { ...DEFAULT_BOX_CONDITION_RATES },
+  'DRAGON BALL': { ...DEFAULT_BOX_CONDITION_RATES },
 };
 
 function clampRate(value: number): number {
@@ -81,11 +81,10 @@ export default function SettingsPage() {
         const savedBoxRates = data.settings.box_discount_rates ?? {};
         setConfig(data);
         setBoxRates(normalizeBoxRates(savedBoxRates));
-        setPsa10Rates({
-          Pokemon: toPercent(savedPsa10Rates.Pokemon, DEFAULT_PSA10_RATES.Pokemon),
-          'ONE PIECE': toPercent(savedPsa10Rates['ONE PIECE'], DEFAULT_PSA10_RATES['ONE PIECE']),
-          'YU-GI-OH!': toPercent(savedPsa10Rates['YU-GI-OH!'], DEFAULT_PSA10_RATES['YU-GI-OH!']),
-        });
+        setPsa10Rates(Object.fromEntries(FRANCHISES.map((franchise) => [
+          franchise,
+          toPercent(savedPsa10Rates[franchise], DEFAULT_PSA10_RATES[franchise]),
+        ])) as Psa10Rates);
       })
       .catch((e) => setError(e.message));
   }, []);
@@ -116,25 +115,14 @@ export default function SettingsPage() {
         method: 'PATCH',
         body: JSON.stringify({
           settings: {
-            box_discount_rates: {
-              Pokemon: {
-                shrink: boxRates.Pokemon.shrink / 100,
-                no_shrink: boxRates.Pokemon.no_shrink / 100,
-              },
-              'ONE PIECE': {
-                shrink: boxRates['ONE PIECE'].shrink / 100,
-                no_shrink: boxRates['ONE PIECE'].no_shrink / 100,
-              },
-              'YU-GI-OH!': {
-                shrink: boxRates['YU-GI-OH!'].shrink / 100,
-                no_shrink: boxRates['YU-GI-OH!'].no_shrink / 100,
-              },
-            },
-            psa10_discount_rates: {
-              Pokemon: psa10Rates.Pokemon / 100,
-              'ONE PIECE': psa10Rates['ONE PIECE'] / 100,
-              'YU-GI-OH!': psa10Rates['YU-GI-OH!'] / 100,
-            },
+            box_discount_rates: Object.fromEntries(FRANCHISES.map((franchise) => [franchise, {
+              shrink: boxRates[franchise].shrink / 100,
+              no_shrink: boxRates[franchise].no_shrink / 100,
+            }])),
+            psa10_discount_rates: Object.fromEntries(FRANCHISES.map((franchise) => [
+              franchise,
+              psa10Rates[franchise] / 100,
+            ])),
           },
         }),
       });

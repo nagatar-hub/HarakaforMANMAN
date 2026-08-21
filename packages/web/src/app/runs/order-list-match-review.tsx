@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FRANCHISES, FRANCHISE_JA } from '@haraka/shared';
 import type { OrderListConfirmResult, OrderListImportResult } from './order-list-import-panel';
 import { OrderListNewCardForm } from './order-list-new-card-form';
 import {
@@ -114,9 +115,9 @@ function candidateIds(item: OrderListItem): string[] {
 }
 
 function franchiseLabel(value: string): string {
-  if (value.toUpperCase() === 'POKEMON') return 'ポケモン';
-  if (value.toUpperCase() === 'ONE PIECE') return 'ワンピース';
-  if (value.toUpperCase().startsWith('YU-GI-OH')) return '遊戯王';
+  const normalized = value.trim().toUpperCase();
+  const key = FRANCHISES.find((candidate) => candidate.toUpperCase() === normalized);
+  if (key) return FRANCHISE_JA[key];
   return value;
 }
 

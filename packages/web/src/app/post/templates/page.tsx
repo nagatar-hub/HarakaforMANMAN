@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { FRANCHISES, FRANCHISE_JA as SHARED_FRANCHISE_JA } from '@haraka/shared';
 
 type Template = {
   id: string;
@@ -15,12 +16,7 @@ type Template = {
 };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
-
-const FRANCHISE_JA: Record<string, string> = {
-  'Pokemon': 'ポケモン',
-  'ONE PIECE': 'ワンピース',
-  'YU-GI-OH!': '遊戯王',
-};
+const FRANCHISE_JA: Readonly<Record<string, string>> = SHARED_FRANCHISE_JA;
 
 export default function TemplatesPage() {
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -152,9 +148,9 @@ export default function TemplatesPage() {
                 className="w-full bg-background border border-border-card rounded-lg px-3 py-2 text-sm"
               >
                 <option value="">全商材共通</option>
-                <option value="Pokemon">ポケモン</option>
-                <option value="ONE PIECE">ワンピース</option>
-                <option value="YU-GI-OH!">遊戯王</option>
+                {FRANCHISES.map((franchise) => (
+                  <option key={franchise} value={franchise}>{FRANCHISE_JA[franchise]}</option>
+                ))}
               </select>
             </div>
           </div>

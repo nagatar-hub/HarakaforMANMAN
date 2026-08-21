@@ -1,5 +1,5 @@
 import { createSupabaseClient } from './supabase.js';
-import { resolveTemplate } from '@haraka/shared';
+import { FRANCHISE_JA, resolveTemplate } from '@haraka/shared';
 import type { PostTemplateRow, PostBannerRow } from '@haraka/shared';
 import { getOwnedRun, STORE_NAME } from './store-scope.js';
 
@@ -76,13 +76,10 @@ export async function generatePostPlans(runId: string) {
       || banners?.find(b => !b.franchise);
 
     // Resolve system variables for header
-    const franchiseJa: Record<string, string> = {
-      'Pokemon': 'ポケモン', 'ONE PIECE': 'ワンピース', 'YU-GI-OH!': '遊戯王',
-    };
     const variables: Record<string, string> = {
       date: dateStr,
       date_short: dateShort,
-      franchise: franchiseJa[franchise] || franchise,
+      franchise: FRANCHISE_JA[franchise as keyof typeof FRANCHISE_JA] || franchise,
       franchise_en: franchise,
       page_count: String(franchisePages.length),
       weekday,

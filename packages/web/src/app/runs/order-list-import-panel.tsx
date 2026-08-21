@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { FRANCHISES, FRANCHISE_JA, KECAK_SHEET_MAP } from '@haraka/shared';
 import { OrderListMatchReview } from './order-list-match-review';
 import {
   clearOrderListSyncRequestId,
@@ -74,7 +75,7 @@ type PendingAction = 'upload' | 'confirm' | null;
 type PanelView = 'upload' | 'review';
 type ApiErrorPayload = { error?: string | { message?: string }; message?: string };
 
-const FRANCHISE_ORDER = ['POKEMON', 'ONE PIECE', 'YU-GI-OH!'];
+const FRANCHISE_ORDER = FRANCHISES.map((franchise) => franchise.toUpperCase());
 
 function parseJson(text: string): unknown {
   if (!text.trim()) return {};
@@ -159,9 +160,8 @@ function formatFileSize(bytes: number): string {
 
 function franchiseLabel(franchise: string): string {
   const normalized = franchise.trim().toUpperCase();
-  if (normalized === 'POKEMON' || franchise.includes('ポケモン')) return 'ポケモン';
-  if (normalized === 'ONE PIECE' || franchise.includes('ワンピース')) return 'ワンピース';
-  if (normalized === 'YU-GI-OH!' || normalized === 'YU-GI-OH' || franchise.includes('遊戯王')) return '遊戯王';
+  const key = FRANCHISES.find((candidate) => candidate.toUpperCase() === normalized);
+  if (key) return FRANCHISE_JA[key];
   return franchise;
 }
 
@@ -506,7 +506,7 @@ export default function OrderListImportPanel({
               <div>
                 <h2 id={titleId} className="text-lg sm:text-xl font-bold text-text-primary">オーダーリスト読み込み</h2>
                 <p id={descriptionId} className="text-xs sm:text-sm text-text-secondary mt-1">
-                  3商材を含むExcelを読み込み、商品照合の結果を確認してから反映します。
+                  {FRANCHISES.length}商材を含むExcelを読み込み、商品照合の結果を確認してから反映します。
                 </p>
               </div>
               <button
@@ -607,7 +607,7 @@ export default function OrderListImportPanel({
                       </span>
                     </div>
                     <p id={`${descriptionId}-file-help`} className="mt-1.5 text-xs text-text-secondary">
-                      対応形式: .xlsx（ポケモン・ワンピース・遊戯王の3シート）
+                      対応形式: .xlsx（{FRANCHISES.map((franchise) => KECAK_SHEET_MAP[franchise]).join('・')}の{FRANCHISES.length}シート）
                     </p>
                   </div>
 

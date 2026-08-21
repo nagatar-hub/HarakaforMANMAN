@@ -2,15 +2,25 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { downloadFromStorage, uploadToStorage } from '../lib/asset-storage.js';
-import { FRANCHISES } from '@haraka/shared';
+import { FRANCHISE_STORAGE_SLUG } from '@haraka/shared';
 import type { Franchise } from '@haraka/shared';
 
 const BUCKET = 'haraka-images';
 
-const FRANCHISE_SLUG: Record<Franchise, string> = {
-  Pokemon: 'pokemon',
-  'ONE PIECE': 'onepiece',
-  'YU-GI-OH!': 'yugioh',
+const ORIPARK_FILE_SUFFIX: Record<Franchise, string> = {
+  Pokemon: '',
+  'ONE PIECE': 'ONEPIECE',
+  'YU-GI-OH!': '遊戯王',
+  'WEISS SCHWARZ': 'ヴァイス',
+  'DRAGON BALL': 'ドラゴンボール',
+};
+
+const MANMAN_FILE_LABEL: Record<Franchise, string> = {
+  Pokemon: 'ポケカ',
+  'ONE PIECE': 'ONEPIECE',
+  'YU-GI-OH!': '遊戯王',
+  'WEISS SCHWARZ': 'ヴァイス',
+  'DRAGON BALL': 'ドラゴンボール',
 };
 
 const ORIPARK_STORE_DIR = 'H:/マイドライブ/買取表PSD/PSD/Haraka用/店頭用/画像';
@@ -21,13 +31,13 @@ const MANMAN_STORE_SLOTS = [1, 2, 4, 6, 8, 9, 15, 20, 40] as const;
 type Supabase = Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>;
 
 function oriparkStoreFileName(franchise: Franchise, slots: number): string {
-  const suffix = franchise === 'Pokemon' ? '' : franchise === 'ONE PIECE' ? 'ONEPIECE' : '遊戯王';
+  const suffix = ORIPARK_FILE_SUFFIX[franchise];
   const slotsLabel = slots === 40 ? '40' : `${slots}枚`;
   return `買取表ひな形${slotsLabel}店頭用${suffix}.png`;
 }
 
 function manmanStoreFileName(franchise: Franchise, slots: number): string {
-  const label = franchise === 'Pokemon' ? 'ポケカ' : franchise === 'ONE PIECE' ? 'ONEPIECE' : '遊戯王';
+  const label = MANMAN_FILE_LABEL[franchise];
   return `トレカ満満買取表テンプレ - ${label}${slots}.png`;
 }
 
@@ -66,7 +76,7 @@ async function updateLayoutRows(supabase: Supabase) {
   for (const row of rows ?? []) {
     const store = row.store as string;
     const franchise = row.franchise as Franchise;
-    const slug = FRANCHISE_SLUG[franchise];
+    const slug = FRANCHISE_STORAGE_SLUG[franchise];
     if (!slug) continue;
 
     let templatePath: string | null = null;
@@ -128,16 +138,19 @@ async function updateAssetProfiles(supabase: Supabase) {
   if (error) throw new Error(`asset_profile fetch failed: ${error.message}`);
 
   for (const profile of profiles ?? []) {
-    if (profile.store !== 'oripark') continue;
+    if (profile.store !== 'oripark' && profile.store !== 'manman') continue;
     const franchise = profile.franchise as Franchise;
-    const slug = FRANCHISE_SLUG[franchise];
+    const slug = FRANCHISE_STORAGE_SLUG[franchise];
     if (!slug) continue;
 
+    const store = profile.store as 'oripark' | 'manman';
+    const kind = store === 'oripark' ? 'postal' : 'store';
+
     const updates = {
-      template_storage_path: `templates/oripark/postal/${slug}/40.png`,
-      card_back_storage_path: `card-backs/oripark/${slug}.png`,
-      template_box_storage_path: `templates/oripark/postal/${slug}/box_40.png`,
-      card_back_box_storage_path: `card-backs/oripark/${slug}_box.png`,
+      template_storage_path: `templates/${store}/${kind}/${slug}/40.png`,
+      card_back_storage_path: `card-backs/${store}/${slug}.png`,
+      template_box_storage_path: `templates/${store}/${kind}/${slug}/box_40.png`,
+      card_back_box_storage_path: `card-backs/${store}/${slug}_box.png`,
     };
 
     await copyStorageObject(supabase, profile.template_storage_path, updates.template_storage_path);
@@ -171,7 +184,7 @@ async function verify(supabase: Supabase) {
   const { data: profiles, error: profileError } = await supabase
     .from('asset_profile')
     .select('store,franchise,template_storage_path,card_back_storage_path,template_box_storage_path,card_back_box_storage_path')
-    .eq('store', 'oripark');
+    .in('store', ['oripark', 'manman']);
   if (profileError) throw new Error(`asset_profile verify failed: ${profileError.message}`);
 
   const badProfiles = (profiles ?? []).filter((row) => {
@@ -181,7 +194,7 @@ async function verify(supabase: Supabase) {
       row.template_box_storage_path,
       row.card_back_box_storage_path,
     ].filter(Boolean) as string[];
-    return paths.some((value) => !value.includes('/oripark/'));
+    return paths.some((value) => !value.includes(`/${row.store}/`));
   });
   if (badProfiles.length > 0) {
     throw new Error(`asset_profile に共有パスが残っています: ${JSON.stringify(badProfiles, null, 2)}`);

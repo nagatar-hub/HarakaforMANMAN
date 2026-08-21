@@ -28,7 +28,9 @@ import type {
   LayoutConfig,
   GeneratedPageRow,
   LayoutTemplateRow,
+  Franchise,
 } from '@haraka/shared';
+import { FRANCHISE_STORAGE_SLUG } from '@haraka/shared';
 
 type RunRow = Database['public']['Tables']['run']['Row'];
 type OwnedPageRun = Pick<RunRow, 'id' | 'order_list_import_id'>;
@@ -50,15 +52,9 @@ function romanizeLabel(label: string): string {
   return label.replace(/[^a-zA-Z0-9._-]/g, '') || 'page';
 }
 
-const FRANCHISE_STORAGE_SLUG: Record<string, string> = {
-  Pokemon: 'pokemon',
-  'ONE PIECE': 'onepiece',
-  'YU-GI-OH!': 'yugioh',
-};
-
 const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
 
-const BOX_TEMPLATE_DRIVE_ID: Record<string, string> = {
+const BOX_TEMPLATE_DRIVE_ID: Partial<Record<Franchise, string>> = {
   Pokemon: '1ZiS1Xci3Dlc5i9SJrYoEEUUwiRuCzjZk',
   'ONE PIECE': '1RiAdjVUyDhpJyb8YxmZsZdSh6PxxEeHy',
   'YU-GI-OH!': '1uhJt5rFJyZgOX9wMvl4vLAckotKpmC_n',
@@ -203,7 +199,7 @@ async function _runRegeneratePage(
     .from('asset_profile')
     .select('*')
     .eq('store', STORE_NAME)
-    .eq('franchise', page.franchise as 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!')
+    .eq('franchise', page.franchise as Franchise)
     .limit(1)
     .returns<AssetProfileRow[]>();
   const profile = profileArr?.[0] ?? null;
@@ -253,12 +249,13 @@ async function _runRegeneratePage(
       label: `${page.franchise}/${layoutTemplate.slug} カード裏`,
     });
   } else if (isBOX) {
-    const franchiseSlug = FRANCHISE_STORAGE_SLUG[page.franchise] ?? page.franchise.toLowerCase();
+    const franchise = page.franchise as Franchise;
+    const franchiseSlug = FRANCHISE_STORAGE_SLUG[franchise] ?? page.franchise.toLowerCase();
     [templateBuffer, cardBackBuffer] = await Promise.all([
       downloadTemplateAsset({
         supabase,
         storagePath: profile.template_box_storage_path,
-        driveId: BOX_TEMPLATE_DRIVE_ID[page.franchise] ?? extendedLayout.templateFileId_BOX,
+        driveId: BOX_TEMPLATE_DRIVE_ID[franchise] ?? extendedLayout.templateFileId_BOX,
         accessToken,
         label: `${page.franchise}/BOX テンプレ`,
       }),

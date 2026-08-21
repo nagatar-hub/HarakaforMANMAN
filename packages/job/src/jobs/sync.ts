@@ -24,7 +24,7 @@ import {
   applyPokemonBoxPriceOverrides,
   parsePokemonBoxPriceRows,
 } from '../lib/pokemon-box-price-source.js';
-import { parseSpectreRows } from '../lib/spectre-parser.js';
+import { parseSpectreRows, spectreIntersectionKey } from '../lib/spectre-parser.js';
 import { deduplicateByListNo } from '../lib/dedup.js';
 import { checkImageHealth } from '../lib/image-health-check.js';
 import { updateProgress, clearProgress } from '../lib/progress.js';
@@ -465,7 +465,7 @@ export async function runSync(): Promise<void> {
     await lease.renewNow();
     await updateProgress(supabase, run.id, 40, 100, 'Spectre 取込中...');
     console.log('[sync] SpectreMapping 取得中...');
-    // Spectre の list_no|grade → tag マップ（交差処理で使用）
+    // Spectre の franchise|list_no|grade → tag マップ（交差処理で使用）
     const spectreTagMap = new Map<string, string>();
     let spectreCards: ReturnType<typeof parseSpectreRows> = [];
     try {
@@ -482,10 +482,10 @@ export async function runSync(): Promise<void> {
           run.id,
           pricingSettings.psa10_discount_rates,
         );
-        // 交差処理用に list_no|grade → tag を記録
+        // 交差処理用に franchise|list_no|grade → tag を記録
         for (const sc of spectreCards) {
           if (sc.list_no && sc.tag) {
-            spectreTagMap.set(`${sc.list_no}|${sc.grade ?? ''}`, sc.tag);
+            spectreTagMap.set(spectreIntersectionKey(sc.franchise, sc.list_no, sc.grade), sc.tag);
           }
         }
       }
@@ -551,7 +551,7 @@ export async function runSync(): Promise<void> {
         const updateIds: { id: string; tag: string }[] = [];
         for (const card of cards) {
           if (card.source !== 'order_list' || !card.list_no) continue;
-          const key = `${card.list_no}|${card.grade ?? ''}`;
+          const key = spectreIntersectionKey(card.franchise, card.list_no, card.grade);
           const spectreTag = spectreTagMap.get(key);
           if (spectreTag) {
             updateIds.push({ id: card.id, tag: spectreTag });

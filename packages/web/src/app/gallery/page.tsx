@@ -1,12 +1,8 @@
 import Link from 'next/link';
+import { FRANCHISE_JA as SHARED_FRANCHISE_JA } from '@haraka/shared';
 
 export const dynamic = 'force-dynamic';
-
-const FRANCHISE_JA: Record<string, string> = {
-  'Pokemon': 'ポケモン',
-  'ONE PIECE': 'ワンピース',
-  'YU-GI-OH!': '遊戯王',
-};
+const FRANCHISE_JA: Readonly<Record<string, string>> = SHARED_FRANCHISE_JA;
 
 type DateEntry = {
   date: string;

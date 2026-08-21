@@ -108,6 +108,8 @@ describe('prepareOrderListCards', () => {
     ['Pokemon', 44_000, 38_000],
     ['ONE PIECE', 44_000, 38_000],
     ['YU-GI-OH!', 42_000, 35_000],
+    ['WEISS SCHWARZ', 44_000, 38_000],
+    ['DRAGON BALL', 44_000, 38_000],
   ])('%s はMANMAN既定の商材別率で価格を計算する', (franchise, expectedHigh, expectedLow) => {
     const raw = makeRawImport({ franchise });
     const result = prepareOrderListCards(
@@ -118,6 +120,21 @@ describe('prepareOrderListCards', () => {
 
     expect(result[0].price_high).toBe(expectedHigh);
     expect(result[0].price_low).toBe(expectedLow);
+  });
+
+  it('ドラゴンボールのシングルはPSAと同じ非BOX率を使い、種別を保持する', () => {
+    const result = prepareOrderListCards(
+      [makeRawImport({ franchise: 'DRAGON BALL', grade: 'シングル' })],
+      new Map([['db-1', makeDbCard({ franchise: 'DRAGON BALL', grade: 'シングル' })]]),
+      '2026-08-19',
+    );
+
+    expect(result[0]).toMatchObject({
+      franchise: 'DRAGON BALL',
+      grade: 'シングル',
+      price_high: 44_000,
+      price_low: 38_000,
+    });
   });
 
   it('Excel画像をprimary、DBの代替画像をfallbackとして保持する', () => {

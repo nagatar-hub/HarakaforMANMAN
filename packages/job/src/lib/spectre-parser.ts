@@ -20,6 +20,14 @@ import {
 
 type PreparedCardInsert = Database['public']['Tables']['prepared_card']['Insert'];
 
+export function spectreIntersectionKey(
+  franchise: string,
+  listNo: string,
+  grade: string | null | undefined,
+): string {
+  return `${franchise}\u0000${listNo}\u0000${grade ?? ''}`;
+}
+
 /**
  * セルの値を取得（1-indexed）
  */

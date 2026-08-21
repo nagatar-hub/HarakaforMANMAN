@@ -80,9 +80,11 @@ function makeItem(overrides: Partial<OrderListItemRow> = {}): OrderListItemRow {
 }
 
 describe('MANMAN buyback sheet', () => {
-  it('店頭用ページだけを Pokemon、遊戯王、ONE PIECE、ページ番号の順に並べる', () => {
+  it('店頭用ページだけを5商材の固定順、ページ番号の順に並べる', () => {
     const pages: PublishPage[] = [
+      makePage({ franchise: 'DRAGON BALL', card_ids: ['dragon-1'] }),
       makePage({ franchise: 'ONE PIECE', card_ids: ['onepiece-1'] }),
+      makePage({ franchise: 'WEISS SCHWARZ', card_ids: ['weiss-1'] }),
       makePage({ franchise: 'Pokemon', page_index: 1, card_ids: ['pokemon-2'] }),
       makePage({ franchise: 'YU-GI-OH!', card_ids: ['yugioh-1'] }),
       makePage({ franchise: 'Pokemon', page_index: 0, card_ids: ['pokemon-1'] }),
@@ -94,6 +96,8 @@ describe('MANMAN buyback sheet', () => {
       'pokemon-2',
       'yugioh-1',
       'onepiece-1',
+      'weiss-1',
+      'dragon-1',
     ]);
   });
 

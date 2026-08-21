@@ -134,6 +134,41 @@ describe('matchOrderListRows', () => {
     assert.deepEqual(result.candidateDbCardIds, ['db-1', 'db-2']);
   });
 
+  it('同一画像URLでもドラゴンボールのPSA10とシングルを種別で分離する', () => {
+    const cards = [
+      dbCard({
+        id: 'dragon-psa10',
+        franchise: 'DRAGON BALL',
+        card_name: 'エナジーマーカー',
+        grade: 'PSA10',
+        list_no: 'E-48',
+        image_url: 'https://excel.example/energy-marker.jpg',
+      }),
+      dbCard({
+        id: 'dragon-single',
+        franchise: 'DRAGON BALL',
+        card_name: 'エナジーマーカー',
+        grade: 'シングル',
+        list_no: 'E-48',
+        image_url: 'https://excel.example/energy-marker.jpg',
+      }),
+    ];
+
+    const [result] = matchOrderListRows([
+      row({
+        franchise: 'DRAGON BALL',
+        cardName: 'エナジーマーカー',
+        grade: 'シングル',
+        listNo: 'E-48',
+        imageUrl: 'https://excel.example/energy-marker.jpg',
+      }),
+    ], cards, []);
+
+    assert.equal(result.status, 'matched');
+    assert.equal(result.method, 'exact_image');
+    assert.equal(result.dbCardId, 'dragon-single');
+  });
+
   it('画像URLが複数候補でも商品情報の厳密一致が一意なら自動照合する', () => {
     const cards = [
       dbCard({ id: 'db-1', image_url: 'https://excel.example/card.jpg' }),

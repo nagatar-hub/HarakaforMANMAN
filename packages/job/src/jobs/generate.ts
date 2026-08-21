@@ -40,8 +40,9 @@ import type {
   GeneratedPageRow,
   RuleRow,
   LayoutTemplateRow,
+  Franchise,
 } from '@haraka/shared';
-import { FRANCHISES } from '@haraka/shared';
+import { FRANCHISES, FRANCHISE_STORAGE_SLUG } from '@haraka/shared';
 
 type RunRow = Database['public']['Tables']['run']['Row'];
 type GeneratedPageInsert = Database['public']['Tables']['generated_page']['Insert'];
@@ -74,13 +75,7 @@ function romanizeLabel(label: string): string {
 const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-const FRANCHISE_STORAGE_SLUG: Record<string, string> = {
-  Pokemon: 'pokemon',
-  'ONE PIECE': 'onepiece',
-  'YU-GI-OH!': 'yugioh',
-};
-
-const BOX_TEMPLATE_DRIVE_ID: Record<string, string> = {
+const BOX_TEMPLATE_DRIVE_ID: Partial<Record<Franchise, string>> = {
   Pokemon: '1ZiS1Xci3Dlc5i9SJrYoEEUUwiRuCzjZk',
   'ONE PIECE': '1RiAdjVUyDhpJyb8YxmZsZdSh6PxxEeHy',
   'YU-GI-OH!': '1uhJt5rFJyZgOX9wMvl4vLAckotKpmC_n',
@@ -166,7 +161,7 @@ export async function runGenerate() {
     // ---- 2. Storage クリーンアップ ----
     await updateProgress(supabase, run.id, 0, 100, 'クリーンアップ中...');
     console.log('[generate] Storage クリーンアップ中...');
-    for (const folder of ['Pokemon', 'ONEPIECE', 'YU-GI-OH']) {
+    for (const folder of FRANCHISES.map((franchise) => franchise.replace(/[^a-zA-Z0-9._-]/g, ''))) {
       const prefix = `generated/${STORE_NAME}/${datePath}/${folder}`;
       const { data: files } = await supabase.storage.from('haraka-images').list(prefix);
       if (files && files.length > 0) {
@@ -367,7 +362,7 @@ export async function runGenerate() {
       let boxCardBackBuffer: Buffer | null = null;
       if (needsBoxAssets) {
         const baseLayout = profile.layout_config as LayoutConfig;
-        const franchiseSlug = FRANCHISE_STORAGE_SLUG[franchise] ?? safeFranchise.toLowerCase();
+        const franchiseSlug = FRANCHISE_STORAGE_SLUG[franchise];
         [boxTemplateBuffer, boxCardBackBuffer] = await Promise.all([
           downloadTemplateAsset({
             supabase,

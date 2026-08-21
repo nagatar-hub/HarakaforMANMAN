@@ -124,20 +124,24 @@ function mappingKey(franchise: string, excelProductId: string): string {
   return `${normalizeText(franchise)}\u0000${normalizeText(excelProductId)}`;
 }
 
-function uniqueFranchiseCandidates(
+function uniqueScopedCandidates(
   candidates: DbCardMatchInput[] | undefined,
   franchise: string,
+  grade?: string | null,
 ): DbCardMatchInput[] {
   if (!candidates) return [];
   const wanted = normalizeText(franchise);
-  return candidates.filter((candidate) => normalizeText(candidate.franchise) === wanted);
+  return candidates.filter((candidate) =>
+    normalizeText(candidate.franchise) === wanted
+    && (grade === undefined || normalizeText(candidate.grade) === normalizeText(grade))
+  );
 }
 
 /**
  * 安全な自動照合だけを実行する。
  *
  * 1. 保存済みのExcel商品ID対応表
- * 2. 同一商材内の完全一致画像URL（候補が1件だけ）
+ * 2. 同一商材・種別内の完全一致画像URL（候補が1件だけ）
  * 3. 商材 + 商品名 + 種別 + リスト番号の厳密一致（候補が1件だけ）
  *
  * 0件は unmatched、複数件は ambiguous とし、先頭候補を黙って採用しない。
@@ -222,9 +226,10 @@ export function matchOrderListRows<T extends MatchableOrderListRow>(
       }
     }
 
-    const imageCandidates = uniqueFranchiseCandidates(
+    const imageCandidates = uniqueScopedCandidates(
       image.get(normalizeImageUrl(row.imageUrl) ?? ''),
       row.franchise,
+      row.grade,
     );
     if (imageCandidates.length === 1) {
       return {
@@ -238,7 +243,7 @@ export function matchOrderListRows<T extends MatchableOrderListRow>(
       };
     }
 
-    const identityCandidates = uniqueFranchiseCandidates(
+    const identityCandidates = uniqueScopedCandidates(
       identity.get(identityKey(row.franchise, row.cardName, row.grade, row.listNo)),
       row.franchise,
     );

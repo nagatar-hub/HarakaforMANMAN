@@ -43,11 +43,16 @@ function validRow(
   return row;
 }
 
+function addNewProductSheets(workbook: ExcelJS.Workbook): void {
+  addSheet(workbook, 'ヴァイス', [validRow('WS-1')]);
+  addSheet(workbook, 'ドラゴンボール', [validRow('DB-1', { 2: 'シングル' })]);
+}
+
 async function asBuffer(workbook: ExcelJS.Workbook): Promise<Buffer> {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-test('3商材をヘッダー名で読み、数値・URL・rawRowを保持する', async () => {
+test('5商材をヘッダー名で読み、数値・URL・rawRowを保持する', async () => {
   const workbook = new ExcelJS.Workbook();
   addSheet(
     workbook,
@@ -73,12 +78,13 @@ test('3商材をヘッダー名で読み、数値・URL・rawRowを保持する'
       8: { formula: '1500+1500', result: 3000 },
     }),
   ]);
+  addNewProductSheets(workbook);
 
   const result = await parseOrderListWorkbook(await asBuffer(workbook));
 
   assert.equal(result.structuralValid, true);
   assert.equal(result.valid, true);
-  assert.equal(result.summary.totalRows, 3);
+  assert.equal(result.summary.totalRows, 5);
   assert.equal(result.summary.errorCount, 0);
   assert.equal(result.summary.sheets[0].headerRowNumber, 2);
 
@@ -98,6 +104,12 @@ test('3商材をヘッダー名で読み、数値・URL・rawRowを保持する'
   assert.ok(yugioh);
   assert.equal(yugioh.sourcePrice, 3000);
   assert.equal(yugioh.imageUrl, 'https://fexadnveyuqduiujewrc.supabase.co/yugioh/YG-1.jpg');
+
+  const weiss = result.rows.find((row) => row.excelProductId === 'WS-1');
+  assert.equal(weiss?.franchise, 'WEISS SCHWARZ');
+  const dragon = result.rows.find((row) => row.excelProductId === 'DB-1');
+  assert.equal(dragon?.franchise, 'DRAGON BALL');
+  assert.equal(dragon?.grade, 'シングル');
 });
 
 test('全角括弧やヘッダー内空白を正規化して列を特定する', async () => {
@@ -109,11 +121,28 @@ test('全角括弧やヘッダー内空白を正規化して列を特定する',
   addSheet(workbook, 'ポケモン', [validRow('PK-1')], flexibleHeaders);
   addSheet(workbook, 'ワンピース', [validRow('OP-1')], flexibleHeaders);
   addSheet(workbook, '遊戯王', [validRow('YG-1')], flexibleHeaders);
+  addSheet(workbook, 'ヴァイス', [validRow('WS-1')], flexibleHeaders);
+  addSheet(workbook, 'ドラゴンボール', [validRow('DB-1')], flexibleHeaders);
 
   const result = await parseOrderListWorkbook(await asBuffer(workbook));
 
   assert.equal(result.structuralValid, true);
-  assert.equal(result.rows.length, 3);
+  assert.equal(result.rows.length, 5);
+});
+
+test('未対応の追加シートを構造エラーとして報告する', async () => {
+  const workbook = new ExcelJS.Workbook();
+  addSheet(workbook, 'ポケモン', [validRow('PK-1')]);
+  addSheet(workbook, 'ワンピース', [validRow('OP-1')]);
+  addSheet(workbook, '遊戯王', [validRow('YG-1')]);
+  addNewProductSheets(workbook);
+  addSheet(workbook, '新商材', [validRow('NEW-1')]);
+
+  const result = await parseOrderListWorkbook(await asBuffer(workbook));
+
+  assert.equal(result.structuralValid, false);
+  assert.equal(result.issues[0]?.code, 'unsupported_sheet');
+  assert.equal(result.issues[0]?.sheetName, '新商材');
 });
 
 test('シート・必須列の不足を構造エラーとして報告する', async () => {
@@ -126,7 +155,7 @@ test('シート・必須列の不足を構造エラーとして報告する', as
   assert.equal(result.structuralValid, false);
   assert.equal(result.valid, false);
   assert.equal(result.rows.length, 0);
-  assert.equal(result.issues.filter((item) => item.code === 'missing_sheet').length, 2);
+  assert.equal(result.issues.filter((item) => item.code === 'missing_sheet').length, 4);
   assert.equal(
     result.issues.some((item) =>
       item.code === 'missing_required_headers' && item.value?.includes('画像')
@@ -143,12 +172,13 @@ test('重複や不正行を捨てず、各行のvalidationIssuesへ残す', asyn
   ]);
   addSheet(workbook, 'ワンピース', [validRow('OP-1', { 7: 1.5 })]);
   addSheet(workbook, '遊戯王', [validRow('YG-1', { 8: '' })]);
+  addNewProductSheets(workbook);
 
   const result = await parseOrderListWorkbook(await asBuffer(workbook));
 
   assert.equal(result.structuralValid, true);
   assert.equal(result.valid, false);
-  assert.equal(result.rows.length, 4);
+  assert.equal(result.rows.length, 6);
   assert.equal(result.summary.invalidRows, 4);
   assert.equal(result.summary.duplicateRows, 2);
   assert.equal(
@@ -174,6 +204,7 @@ test('展開後の行数が上限を越えるworkbookを解析前に拒否する
   addSheet(workbook, 'ポケモン', [validRow('PK-1')]);
   addSheet(workbook, 'ワンピース', [validRow('OP-1')]);
   addSheet(workbook, '遊戯王', [validRow('YG-1')]);
+  addNewProductSheets(workbook);
 
   const pokemon = workbook.getWorksheet('ポケモン')!;
   for (let index = 0; index <= ORDER_LIST_MAX_DATA_ROWS; index += 1) {

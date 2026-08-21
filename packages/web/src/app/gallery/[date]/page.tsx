@@ -9,6 +9,7 @@ import { ImageModal } from '@/components/image-modal';
 import { PageDetailModal } from './page-detail-modal';
 import { fetchImagesAsFiles, shareFiles, downloadFilesAsZip, isShareSupported } from '@/lib/download-images';
 import type { DownloadableImage } from '@/lib/download-images';
+import { FRANCHISE_JA as SHARED_FRANCHISE_JA } from '@haraka/shared';
 
 type PageImage = {
   id: string;
@@ -21,11 +22,7 @@ type PageImage = {
   run_started_at: string;
 };
 
-const FRANCHISE_JA: Record<string, string> = {
-  'Pokemon': 'ポケモン',
-  'ONE PIECE': 'ワンピース',
-  'YU-GI-OH!': '遊戯王',
-};
+const FRANCHISE_JA: Readonly<Record<string, string>> = SHARED_FRANCHISE_JA;
 
 function formatTime(iso: string) {
   return new Date(iso).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', second: '2-digit' });

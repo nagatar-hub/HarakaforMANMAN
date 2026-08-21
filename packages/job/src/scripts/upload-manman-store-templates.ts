@@ -13,8 +13,8 @@ import path from 'node:path';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { detectLayoutFromBuffer, renderDetectionDebugImage } from '../lib/layout-detector.js';
 import { scaleManmanStoreLayout } from '../lib/manman-store-layout.js';
-import { FRANCHISES } from '@haraka/shared';
-import type { Franchise, LayoutConfig, LayoutTemplateRow } from '@haraka/shared';
+import { FRANCHISES, FRANCHISE_STORAGE_SLUG } from '@haraka/shared';
+import type { Franchise, LayoutTemplateRow } from '@haraka/shared';
 
 const SUPPORTED_SLOTS = [1, 2, 4, 6, 8, 9, 15, 20, 40];
 const STORE_NAME = process.env.STORE_NAME ?? 'manman';
@@ -23,12 +23,8 @@ const FRANCHISE_FILE_LABEL: Record<Franchise, string> = {
   Pokemon: 'ポケカ',
   'ONE PIECE': 'ONEPIECE',
   'YU-GI-OH!': '遊戯王',
-};
-
-const FRANCHISE_SLUG: Record<Franchise, string> = {
-  Pokemon: 'pokemon',
-  'ONE PIECE': 'onepiece',
-  'YU-GI-OH!': 'yugioh',
+  'WEISS SCHWARZ': 'ヴァイス',
+  'DRAGON BALL': 'ドラゴンボール',
 };
 
 function argValue(name: string, fallback: string): string {
@@ -41,11 +37,19 @@ function fileNameFor(franchise: Franchise, slots: number): string {
 }
 
 function storagePathFor(franchise: Franchise, slots: number): string {
-  return `templates/${STORE_NAME}/store/${FRANCHISE_SLUG[franchise]}/${slots}.png`;
+  return `templates/${STORE_NAME}/store/${FRANCHISE_STORAGE_SLUG[franchise]}/${slots}.png`;
 }
 
 function cardBackPathFor(franchise: Franchise): string {
-  return `card-backs/${STORE_NAME}/${FRANCHISE_SLUG[franchise]}.png`;
+  return `card-backs/${STORE_NAME}/${FRANCHISE_STORAGE_SLUG[franchise]}.png`;
+}
+
+function boxTemplatePathFor(franchise: Franchise): string {
+  return `templates/${STORE_NAME}/store/${FRANCHISE_STORAGE_SLUG[franchise]}/box_40.png`;
+}
+
+function boxCardBackPathFor(franchise: Franchise): string {
+  return `card-backs/${STORE_NAME}/${FRANCHISE_STORAGE_SLUG[franchise]}_box.png`;
 }
 
 async function main() {
@@ -79,7 +83,7 @@ async function main() {
 
       if (debugOut) {
         const debug = await renderDetectionDebugImage(buffer, detected);
-        await fs.writeFile(path.join(debugOut, `debug-${FRANCHISE_SLUG[franchise]}-${slots}.png`), debug);
+        await fs.writeFile(path.join(debugOut, `debug-${FRANCHISE_STORAGE_SLUG[franchise]}-${slots}.png`), debug);
       }
 
       const templateStoragePath = storagePathFor(franchise, slots);
@@ -122,6 +126,36 @@ async function main() {
         .from('layout_template')
         .upsert(row, { onConflict: 'store,franchise,kind,slug' });
       if (upsertErr) throw new Error(`layout_template upsert failed ${franchise}/${slots}: ${upsertErr.message}`);
+
+      const profileFields = {
+        grid_cols: detected.gridCols,
+        grid_rows: detected.gridRows,
+        total_slots: detected.totalSlots,
+        img_width: detected.imgWidth,
+        img_height: detected.imgHeight,
+        layout_config: scaleManmanStoreLayout(detected.layoutConfig),
+        template_storage_path: templateStoragePath,
+        card_back_storage_path: cardBackPathFor(franchise),
+        template_box_storage_path: boxTemplatePathFor(franchise),
+        card_back_box_storage_path: boxCardBackPathFor(franchise),
+      };
+      const { error: profileSeedErr } = await supabase.from('asset_profile').upsert({
+        store: STORE_NAME,
+        franchise,
+        template_image: null,
+        card_back_image: null,
+        font_family: 'Special Gothic Condensed One',
+        price_format: '¥{price}',
+        rarity_icons: null,
+        ...profileFields,
+      }, { onConflict: 'store,franchise', ignoreDuplicates: true });
+      if (profileSeedErr) throw new Error(`asset_profile seed failed ${franchise}: ${profileSeedErr.message}`);
+      const { error: profileUpdateErr } = await supabase
+        .from('asset_profile')
+        .update(profileFields)
+        .eq('store', STORE_NAME)
+        .eq('franchise', franchise);
+      if (profileUpdateErr) throw new Error(`asset_profile update failed ${franchise}: ${profileUpdateErr.message}`);
 
       console.log(`  [ok] ${slots}: ${templateStoragePath} (${detected.gridCols}x${detected.gridRows})`);
     }

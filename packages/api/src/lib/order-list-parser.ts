@@ -1,4 +1,4 @@
-import type { Franchise } from '@haraka/shared';
+import { FRANCHISES, KECAK_SHEET_MAP, type Franchise } from '@haraka/shared';
 import ExcelJS from 'exceljs';
 import type { Cell, CellValue, Row, Worksheet } from 'exceljs';
 
@@ -24,11 +24,8 @@ export const ORDER_LIST_REQUIRED_HEADERS = [
 
 export type OrderListRequiredHeader = typeof ORDER_LIST_REQUIRED_HEADERS[number];
 
-export const ORDER_LIST_SHEETS = [
-  { sheetName: 'ポケモン', franchise: 'Pokemon' },
-  { sheetName: 'ワンピース', franchise: 'ONE PIECE' },
-  { sheetName: '遊戯王', franchise: 'YU-GI-OH!' },
-] as const satisfies ReadonlyArray<{ sheetName: string; franchise: Franchise }>;
+export const ORDER_LIST_SHEETS: ReadonlyArray<{ sheetName: string; franchise: Franchise }> =
+  FRANCHISES.map((franchise) => ({ sheetName: KECAK_SHEET_MAP[franchise], franchise }));
 
 export type OrderListIssueSeverity = 'error' | 'warning';
 export type OrderListIssueCode =
@@ -37,6 +34,7 @@ export type OrderListIssueCode =
   | 'workbook_too_many_rows'
   | 'workbook_read_failed'
   | 'missing_sheet'
+  | 'unsupported_sheet'
   | 'header_row_not_found'
   | 'ambiguous_header_row'
   | 'missing_required_headers'
@@ -634,7 +632,7 @@ function resultFromStructuralIssues(issues: OrderListParseIssue[]): OrderListPar
   };
 }
 
-// Parse the three-product order-list XLSX. Structural and row errors are
+// Parse the five-product order-list XLSX. Structural and row errors are
 // returned rather than discarded. Duplicate product IDs are retained and
 // every duplicate occurrence is marked invalid.
 export async function parseOrderListWorkbook(buffer: Buffer): Promise<OrderListParseResult> {
@@ -667,13 +665,26 @@ export async function parseOrderListWorkbook(buffer: Buffer): Promise<OrderListP
     ]);
   }
 
+  const supportedSheetNames = new Set(ORDER_LIST_SHEETS.map(({ sheetName }) => sheetName));
+  const unsupportedSheets = workbook.worksheets.filter(
+    ({ name }) => !supportedSheetNames.has(name),
+  );
+  if (unsupportedSheets.length > 0) {
+    return resultFromStructuralIssues(unsupportedSheets.map(({ name }) => makeIssue(
+      'error',
+      'unsupported_sheet',
+      '未対応のシート「' + name + '」があります。',
+      { sheetName: name },
+    )));
+  }
+
   const totalWorkbookRows = workbook.worksheets.reduce(
     (total, worksheet) => total + worksheet.actualRowCount,
     0,
   );
   if (totalWorkbookRows > ORDER_LIST_MAX_DATA_ROWS + ORDER_LIST_SHEETS.length) {
     return resultFromStructuralIssues([
-      makeIssue('error', 'workbook_too_many_rows', `Excelの行数は3シート合計${ORDER_LIST_MAX_DATA_ROWS.toLocaleString()}件以下にしてください。`),
+      makeIssue('error', 'workbook_too_many_rows', `Excelの行数は${ORDER_LIST_SHEETS.length}シート合計${ORDER_LIST_MAX_DATA_ROWS.toLocaleString()}件以下にしてください。`),
     ]);
   }
 

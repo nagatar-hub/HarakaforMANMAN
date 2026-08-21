@@ -4,7 +4,7 @@
  * TDDアプローチ: このテストが Green になる実装を src/lib/spectre-parser.ts に書く
  */
 
-import { parseSpectreRows } from '../lib/spectre-parser';
+import { parseSpectreRows, spectreIntersectionKey } from '../lib/spectre-parser';
 import type { Franchise } from '@haraka/shared';
 
 const RUN_ID = 'run-test-spectre';
@@ -169,5 +169,14 @@ describe('parseSpectreRows', () => {
     // 買取上限 15% 減額: 30000 -> 25500 -> price_high 25000
     // YU-GI-OH!: 25000 * 0.85 = 21250 → niceLowerBound → 21000
     expect(result[0].price_low).toBe(21000);
+  });
+
+  it('Spectreタグ交差キーは同じ型番・種別でも商材を跨がない', () => {
+    const tags = new Map([
+      [spectreIntersectionKey('Pokemon', 'E-48', 'PSA10'), 'TOP'],
+    ]);
+
+    expect(tags.get(spectreIntersectionKey('Pokemon', 'E-48', 'PSA10'))).toBe('TOP');
+    expect(tags.get(spectreIntersectionKey('DRAGON BALL', 'E-48', 'PSA10'))).toBeUndefined();
   });
 });

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { FranchiseTabs } from '@/components/franchise-tabs';
+import { FRANCHISE_JA as SHARED_FRANCHISE_JA } from '@haraka/shared';
 
 type DbCard = {
   id: string;
@@ -25,13 +26,8 @@ type Stats = {
   deadCount: number;
 };
 
-const FRANCHISE_JA: Record<string, string> = {
-  'Pokemon': 'ポケモン',
-  'ONE PIECE': 'ワンピース',
-  'YU-GI-OH!': '遊戯王',
-};
-
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const FRANCHISE_JA: Readonly<Record<string, string>> = SHARED_FRANCHISE_JA;
 
 /** タグ選択プルダウン */
 function TagSelectCell({

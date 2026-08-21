@@ -41,4 +41,4 @@ export type {
   LayoutTemplateRow,
 } from './database.js';
 export type { Franchise } from './franchise.js';
-export { FRANCHISES, FRANCHISE_JA, KECAK_SHEET_MAP } from './franchise.js';
+export { FRANCHISES, FRANCHISE_JA, FRANCHISE_STORAGE_SLUG, KECAK_SHEET_MAP } from './franchise.js';

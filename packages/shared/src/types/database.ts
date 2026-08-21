@@ -1,3 +1,5 @@
+import type { Franchise } from './franchise.js';
+
 export type LayoutConfig = {
   startX: number;
   priceStartX: number;
@@ -32,7 +34,7 @@ export type RowConfig = {
 export type RunStatus = 'running' | 'completed' | 'failed';
 export type RuleMatchType = 'exact' | 'contains' | 'regex';
 export type RuleBehavior = 'isolate' | 'merge' | 'exclude' | 'group';
-export type OrderListFranchise = 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
+export type OrderListFranchise = Franchise;
 export type OrderListImportStatus = 'parsed' | 'confirmed' | 'processing' | 'applied' | 'failed';
 export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'excluded' | 'invalid';
 export type OrderListMatchMethod = 'existing_mapping' | 'exact_image' | 'exact_identity' | 'manual';
@@ -42,25 +44,11 @@ export type PriceSource = 'order_list' | 'kecak' | 'spectre' | 'manual';
 export type StoreConfigRow = {
   store: string;
   settings: {
-    box_discount_rates?: {
-      Pokemon?: {
-        shrink?: number;
-        no_shrink?: number;
-      };
-      'ONE PIECE'?: {
-        shrink?: number;
-        no_shrink?: number;
-      };
-      'YU-GI-OH!'?: {
-        shrink?: number;
-        no_shrink?: number;
-      };
-    };
-    psa10_discount_rates?: {
-      Pokemon?: number;
-      'ONE PIECE'?: number;
-      'YU-GI-OH!'?: number;
-    };
+    box_discount_rates?: Partial<Record<Franchise, {
+      shrink?: number;
+      no_shrink?: number;
+    }>>;
+    psa10_discount_rates?: Partial<Record<Franchise, number>>;
     [key: string]: unknown;
   };
   updated_at: string;
@@ -107,7 +95,7 @@ export type RunRow = {
 export type RuleRow = {
   id: string;
   store: string;
-  franchise: 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
+  franchise: Franchise;
   tag_pattern: string;
   match_type: RuleMatchType;
   behavior: RuleBehavior;
@@ -120,7 +108,7 @@ export type RuleRow = {
 export type AssetProfileRow = {
   id: string;
   store: string;
-  franchise: 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
+  franchise: Franchise;
   template_image: string | null;
   card_back_image: string | null;
   grid_cols: number;
@@ -142,7 +130,7 @@ export type AssetProfileRow = {
 export type LayoutTemplateRow = {
   id: string;
   store: string;
-  franchise: 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!';
+  franchise: Franchise;
   name: string;
   slug: string;
   grid_cols: number;

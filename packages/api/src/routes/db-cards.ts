@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import type { Database } from '@haraka/shared';
+import { FRANCHISES, type Database } from '@haraka/shared';
 import { createSupabaseClient } from '../lib/supabase.js';
 import { updateDbSheetCell } from '../lib/haraka-db-sheet.js';
 
@@ -40,12 +40,11 @@ dbCardRoutes.get('/db-cards/stats', async (c) => {
   const supabase = createSupabaseClient();
 
   // フランチャイズ別にカウント（1000件制限を回避）
-  const franchises = ['Pokemon', 'ONE PIECE', 'YU-GI-OH!'];
   const byFranchise: Record<string, number> = {};
   let total = 0;
   let errorCount = 0;
 
-  for (const f of franchises) {
+  for (const f of FRANCHISES) {
     const { count: fCount } = await supabase
       .from('db_card')
       .select('*', { count: 'exact', head: true })

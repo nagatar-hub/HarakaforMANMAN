@@ -2,14 +2,11 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { FRANCHISES as FRANCHISE_KEYS, FRANCHISE_JA } from '@haraka/shared';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
-const FRANCHISES = [
-  { key: 'Pokemon', label: 'ポケモン' },
-  { key: 'ONE PIECE', label: 'ワンピース' },
-  { key: 'YU-GI-OH!', label: '遊戯王' },
-] as const;
+const FRANCHISES = FRANCHISE_KEYS.map((key) => ({ key, label: FRANCHISE_JA[key] }));
 
 type TagStat = {
   tag: string;
