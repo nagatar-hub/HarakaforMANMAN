@@ -21,15 +21,15 @@ export const DEFAULT_BOX_DISCOUNT_RATES: BoxDiscountRates = {
   Pokemon: { ...DEFAULT_BOX_CONDITION_DISCOUNT_RATES },
   'ONE PIECE': { ...DEFAULT_BOX_CONDITION_DISCOUNT_RATES },
   'YU-GI-OH!': { ...DEFAULT_BOX_CONDITION_DISCOUNT_RATES },
-  'WEISS SCHWARZ': { ...DEFAULT_BOX_CONDITION_DISCOUNT_RATES },
-  'DRAGON BALL': { ...DEFAULT_BOX_CONDITION_DISCOUNT_RATES },
+  'WEISS SCHWARZ': { shrink: 0.06, no_shrink: 0.13 },
+  'DRAGON BALL': { shrink: 0.06, no_shrink: 0.13 },
 };
 export const DEFAULT_PSA10_DISCOUNT_RATES: Record<Franchise, number> = {
   Pokemon: 0.12,
   'ONE PIECE': 0.12,
   'YU-GI-OH!': 0.15,
-  'WEISS SCHWARZ': 0.12,
-  'DRAGON BALL': 0.12,
+  'WEISS SCHWARZ': 0.06,
+  'DRAGON BALL': 0.06,
 };
 export const DEFAULT_STORE_PRICING_SETTINGS: StorePricingSettings = {
   box_discount_rates: DEFAULT_BOX_DISCOUNT_RATES,
@@ -82,6 +82,9 @@ export function normalizeStorePricingSettings(settings: unknown): StorePricingSe
   const psa10Rates = isRecord(source.psa10_discount_rates) ? source.psa10_discount_rates : {};
   const normalizedPsa10Rates = { ...DEFAULT_PSA10_DISCOUNT_RATES };
   const legacyBoxRates = normalizeBoxConditionDiscountRates(boxRates);
+  const hasLegacyBoxRates =
+    Object.prototype.hasOwnProperty.call(boxRates, 'shrink') ||
+    Object.prototype.hasOwnProperty.call(boxRates, 'no_shrink');
   const normalizedBoxRates = {} as BoxDiscountRates;
 
   for (const franchise of FRANCHISES) {
@@ -91,7 +94,7 @@ export function normalizeStorePricingSettings(settings: unknown): StorePricingSe
     );
     normalizedBoxRates[franchise] = normalizeBoxConditionDiscountRates(
       boxRates[franchise],
-      legacyBoxRates,
+      hasLegacyBoxRates ? legacyBoxRates : DEFAULT_BOX_DISCOUNT_RATES[franchise],
     );
   }
 

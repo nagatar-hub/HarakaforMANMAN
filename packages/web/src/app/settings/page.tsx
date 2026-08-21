@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api-client';
 import {
+  CONFIGURABLE_PRICING_FRANCHISES,
   calculateSteppedDiscountPreview,
   normalizePreviewBasePrice,
 } from '@/lib/settings-preview';
@@ -23,14 +24,14 @@ interface StoreConfig {
   };
 }
 
-const FRANCHISE_OPTIONS = FRANCHISES.map((key) => ({ key, label: FRANCHISE_JA[key] }));
+const FRANCHISE_OPTIONS = CONFIGURABLE_PRICING_FRANCHISES.map((key) => ({ key, label: FRANCHISE_JA[key] }));
 
 const DEFAULT_PSA10_RATES: Psa10Rates = {
   Pokemon: 12,
   'ONE PIECE': 12,
   'YU-GI-OH!': 15,
-  'WEISS SCHWARZ': 12,
-  'DRAGON BALL': 12,
+  'WEISS SCHWARZ': 6,
+  'DRAGON BALL': 6,
 };
 
 const DEFAULT_BOX_CONDITION_RATES: BoxConditionRates = {
@@ -41,8 +42,8 @@ const DEFAULT_BOX_RATES: BoxRates = {
   Pokemon: { ...DEFAULT_BOX_CONDITION_RATES },
   'ONE PIECE': { ...DEFAULT_BOX_CONDITION_RATES },
   'YU-GI-OH!': { ...DEFAULT_BOX_CONDITION_RATES },
-  'WEISS SCHWARZ': { ...DEFAULT_BOX_CONDITION_RATES },
-  'DRAGON BALL': { ...DEFAULT_BOX_CONDITION_RATES },
+  'WEISS SCHWARZ': { shrink: 6, no_shrink: 13 },
+  'DRAGON BALL': { shrink: 6, no_shrink: 13 },
 };
 
 function clampRate(value: number): number {
@@ -115,11 +116,11 @@ export default function SettingsPage() {
         method: 'PATCH',
         body: JSON.stringify({
           settings: {
-            box_discount_rates: Object.fromEntries(FRANCHISES.map((franchise) => [franchise, {
+            box_discount_rates: Object.fromEntries(CONFIGURABLE_PRICING_FRANCHISES.map((franchise) => [franchise, {
               shrink: boxRates[franchise].shrink / 100,
               no_shrink: boxRates[franchise].no_shrink / 100,
             }])),
-            psa10_discount_rates: Object.fromEntries(FRANCHISES.map((franchise) => [
+            psa10_discount_rates: Object.fromEntries(CONFIGURABLE_PRICING_FRANCHISES.map((franchise) => [
               franchise,
               psa10Rates[franchise] / 100,
             ])),

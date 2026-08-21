@@ -23,20 +23,20 @@ describe('normalizeStorePricingSettings', () => {
           no_shrink: 0.24,
         },
         'WEISS SCHWARZ': {
-          shrink: 0,
-          no_shrink: 0.15,
+          shrink: 0.06,
+          no_shrink: 0.13,
         },
         'DRAGON BALL': {
-          shrink: 0,
-          no_shrink: 0.15,
+          shrink: 0.06,
+          no_shrink: 0.13,
         },
       },
       psa10_discount_rates: {
         Pokemon: 0.11,
         'ONE PIECE': 0.12,
         'YU-GI-OH!': 0.13,
-        'WEISS SCHWARZ': 0.12,
-        'DRAGON BALL': 0.12,
+        'WEISS SCHWARZ': 0.06,
+        'DRAGON BALL': 0.06,
       },
       box_shrink_discount_rate: 0.45,
     });
@@ -56,20 +56,20 @@ describe('normalizeStorePricingSettings', () => {
           no_shrink: 0.24,
         },
         'WEISS SCHWARZ': {
-          shrink: 0,
-          no_shrink: 0.15,
+          shrink: 0.06,
+          no_shrink: 0.13,
         },
         'DRAGON BALL': {
-          shrink: 0,
-          no_shrink: 0.15,
+          shrink: 0.06,
+          no_shrink: 0.13,
         },
       },
       psa10_discount_rates: {
         Pokemon: 0.11,
         'ONE PIECE': 0.12,
         'YU-GI-OH!': 0.13,
-        'WEISS SCHWARZ': 0.12,
-        'DRAGON BALL': 0.12,
+        'WEISS SCHWARZ': 0.06,
+        'DRAGON BALL': 0.06,
       },
     });
   });
@@ -138,20 +138,20 @@ describe('normalizeStorePricingSettings', () => {
           no_shrink: 0.24,
         },
         'WEISS SCHWARZ': {
-          shrink: 0,
-          no_shrink: 0.15,
+          shrink: 0.06,
+          no_shrink: 0.13,
         },
         'DRAGON BALL': {
-          shrink: 0,
-          no_shrink: 0.15,
+          shrink: 0.06,
+          no_shrink: 0.13,
         },
       },
       psa10_discount_rates: {
         Pokemon: 0.11,
         'ONE PIECE': 0.12,
         'YU-GI-OH!': 0.13,
-        'WEISS SCHWARZ': 0.12,
-        'DRAGON BALL': 0.12,
+        'WEISS SCHWARZ': 0.06,
+        'DRAGON BALL': 0.06,
       },
     });
   });

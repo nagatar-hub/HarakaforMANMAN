@@ -1,4 +1,10 @@
-import { calculateBuyPriceHigh } from '@haraka/shared';
+import { calculateBuyPriceHigh, type Franchise } from '@haraka/shared';
+
+export const CONFIGURABLE_PRICING_FRANCHISES = [
+  'Pokemon',
+  'ONE PIECE',
+  'YU-GI-OH!',
+] as const satisfies readonly Franchise[];
 
 export function normalizePreviewBasePrice(value: string | number): number {
   const normalized = typeof value === 'string'

@@ -1,10 +1,19 @@
 import { calculateBoxPrice, calculateBuyPriceHigh } from '@haraka/shared';
 import {
+  CONFIGURABLE_PRICING_FRANCHISES,
   calculateSteppedDiscountPreview,
   normalizePreviewBasePrice,
 } from '@/lib/settings-preview';
 
 describe('settings preview helpers', () => {
+  it('keeps Peleka-aligned new products out of configurable pricing controls', () => {
+    expect(CONFIGURABLE_PRICING_FRANCHISES).toEqual([
+      'Pokemon',
+      'ONE PIECE',
+      'YU-GI-OH!',
+    ]);
+  });
+
   it('calculates merchant discount preview by flooring from the post-discount price tier', () => {
     expect(calculateSteppedDiscountPreview(30000, 6)).toBe(28000);
     expect(calculateSteppedDiscountPreview(12345, 12)).toBe(10000);
