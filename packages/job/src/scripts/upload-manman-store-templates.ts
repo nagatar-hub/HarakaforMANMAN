@@ -12,7 +12,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { detectLayoutFromBuffer, renderDetectionDebugImage } from '../lib/layout-detector.js';
-import { scaleManmanStoreLayout } from '../lib/manman-store-layout.js';
+import {
+  resolveManmanProfileGeometry,
+  scaleManmanStoreLayout,
+  type ManmanProfileGeometry,
+} from '../lib/manman-store-layout.js';
 import { FRANCHISES, FRANCHISE_STORAGE_SLUG } from '@haraka/shared';
 import type { Franchise, LayoutTemplateRow } from '@haraka/shared';
 
@@ -127,13 +131,16 @@ async function main() {
         .upsert(row, { onConflict: 'store,franchise,kind,slug' });
       if (upsertErr) throw new Error(`layout_template upsert failed ${franchise}/${slots}: ${upsertErr.message}`);
 
-      const profileFields = {
+      const detectedProfileGeometry: ManmanProfileGeometry = {
         grid_cols: detected.gridCols,
         grid_rows: detected.gridRows,
         total_slots: detected.totalSlots,
         img_width: detected.imgWidth,
         img_height: detected.imgHeight,
         layout_config: scaleManmanStoreLayout(detected.layoutConfig),
+      };
+      const profileFields = {
+        ...resolveManmanProfileGeometry(franchise, detectedProfileGeometry),
         template_storage_path: templateStoragePath,
         card_back_storage_path: cardBackPathFor(franchise),
         template_box_storage_path: boxTemplatePathFor(franchise),
