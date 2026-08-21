@@ -58,3 +58,12 @@ export function resolveManmanProfileGeometry(
     },
   };
 }
+
+export async function withManmanProfileGeometry<T>(
+  franchise: Franchise,
+  detected: ManmanProfileGeometry,
+  persist: (resolved: ManmanProfileGeometry) => Promise<T>,
+): Promise<T> {
+  const resolved = resolveManmanProfileGeometry(franchise, detected);
+  return persist(resolved);
+}

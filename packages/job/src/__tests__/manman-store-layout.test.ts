@@ -1,6 +1,7 @@
 import {
   resolveManmanProfileGeometry,
   scaleManmanStoreLayout,
+  withManmanProfileGeometry,
   type ManmanProfileGeometry,
 } from '../lib/manman-store-layout';
 import type { LayoutConfig } from '@haraka/shared';
@@ -71,5 +72,15 @@ describe('resolveManmanProfileGeometry', () => {
   it('fails closed for an uncalibrated template size', () => {
     expect(() => resolveManmanProfileGeometry('WEISS SCHWARZ', { ...detected, img_width: 1080 }))
       .toThrow('1240x1760 MANMAN BOX profile geometry is required');
+  });
+
+  it('does not invoke persistence for an uncalibrated template size', async () => {
+    const persist = jest.fn(async () => undefined);
+    await expect(withManmanProfileGeometry(
+      'DRAGON BALL',
+      { ...detected, img_height: 1080 },
+      persist,
+    )).rejects.toThrow('1240x1760 MANMAN BOX profile geometry is required');
+    expect(persist).not.toHaveBeenCalled();
   });
 });

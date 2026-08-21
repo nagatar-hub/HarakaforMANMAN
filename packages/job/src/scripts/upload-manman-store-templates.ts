@@ -13,8 +13,8 @@ import path from 'node:path';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { detectLayoutFromBuffer, renderDetectionDebugImage } from '../lib/layout-detector.js';
 import {
-  resolveManmanProfileGeometry,
   scaleManmanStoreLayout,
+  withManmanProfileGeometry,
   type ManmanProfileGeometry,
 } from '../lib/manman-store-layout.js';
 import { FRANCHISES, FRANCHISE_STORAGE_SLUG } from '@haraka/shared';
@@ -113,24 +113,6 @@ async function main() {
         is_active: true,
         priority: slots === 40 ? 10 : 0,
       };
-
-      if (dryRun) {
-        console.log(`  [dry-run] ${fileName} -> ${templateStoragePath} (${buffer.byteLength} bytes, ${detected.gridCols}x${detected.gridRows})`);
-        continue;
-      }
-
-      if (!supabase) throw new Error('Supabase client is not initialized');
-
-      const { error: uploadErr } = await supabase.storage
-        .from('haraka-images')
-        .upload(templateStoragePath, buffer, { contentType: 'image/png', upsert: true });
-      if (uploadErr) throw new Error(`Storage upload failed ${templateStoragePath}: ${uploadErr.message}`);
-
-      const { error: upsertErr } = await supabase
-        .from('layout_template')
-        .upsert(row, { onConflict: 'store,franchise,kind,slug' });
-      if (upsertErr) throw new Error(`layout_template upsert failed ${franchise}/${slots}: ${upsertErr.message}`);
-
       const detectedProfileGeometry: ManmanProfileGeometry = {
         grid_cols: detected.gridCols,
         grid_rows: detected.gridRows,
@@ -139,32 +121,51 @@ async function main() {
         img_height: detected.imgHeight,
         layout_config: scaleManmanStoreLayout(detected.layoutConfig),
       };
-      const profileFields = {
-        ...resolveManmanProfileGeometry(franchise, detectedProfileGeometry),
-        template_storage_path: templateStoragePath,
-        card_back_storage_path: cardBackPathFor(franchise),
-        template_box_storage_path: boxTemplatePathFor(franchise),
-        card_back_box_storage_path: boxCardBackPathFor(franchise),
-      };
-      const { error: profileSeedErr } = await supabase.from('asset_profile').upsert({
-        store: STORE_NAME,
-        franchise,
-        template_image: null,
-        card_back_image: null,
-        font_family: 'Special Gothic Condensed One',
-        price_format: '¥{price}',
-        rarity_icons: null,
-        ...profileFields,
-      }, { onConflict: 'store,franchise', ignoreDuplicates: true });
-      if (profileSeedErr) throw new Error(`asset_profile seed failed ${franchise}: ${profileSeedErr.message}`);
-      const { error: profileUpdateErr } = await supabase
-        .from('asset_profile')
-        .update(profileFields)
-        .eq('store', STORE_NAME)
-        .eq('franchise', franchise);
-      if (profileUpdateErr) throw new Error(`asset_profile update failed ${franchise}: ${profileUpdateErr.message}`);
+      await withManmanProfileGeometry(franchise, detectedProfileGeometry, async resolvedGeometry => {
+        if (dryRun) {
+          console.log(`  [dry-run] ${fileName} -> ${templateStoragePath} (${buffer.byteLength} bytes, ${detected.gridCols}x${detected.gridRows})`);
+          return;
+        }
 
-      console.log(`  [ok] ${slots}: ${templateStoragePath} (${detected.gridCols}x${detected.gridRows})`);
+        if (!supabase) throw new Error('Supabase client is not initialized');
+
+        const profileFields = {
+          ...resolvedGeometry,
+          template_storage_path: templateStoragePath,
+          card_back_storage_path: cardBackPathFor(franchise),
+          template_box_storage_path: boxTemplatePathFor(franchise),
+          card_back_box_storage_path: boxCardBackPathFor(franchise),
+        };
+        const { error: uploadErr } = await supabase.storage
+          .from('haraka-images')
+          .upload(templateStoragePath, buffer, { contentType: 'image/png', upsert: true });
+        if (uploadErr) throw new Error(`Storage upload failed ${templateStoragePath}: ${uploadErr.message}`);
+
+        const { error: upsertErr } = await supabase
+          .from('layout_template')
+          .upsert(row, { onConflict: 'store,franchise,kind,slug' });
+        if (upsertErr) throw new Error(`layout_template upsert failed ${franchise}/${slots}: ${upsertErr.message}`);
+
+        const { error: profileSeedErr } = await supabase.from('asset_profile').upsert({
+          store: STORE_NAME,
+          franchise,
+          template_image: null,
+          card_back_image: null,
+          font_family: 'Special Gothic Condensed One',
+          price_format: '¥{price}',
+          rarity_icons: null,
+          ...profileFields,
+        }, { onConflict: 'store,franchise', ignoreDuplicates: true });
+        if (profileSeedErr) throw new Error(`asset_profile seed failed ${franchise}: ${profileSeedErr.message}`);
+        const { error: profileUpdateErr } = await supabase
+          .from('asset_profile')
+          .update(profileFields)
+          .eq('store', STORE_NAME)
+          .eq('franchise', franchise);
+        if (profileUpdateErr) throw new Error(`asset_profile update failed ${franchise}: ${profileUpdateErr.message}`);
+
+        console.log(`  [ok] ${slots}: ${templateStoragePath} (${detected.gridCols}x${detected.gridRows})`);
+      });
     }
   }
 
