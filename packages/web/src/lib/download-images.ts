@@ -5,6 +5,14 @@ export type DownloadableImage = {
   filename: string;
 };
 
+export function latestRunImages<T extends { run_id: string; run_started_at: string }>(images: T[]): T[] {
+  if (images.length === 0) return [];
+  const latest = images.reduce((current, image) =>
+    image.run_started_at > current.run_started_at ? image : current,
+  );
+  return images.filter(image => image.run_id === latest.run_id);
+}
+
 /** Web Share API が使えるかどうか */
 export function isShareSupported(): boolean {
   if (typeof navigator === 'undefined') return false;

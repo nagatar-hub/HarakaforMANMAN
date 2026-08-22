@@ -7,7 +7,7 @@ import Image from 'next/image';
 import { FranchiseTabs } from '@/components/franchise-tabs';
 import { ImageModal } from '@/components/image-modal';
 import { PageDetailModal } from './page-detail-modal';
-import { fetchImagesAsFiles, shareFiles, downloadFilesAsZip, isShareSupported } from '@/lib/download-images';
+import { fetchImagesAsFiles, shareFiles, downloadFilesAsZip, isShareSupported, latestRunImages } from '@/lib/download-images';
 import type { DownloadableImage } from '@/lib/download-images';
 import { FRANCHISE_JA as SHARED_FRANCHISE_JA } from '@haraka/shared';
 
@@ -73,6 +73,10 @@ export default function GalleryDatePage() {
   const filtered = filter === 'all'
     ? images
     : images.filter((img) => img.franchise === filter);
+  const latestImages = latestRunImages(images);
+  const latestFiltered = filter === 'all'
+    ? latestImages
+    : latestImages.filter((img) => img.franchise === filter);
 
   // run_id単位でグループ化（最新順）
   const runGroups = (() => {
@@ -119,7 +123,7 @@ export default function GalleryDatePage() {
   }
 
   async function handleBulkDownload() {
-    const list = buildDownloadList(allFiltered);
+    const list = buildDownloadList(latestFiltered);
     if (list.length === 0) return;
     setDownloading(true);
     setDlProgress({ current: 0, total: list.length });
@@ -249,7 +253,7 @@ export default function GalleryDatePage() {
             <>
               <button
                 onClick={handleBulkDownload}
-                disabled={downloading || allFiltered.length === 0}
+                disabled={downloading || latestFiltered.length === 0}
                 className="px-4 py-2 rounded-full text-sm font-semibold border border-border-card text-text-primary hover:bg-warm-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 一括DL
