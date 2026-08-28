@@ -28,7 +28,8 @@ import { planPages, type PagePlan } from '../lib/page-planner.js';
 import { batchInsert } from '../lib/batch.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import { getOptionalEnvOrSecret } from '../lib/env.js';
-import { applyCurrentPsa10DiscountRates, loadPsa10DiscountRates } from '../lib/pricing-settings.js';
+import { loadStorePricingSettings } from '../lib/pricing-settings.js';
+import { applyCurrentShinsokuBoxPrices, loadShinsokuBoxPriceMap } from '../lib/shinsoku-box-price-source.js';
 import { isBoxRow } from '../lib/box-row.js';
 import {
   formatGenerationDate,
@@ -161,6 +162,18 @@ export async function runGenerate() {
       },
     });
 
+    // 価格取得・照合が失敗した場合は、既存画像やページを変更しない。
+    const accessToken = await getAccessToken();
+    const pricingSettings = await loadStorePricingSettings(supabase, STORE_NAME);
+    const boxPrices = await loadShinsokuBoxPriceMap(accessToken);
+    const pricedCardsByFranchise = new Map<Franchise, PreparedCardRow[]>();
+    for (const franchise of FRANCHISES) {
+      const { data: cards, error } = await supabase.from('prepared_card').select('*')
+        .eq('run_id', run.id).eq('franchise', franchise).returns<PreparedCardRow[]>();
+      if (error) throw new Error(`prepared_card 取得失敗: ${error.message}`);
+      pricedCardsByFranchise.set(franchise, applyCurrentShinsokuBoxPrices(cards ?? [], boxPrices, pricingSettings));
+    }
+
     // ---- 2. Storage クリーンアップ ----
     await updateProgress(supabase, run.id, 0, 100, 'クリーンアップ中...');
     console.log('[generate] Storage クリーンアップ中...');
@@ -177,7 +190,7 @@ export async function runGenerate() {
     // ---- 2.5. ページプランを再生成（最新の prepared_card + 価格フィルター適用） ----
     await updateProgress(supabase, run.id, 5, 100, 'ページプラン再生成中...');
     console.log('[generate] ページプラン再生成...');
-    const psa10DiscountRates = await loadPsa10DiscountRates(supabase, STORE_NAME);
+    const psa10DiscountRates = pricingSettings.psa10_discount_rates;
     const psaRateSummary = FRANCHISES
       .filter(franchise => typeof psa10DiscountRates[franchise] === 'number')
       .map(franchise => `${franchise}=${((psa10DiscountRates[franchise] ?? 0) * 100).toFixed(0)}%`)
@@ -189,14 +202,8 @@ export async function runGenerate() {
 
     let totalPages = 0;
     for (const franchise of FRANCHISES) {
-      const { data: allCards } = await supabase
-        .from('prepared_card')
-        .select('*')
-        .eq('run_id', run.id)
-        .eq('franchise', franchise)
-        .returns<PreparedCardRow[]>();
-      if (!allCards || allCards.length === 0) continue;
-      const currentPriceCards = applyCurrentPsa10DiscountRates(allCards, psa10DiscountRates);
+      const currentPriceCards = pricedCardsByFranchise.get(franchise) ?? [];
+      if (currentPriceCards.length === 0) continue;
 
       // 価格フィルター（sync と同じロジック）
       const validCards = currentPriceCards.filter(
@@ -265,7 +272,6 @@ export async function runGenerate() {
     console.log(`[generate] ページプラン再生成完了: ${totalPages}ページ (${Date.now() - t0}ms)`);
 
     // ---- 3. OAuth access token 取得 ----
-    const accessToken = await getAccessToken();
     console.log('[generate] Access token 取得完了');
 
     const harakaDbSpreadsheetId = await getOptionalEnvOrSecret('HARAKA_DB_SPREADSHEET_ID');
@@ -300,14 +306,7 @@ export async function runGenerate() {
       console.log(`[generate]   ページ数: ${generatedPages.length}`);
 
       // このfranchiseのprepared_cardを取得（cardById マップ構築用）
-      const { data: cards, error: cardsError } = await supabase
-        .from('prepared_card')
-        .select('*')
-        .eq('run_id', run.id)
-        .eq('franchise', franchise)
-        .returns<PreparedCardRow[]>();
-      if (cardsError) throw new Error(`prepared_card 取得失敗: ${cardsError.message}`);
-      const currentPriceCards = applyCurrentPsa10DiscountRates(cards ?? [], psa10DiscountRates);
+      const currentPriceCards = pricedCardsByFranchise.get(franchise) ?? [];
 
       const cardById = new Map(currentPriceCards.map(c => [c.id, c]));
 
@@ -671,6 +670,8 @@ export async function runGenerate() {
         supabase,
         runId: run.id,
         accessToken: buybackSheetAccessToken,
+        boxPrices,
+        pricingSettings,
       });
       sheetPublishMessage = publishResult.status === 'completed'
         ? `${publishResult.rowCount}商品を更新`

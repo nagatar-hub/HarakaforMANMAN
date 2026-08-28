@@ -5,8 +5,12 @@ import type {
   GeneratedPageRow,
   OrderListItemRow,
   PreparedCardRow,
+  StorePricingSettings,
 } from '@haraka/shared';
 import { replaceSheetValues } from './google-sheets.js';
+import { loadStorePricingSettings } from './pricing-settings.js';
+import { applyCurrentShinsokuBoxPrices, loadShinsokuBoxPriceMap } from './shinsoku-box-price-source.js';
+import { isBoxRow } from './box-row.js';
 
 const MANMAN_STORE_NAME = 'manman';
 const DEFAULT_SPREADSHEET_ID = '1wEbAwrpoLTsRT7eD6aQJcvzzb0SDViCiatmIiGyqFL0';
@@ -156,7 +160,7 @@ export function buildBuybackSheetValues(params: {
   const cardById = new Map(params.cards.map(card => [card.id, card]));
   const itemById = new Map(params.orderListItems.map(item => [item.id, item]));
 
-  const dataRows = params.orderedCardIds.map((cardId): SheetCell[] => {
+  const dataRows = params.orderedCardIds.flatMap((cardId): SheetCell[][] => {
     const card = cardById.get(cardId);
     if (!card) throw new Error(`prepared_card に出力対象商品がありません: ${cardId}`);
     if (card.run_id !== params.runId) {
@@ -179,6 +183,7 @@ export function buildBuybackSheetValues(params: {
     if (!item.excel_product_id.trim()) {
       throw new Error(`商品IDが空です: ${card.card_name}`);
     }
+    if (isBoxRow(card) && card.price_high !== null && card.price_high <= 0) return [];
     if (card.price_high === null || card.price_high <= 0) {
       throw new Error(`買取価格が不正です: ${item.excel_product_id}`);
     }
@@ -186,7 +191,7 @@ export function buildBuybackSheetValues(params: {
       throw new Error(`価格日とオーダーリスト業務日が一致しません: ${item.excel_product_id}`);
     }
 
-    return [
+    return [[
       item.excel_product_id,
       item.card_name || card.card_name,
       item.grade ?? card.grade ?? '',
@@ -196,7 +201,7 @@ export function buildBuybackSheetValues(params: {
       effectiveImageUrl(card),
       card.price_high,
       params.businessDate.replaceAll('-', '/'),
-    ];
+    ]];
   });
 
   return [[...BUYBACK_SHEET_HEADERS], ...dataRows];
@@ -242,6 +247,8 @@ export async function publishManmanBuybackSheet(params: {
   supabase: SupabaseClient<Database>;
   runId: string;
   accessToken: string;
+  boxPrices?: Map<string, number>;
+  pricingSettings?: StorePricingSettings;
 }): Promise<BuybackSheetPublishResult> {
   if (isBuybackSheetPublishDisabled()) {
     console.log('[buyback-sheet] publish explicitly disabled');
@@ -312,8 +319,28 @@ export async function publishManmanBuybackSheet(params: {
     .returns<PublishPage[]>();
   if (pageError) throw new Error(`生成ページの取得に失敗しました: ${pageError.message}`);
 
-  const orderedCardIds = flattenGeneratedStorePageCardIds(pages ?? []);
-  const cards = await fetchPreparedCards(params.supabase, orderedCardIds);
+  const boxPrices = params.boxPrices ?? await loadShinsokuBoxPriceMap(params.accessToken);
+  const pricingSettings = params.pricingSettings ?? await loadStorePricingSettings(params.supabase, MANMAN_STORE_NAME);
+  const hasStorePages = (pages ?? []).some(page => page.kind === 'store');
+  let orderedCardIds = hasStorePages ? flattenGeneratedStorePageCardIds(pages ?? []) : [];
+  let storedCards = await fetchPreparedCards(params.supabase, orderedCardIds);
+  if (!hasStorePages) {
+    for (let offset = 0; ; offset += QUERY_BATCH_SIZE) {
+      const { data, error } = await params.supabase.from('prepared_card').select('*')
+        .eq('run_id', params.runId).order('id', { ascending: true })
+        .range(offset, offset + QUERY_BATCH_SIZE - 1).returns<PreparedCardRow[]>();
+      if (error) throw new Error(`出力対象商品の取得に失敗しました: ${error.message}`);
+      storedCards.push(...(data ?? []));
+      if ((data ?? []).length < QUERY_BATCH_SIZE) break;
+    }
+    orderedCardIds = storedCards.map(card => card.id);
+  }
+  const cards = applyCurrentShinsokuBoxPrices(storedCards, boxPrices, pricingSettings);
+  // A valid source may exclude every BOX. Clear the sheet only when this is
+  // proven, never merely because generation has not produced pages yet.
+  if (!hasStorePages && (!cards.length || cards.some(card => !isBoxRow(card) || (card.price_high ?? 0) > 0))) {
+    throw new Error('シート出力対象の店頭用生成ページがありません');
+  }
   if (cards.length !== orderedCardIds.length) {
     throw new Error(`出力対象商品数が一致しません: expected=${orderedCardIds.length}, actual=${cards.length}`);
   }
@@ -354,11 +381,11 @@ export async function publishManmanBuybackSheet(params: {
   });
 
   console.log(
-    `[buyback-sheet] published: store=${MANMAN_STORE_NAME}, run=${params.runId}, rows=${orderedCardIds.length}, hash=${contentHash}`,
+    `[buyback-sheet] published: store=${MANMAN_STORE_NAME}, run=${params.runId}, rows=${values.length - 1}, hash=${contentHash}`,
   );
   return {
     status: 'completed',
-    rowCount: orderedCardIds.length,
+    rowCount: values.length - 1,
     contentHash,
     spreadsheetId,
   };

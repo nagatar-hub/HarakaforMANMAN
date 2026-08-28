@@ -1,10 +1,19 @@
 import {
   calculateBoxPrice,
+  calculateBoxPriceHigh,
   calculateBoxPriceLow,
   calculateBuyPriceHigh,
   calculatePelekaAlignedBuyPriceRange,
   floorDiscountedPriceByTier,
 } from '../utils/price';
+
+describe('BOX upper price from raw S', () => {
+  it.each([[999, 0], [10000, 9000], [20000, 18000], [100000, 93000], [1000000, 930000], [20431, 19000]])(
+    '%i の元価格に7%引きを一度適用し、全価格帯で1000円未満切捨て', (raw, expected) => {
+      expect(calculateBoxPriceHigh(raw, 0.07)).toBe(expected);
+    },
+  );
+});
 
 describe('post-discount tier flooring', () => {
   it.each([

@@ -6,7 +6,7 @@ import {
 } from '@/lib/settings-preview';
 
 describe('settings preview helpers', () => {
-  it('keeps Peleka-aligned new products out of configurable pricing controls', () => {
+  it('keeps existing PSA pricing controls limited to the original three franchises', () => {
     expect(CONFIGURABLE_PRICING_FRANCHISES).toEqual([
       'Pokemon',
       'ONE PIECE',

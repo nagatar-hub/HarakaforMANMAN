@@ -4,6 +4,7 @@ import {
   calculateBuyPriceHigh,
   calculateBuyPriceLow,
   calculateBoxPrice,
+  calculateBoxPriceHigh,
   DEFAULT_STORE_PRICING_SETTINGS,
 } from '@haraka/shared';
 import { isBoxRow } from './box-row.js';
@@ -31,16 +32,14 @@ export function prepareOrderListCards(
       throw new Error(`raw_import ${rawImport.id} の対応先DB商品が見つかりません: ${rawImport.db_card_id}`);
     }
     if (rawImport.source_price === null) {
-      const isMissingPokemonBoxPrice = rawImport.franchise === 'Pokemon'
-        && isBoxRow(rawImport)
+      const isMissingBoxPrice = isBoxRow(rawImport)
         && rawImport.raw_row?.pokemon_box_price_source === 'missing';
-      if (!isMissingPokemonBoxPrice) {
+      if (!isMissingBoxPrice) {
         throw new Error(`raw_import ${rawImport.id} にオーダーリスト価格がありません`);
       }
     }
 
-    // 過去に作成済みのBOX価格DB未登録行も読み出せるよう、旧null行だけは0円の監査対象として扱う。
-    // 現在のオーダーリスト取込ではBOX価格DB未登録時もExcel価格がsource_priceに保持される。
+    // シンソク価格なしBOXは0円の監査行として保持し、既存の価格なし除外で非掲載にする。
     const sourcePrice = rawImport.source_price ?? 0;
     const franchise = rawImport.franchise as Franchise;
     const isBox = isBoxRow(rawImport);
@@ -48,9 +47,9 @@ export function prepareOrderListCards(
     const pelekaAlignedRange = franchise === 'WEISS SCHWARZ' || franchise === 'DRAGON BALL'
       ? calculatePelekaAlignedBuyPriceRange(sourcePrice)
       : null;
-    const priceHigh = pelekaAlignedRange?.upper ?? (isBox
-      ? calculateBoxPrice(sourcePrice, boxRates.shrink)
-      : calculateBuyPriceHigh(sourcePrice, pricingSettings.psa10_discount_rates[franchise]));
+    const priceHigh = isBox
+      ? calculateBoxPriceHigh(sourcePrice, boxRates.shrink)
+      : pelekaAlignedRange?.upper ?? calculateBuyPriceHigh(sourcePrice, pricingSettings.psa10_discount_rates[franchise]);
     const priceLow = pelekaAlignedRange?.lower ?? (isBox
       ? calculateBoxPrice(sourcePrice, boxRates.no_shrink)
       : calculateBuyPriceLow(priceHigh, franchise));

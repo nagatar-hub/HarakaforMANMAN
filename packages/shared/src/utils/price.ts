@@ -235,6 +235,14 @@ export function calculateBoxPrice(price: number, discountRate: number = 0): numb
   return floorDiscountedPriceByTier(discountedPriceCappedAtSource(price, discountRate));
 }
 
+/** BOX上限は元のS価格に設定の割引率を一度だけ適用し、全価格帯で1,000円単位。 */
+export function calculateBoxPriceHigh(sourcePrice: number, discountRate: number): number {
+  if (!Number.isFinite(sourcePrice) || sourcePrice <= 0 || !Number.isFinite(discountRate)) return 0;
+  // 設定の0.01%精度を整数比にして、93%の整数境界で浮動小数点誤差を避ける。
+  const rate = Math.max(0, Math.min(10_000, 10_000 - Math.round(discountRate * 10_000)));
+  return Math.floor((sourcePrice * rate) / 10_000_000) * 1_000;
+}
+
 export function calculateBoxPriceLow(priceHigh: number, discountRate: number = DEFAULT_BOX_SHRINK_DISCOUNT_RATE): number {
   return calculateBoxPrice(priceHigh, discountRate);
 }

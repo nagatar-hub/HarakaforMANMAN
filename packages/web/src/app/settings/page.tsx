@@ -7,7 +7,7 @@ import {
   calculateSteppedDiscountPreview,
   normalizePreviewBasePrice,
 } from '@/lib/settings-preview';
-import { FRANCHISES, FRANCHISE_JA, type Franchise } from '@haraka/shared';
+import { FRANCHISES, FRANCHISE_JA, calculateBoxPriceHigh, calculatePelekaAlignedBuyPriceRange, type Franchise } from '@haraka/shared';
 
 type Psa10Rates = Record<Franchise, number>;
 type BoxConditionRates = {
@@ -25,6 +25,7 @@ interface StoreConfig {
 }
 
 const FRANCHISE_OPTIONS = CONFIGURABLE_PRICING_FRANCHISES.map((key) => ({ key, label: FRANCHISE_JA[key] }));
+const BOX_FRANCHISE_OPTIONS = FRANCHISES.map((key) => ({ key, label: FRANCHISE_JA[key] }));
 
 const DEFAULT_PSA10_RATES: Psa10Rates = {
   Pokemon: 12,
@@ -56,7 +57,7 @@ function toPercent(value: number | undefined, fallback: number): number {
 }
 
 function normalizeBoxRates(savedBoxRates: StoreConfig['settings']['box_discount_rates']): BoxRates {
-  return FRANCHISE_OPTIONS.reduce((acc, { key }) => {
+  return BOX_FRANCHISE_OPTIONS.reduce((acc, { key }) => {
     const savedRates = savedBoxRates?.[key] ?? {};
     acc[key] = {
       shrink: toPercent(savedRates.shrink, DEFAULT_BOX_RATES[key].shrink),
@@ -116,9 +117,10 @@ export default function SettingsPage() {
         method: 'PATCH',
         body: JSON.stringify({
           settings: {
-            box_discount_rates: Object.fromEntries(CONFIGURABLE_PRICING_FRANCHISES.map((franchise) => [franchise, {
+            box_discount_rates: Object.fromEntries(FRANCHISES.map((franchise) => [franchise, {
               shrink: boxRates[franchise].shrink / 100,
-              no_shrink: boxRates[franchise].no_shrink / 100,
+              ...(CONFIGURABLE_PRICING_FRANCHISES.some(item => item === franchise)
+                ? { no_shrink: boxRates[franchise].no_shrink / 100 } : {}),
             }])),
             psa10_discount_rates: Object.fromEntries(CONFIGURABLE_PRICING_FRANCHISES.map((franchise) => [
               franchise,
@@ -157,7 +159,7 @@ export default function SettingsPage() {
         <div className="space-y-10">
           <section className="bg-warm-100 rounded-xl px-5 py-4">
             <h2 className="text-sm font-bold text-text-primary">
-              割引後価格の端数処理（BOX・商材別共通）
+              割引後価格の端数処理（BOX上限を除く）
             </h2>
             <p className="text-sm text-text-secondary mt-2">
               元価格に割引率を適用し、その「割引後価格」の金額帯で切り捨てます。元価格の金額帯では判定しません。
@@ -175,11 +177,14 @@ export default function SettingsPage() {
 
           <section>
             <h2 className="text-lg font-bold text-text-primary mb-6">BOX 割引率</h2>
+            <p className="text-sm text-text-secondary mb-6">シュリンク有りはシンソクのS価格に割引率を1回だけ適用し、1,000円未満を切り捨てます。</p>
 
             <div className="space-y-8">
-              {FRANCHISE_OPTIONS.map(({ key: franchise, label: franchiseLabel }) => {
-                const previewBoxShrink = calculateSteppedDiscountPreview(previewBoxHigh, boxRates[franchise].shrink);
-                const previewBoxNoShrink = calculateSteppedDiscountPreview(previewBoxHigh, boxRates[franchise].no_shrink);
+              {BOX_FRANCHISE_OPTIONS.map(({ key: franchise, label: franchiseLabel }) => {
+                const previewBoxShrink = calculateBoxPriceHigh(previewBoxHigh, boxRates[franchise].shrink / 100);
+                const previewBoxNoShrink = franchise === 'WEISS SCHWARZ' || franchise === 'DRAGON BALL'
+                  ? calculatePelekaAlignedBuyPriceRange(previewBoxHigh).lower
+                  : calculateSteppedDiscountPreview(previewBoxHigh, boxRates[franchise].no_shrink);
 
                 return (
                   <div key={franchise} className="border-b border-border-card pb-7 last:border-b-0 last:pb-0">
@@ -189,7 +194,7 @@ export default function SettingsPage() {
                       {[
                         { key: 'shrink' as const, label: 'シュリンク有り price_high' },
                         { key: 'no_shrink' as const, label: 'シュリンク無し price_low' },
-                      ].map(({ key, label }) => (
+                      ].filter(({ key }) => key === 'shrink' || CONFIGURABLE_PRICING_FRANCHISES.some(item => item === franchise)).map(({ key, label }) => (
                         <div key={key}>
                           <label className="block text-sm font-semibold text-text-secondary mb-2 uppercase tracking-wide">
                             {label}
@@ -197,6 +202,7 @@ export default function SettingsPage() {
                           <div className="grid gap-3 sm:grid-cols-[1fr_84px] sm:items-center">
                             <input
                               type="range"
+                              aria-label={`${franchiseLabel} ${label}の割引率`}
                               min={0}
                               max={50}
                               step={1}
@@ -207,6 +213,7 @@ export default function SettingsPage() {
                             <div className="flex items-center gap-1">
                               <input
                                 type="number"
+                                aria-label={`${franchiseLabel} ${label}の割引率（数値）`}
                                 min={0}
                                 max={50}
                                 value={boxRates[franchise][key]}
@@ -231,7 +238,7 @@ export default function SettingsPage() {
                         <span className="text-xl font-bold text-text-primary">¥{previewBoxNoShrink.toLocaleString()}</span>
                       </div>
                       <p className="text-xs text-text-secondary mt-1">
-                        それぞれ割引後価格の金額帯に応じ、上記の単位で切り捨て
+                        シュリンク有りは1,000円単位。シュリンク無しの既存計算は変更しません。
                       </p>
                     </div>
                   </div>

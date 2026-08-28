@@ -9,6 +9,19 @@ import {
 type PublishPage = Pick<GeneratedPageRow, 'franchise' | 'page_index' | 'card_ids' | 'status' | 'kind'>;
 
 describe('buyback Sheet publication isolation', () => {
+
+  it('欠損BOXだけ除外し、残りの商品を公開する。全BOX欠損ならヘッダーだけを出力する', () => {
+    const cards = [makeCard({ id: 'missing-box', order_list_item_id: 'box-row', grade: 'BOX', price_high: 0 }), makeCard()];
+    const orderListItems = [makeItem({ id: 'box-row', excel_product_id: 'missing-box', grade: 'BOX' }), makeItem()];
+    const params = {
+      runId: 'run-1', orderedCardIds: ['missing-box', 'pokemon-1'], cards, orderListItems,
+      orderListImportId: 'import-1', businessDate: '2026-07-27',
+    };
+    expect(buildBuybackSheetValues(params).map(row => row[0])).toEqual(['商品ID', 'excel-1']);
+    expect(buildBuybackSheetValues({ ...params, orderedCardIds: ['missing-box'] })).toEqual([[...BUYBACK_SHEET_HEADERS]]);
+    expect(() => buildBuybackSheetValues({ ...params, cards: [cards[0], makeCard({ price_high: 0 })] })).toThrow();
+  });
+
   const originalDisabled = process.env.BUYBACK_SHEET_PUBLISH_DISABLED;
 
   afterEach(() => {

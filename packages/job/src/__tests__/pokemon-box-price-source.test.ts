@@ -1,8 +1,10 @@
 import {
-  applyPokemonBoxPriceOverrides,
-  normalizePokemonBoxProductName,
-  parsePokemonBoxPriceRows,
-} from '../lib/pokemon-box-price-source';
+  applyShinsokuBoxPriceOverrides,
+  normalizeShinsokuBoxProductName,
+  parseShinsokuBoxPriceRows,
+  applyCurrentShinsokuBoxPrices,
+} from '../lib/shinsoku-box-price-source';
+import { normalizeStorePricingSettings } from '@haraka/shared';
 import type { Database } from '@haraka/shared';
 
 type RawImportInsert = Database['public']['Tables']['raw_import']['Insert'];
@@ -23,9 +25,69 @@ function makeRawImport(overrides: Partial<RawImportInsert> = {}): RawImportInser
   };
 }
 
-describe('parsePokemonBoxPriceRows', () => {
+describe('parseShinsokuBoxPriceRows', () => {
+  it('全商材のraw S価格を保持し、設定の7%引きを再生成でも一度だけ適用する', () => {
+    const sources = [
+      ['ポケモン', 'Pokemon'], ['ワンピース', 'ONE PIECE'], ['遊戯王', 'YU-GI-OH!'],
+      ['DB', 'DRAGON BALL'], ['ヴァイスシュヴァルツ', 'WEISS SCHWARZ'],
+    ];
+    const prices = parseShinsokuBoxPriceRows([
+      ['', '商品名', '画像URL', '買取価格', 'ブランド'],
+      ...sources.map(([brand], i) => ['BOX', '共通商品', '', String(100000 + i * 10000), brand]),
+    ]);
+    const settings = normalizeStorePricingSettings({ box_discount_rates: Object.fromEntries(
+      sources.map(([, franchise]) => [franchise, { shrink: 0.07, no_shrink: 0.15 }]),
+    ) });
+    const cards = sources.map(([, franchise]) => ({
+      franchise, card_name: '[1BOX]共通商品', grade: 'BOX', price_high: 1, price_low: 1,
+    }));
+    const first = applyCurrentShinsokuBoxPrices(cards, prices, settings);
+    expect(first.map(card => card.price_high)).toEqual([93000, 102000, 111000, 120000, 130000]);
+    expect(applyCurrentShinsokuBoxPrices(first, prices, settings)).toEqual(first);
+    expect(prices.get('共通商品')).toBe(100000);
+    expect(first[0].price_low).toBe(85000);
+    settings.box_discount_rates.Pokemon.shrink = 0.05;
+    expect(applyCurrentShinsokuBoxPrices(first, prices, settings)[0].price_high).toBe(95000);
+  });
+
+  it('欠損BOXを0円の監査行にし、復帰時はrawから再計算する', () => {
+    const settings = normalizeStorePricingSettings({ box_discount_rates: { Pokemon: { shrink: 0.07, no_shrink: 0.15 } } });
+    const cards = [
+      { franchise: 'Pokemon', card_name: '[1BOX]未登録', grade: 'BOX', price_high: 99999, price_low: 8500 },
+      { franchise: 'Pokemon', card_name: 'PSA', grade: 'PSA10', price_high: 12345, price_low: 12000 },
+    ];
+    const missing = applyCurrentShinsokuBoxPrices(cards, new Map(), settings);
+    expect(missing.map(card => card.price_high)).toEqual([0, 12345]);
+    expect(missing[0].price_low).toBe(8500);
+    expect(applyCurrentShinsokuBoxPrices(missing, new Map([['未登録', 20000]]), settings)[0])
+      .toMatchObject({ price_high: 18000, price_low: 17000 });
+  });
+
+  it.each(['', '0', '¥0'])('空欄・0円は個別除外する: %s', (price) => {
+    const prices = parseShinsokuBoxPriceRows([
+      ['', '商品名', '画像URL', '買取価格'],
+      ['BOX', '欠損', '', price], ['BOX', '有効', '', '20000'],
+    ]);
+    expect(prices.has('欠損')).toBe(false);
+    expect(prices.get('有効')).toBe(20000);
+  });
+
+  it('壊れた価格は欠損扱いで公開せず取得全体を拒否する', () => {
+    expect(() => parseShinsokuBoxPriceRows([
+      ['', '商品名', '画像URL', '買取価格'], ['BOX', '破損', '', 'invalid1200'],
+    ])).toThrow('price is invalid');
+  });
+
+  it('DBの末尾コードを正規化し、他商材の同名価格を使わない', () => {
+    const prices = parseShinsokuBoxPriceRows([
+      ['', '商品名', '画像URL', '買取価格', 'ブランド'],
+      ['BOX', 'CROSS FORCE FB10', '', '12600', 'DB'],
+    ]);
+    expect(prices.get('DRAGON BALL:crossforce')).toBe(12600);
+    expect(prices.has('crossforce')).toBe(false);
+  });
   it('DatabaseシートのBOX行から商品名とD列の買取価格を読み取る', () => {
-    const priceMap = parsePokemonBoxPriceRows([
+    const priceMap = parseShinsokuBoxPriceRows([
       ['\\', '商品名', '画像URL', '買取価格'],
       ['BOX', '拡張パック「ブラックボルト」(SV11B)', 'https://example.com/box', '20,000'],
       ['パック', '拡張パック「ブラックボルト」(SV11B)', 'https://example.com/pack', '1,000'],
@@ -36,19 +98,19 @@ describe('parsePokemonBoxPriceRows', () => {
   });
 
   it('KECAKの[1BOX]表記とBOX価格DBの商品名を同じ照合名に正規化する', () => {
-    expect(normalizePokemonBoxProductName('[1BOX]ホワイトフレア')).toBe('ホワイトフレア');
-    expect(normalizePokemonBoxProductName('拡張パック「ホワイトフレア」(SV11W)')).toBe('ホワイトフレア');
-    expect(normalizePokemonBoxProductName('拡張パックデラックス「ホワイトフレア」(SV11W)'))
+    expect(normalizeShinsokuBoxProductName('[1BOX]ホワイトフレア')).toBe('ホワイトフレア');
+    expect(normalizeShinsokuBoxProductName('拡張パック「ホワイトフレア」(SV11W)')).toBe('ホワイトフレア');
+    expect(normalizeShinsokuBoxProductName('拡張パックデラックス「ホワイトフレア」(SV11W)'))
       .toBe('ホワイトフレア|deluxe');
   });
 
   it('25th ゴールデンボックスの日英表記を年数を残して同じ照合名に正規化する', () => {
-    const orderListName = normalizePokemonBoxProductName('[1BOX]25th ゴールデンボックス');
+    const orderListName = normalizeShinsokuBoxProductName('[1BOX]25th ゴールデンボックス');
     expect(orderListName).toBe('25thgolden');
-    expect(normalizePokemonBoxProductName('25th ANNIVERSARY GOLDEN BOX')).toBe(orderListName);
-    expect(normalizePokemonBoxProductName('20th ANNIVERSARY GOLDEN BOX')).not.toBe(orderListName);
+    expect(normalizeShinsokuBoxProductName('25th ANNIVERSARY GOLDEN BOX')).toBe(orderListName);
+    expect(normalizeShinsokuBoxProductName('20th ANNIVERSARY GOLDEN BOX')).not.toBe(orderListName);
 
-    const result = applyPokemonBoxPriceOverrides(
+    const result = applyShinsokuBoxPriceOverrides(
       [makeRawImport({
         card_name: '[1BOX]25th ゴールデンボックス',
         grade: 'BOX',
@@ -56,7 +118,7 @@ describe('parsePokemonBoxPriceRows', () => {
         source_price: 99999,
         price_source: 'order_list',
       })],
-      parsePokemonBoxPriceRows([
+      parseShinsokuBoxPriceRows([
         ['\\', '商品名', '画像URL', '買取価格'],
         ['BOX', '25th ANNIVERSARY GOLDEN BOX', 'https://example.com/golden', '250,000'],
       ]),
@@ -66,14 +128,14 @@ describe('parsePokemonBoxPriceRows', () => {
   });
 });
 
-describe('applyPokemonBoxPriceOverrides', () => {
+describe('applyShinsokuBoxPriceOverrides', () => {
   it('KECAKのPokemon BOX行はBOX価格DBの価格へ差し替える', () => {
-    const priceMap = parsePokemonBoxPriceRows([
+    const priceMap = parseShinsokuBoxPriceRows([
       ['\\', '商品名', '画像URL', '買取価格'],
       ['BOX', '拡張パック「ブラックボルト」(SV11B)', 'https://example.com/box', '20,000'],
     ]);
 
-    const result = applyPokemonBoxPriceOverrides(
+    const result = applyShinsokuBoxPriceOverrides(
       [makeRawImport()],
       priceMap,
     );
@@ -83,12 +145,12 @@ describe('applyPokemonBoxPriceOverrides', () => {
   });
 
   it('KECAKのgrade=BOX行はBOX価格DBの価格へ差し替える', () => {
-    const priceMap = parsePokemonBoxPriceRows([
+    const priceMap = parseShinsokuBoxPriceRows([
       ['\\', '商品名', '画像URL', '買取価格'],
       ['BOX', '拡張パック「ホワイトフレア」(SV11W)', 'https://example.com/box', '19,000'],
     ]);
 
-    const result = applyPokemonBoxPriceOverrides(
+    const result = applyShinsokuBoxPriceOverrides(
       [makeRawImport({
         card_name: '[1BOX]ホワイトフレア',
         grade: 'BOX',
@@ -106,7 +168,7 @@ describe('applyPokemonBoxPriceOverrides', () => {
   });
 
   it('BOX価格DBにないPokemon BOX行はフォールバックせず価格なしにする', () => {
-    const result = applyPokemonBoxPriceOverrides(
+    const result = applyShinsokuBoxPriceOverrides(
       [makeRawImport({ card_name: '【BOX】未登録BOX', kecak_price: 99999 })],
       new Map(),
     );
@@ -116,7 +178,7 @@ describe('applyPokemonBoxPriceOverrides', () => {
   });
 
   it('オーダーリストのPokemon BOX行はsource_priceをBOX価格DBの価格へ差し替える', () => {
-    const result = applyPokemonBoxPriceOverrides(
+    const result = applyShinsokuBoxPriceOverrides(
       [makeRawImport({
         card_name: '[1BOX]ホワイトフレア',
         grade: 'BOX',
@@ -142,8 +204,8 @@ describe('applyPokemonBoxPriceOverrides', () => {
     expect(result.missingNames).toEqual([]);
   });
 
-  it('BOX価格DBにないオーダーリストのPokemon BOX行はExcel価格へフォールバックする', () => {
-    const result = applyPokemonBoxPriceOverrides(
+  it('BOX価格DBにないオーダーリストのBOX行はExcel価格へ戻さず監査情報だけ保持する', () => {
+    const result = applyShinsokuBoxPriceOverrides(
       [makeRawImport({
         card_name: '【BOX】未登録BOX',
         kecak_price: null,
@@ -155,10 +217,10 @@ describe('applyPokemonBoxPriceOverrides', () => {
 
     expect(result.rows[0]).toMatchObject({
       kecak_price: null,
-      source_price: 99999,
+      source_price: null,
       price_source: 'order_list',
       raw_row: {
-        pokemon_box_price_source: 'ORDER_LIST_FALLBACK',
+        pokemon_box_price_source: 'missing',
         pokemon_box_price_lookup_name: '未登録',
         pokemon_box_original_order_list_price: 99999,
       },
@@ -166,15 +228,16 @@ describe('applyPokemonBoxPriceOverrides', () => {
     expect(result.missingNames).toEqual(['未登録']);
   });
 
-  it('オーダーリストの非BOX行とPokemon以外のBOX行は変更しない', () => {
+  it('オーダーリストの非BOXは変更せず、別商材のBOXも生S価格を使用する', () => {
     const rows = [
       makeRawImport({ card_name: 'リザードン', kecak_price: null, source_price: 50000, price_source: 'order_list' }),
       makeRawImport({ franchise: 'ONE PIECE', card_name: '【BOX】頂上決戦', kecak_price: null, source_price: 30000, price_source: 'order_list' }),
     ];
 
-    const result = applyPokemonBoxPriceOverrides(rows, new Map());
+    const result = applyShinsokuBoxPriceOverrides(rows, new Map([['ONE PIECE:頂上決戦', 20000]]));
 
-    expect(result.rows).toEqual(rows);
+    expect(result.rows[0]).toEqual(rows[0]);
+    expect(result.rows[1].source_price).toBe(20000);
     expect(result.missingNames).toEqual([]);
   });
 
@@ -185,21 +248,21 @@ describe('applyPokemonBoxPriceOverrides', () => {
       kecak_price: 127000,
     });
 
-    const result = applyPokemonBoxPriceOverrides([row], new Map([['プレシャスコレクターボックス', 1]]));
+    const result = applyShinsokuBoxPriceOverrides([row], new Map([['プレシャスコレクターボックス', 1]]));
 
     expect(result.rows[0].kecak_price).toBe(127000);
     expect(result.missingNames).toEqual([]);
   });
 
-  it('非BOX行とPokemon以外のBOX行は変更しない', () => {
+  it('非BOX行は変更せず、別商材のBOXでも元価格を減額しない', () => {
     const rows = [
       makeRawImport({ card_name: 'リザードン', kecak_price: 50000 }),
       makeRawImport({ franchise: 'ONE PIECE', card_name: '【BOX】頂上決戦', kecak_price: 30000 }),
     ];
 
-    const result = applyPokemonBoxPriceOverrides(rows, new Map());
+    const result = applyShinsokuBoxPriceOverrides(rows, new Map([['ONE PIECE:頂上決戦', 20000]]));
 
-    expect(result.rows.map(row => row.kecak_price)).toEqual([50000, 30000]);
+    expect(result.rows.map(row => row.kecak_price)).toEqual([50000, 20000]);
     expect(result.missingNames).toEqual([]);
   });
 });

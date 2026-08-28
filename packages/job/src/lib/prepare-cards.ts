@@ -3,6 +3,7 @@ import {
   calculateBuyPriceHigh,
   calculateBuyPriceLow,
   calculateBoxPrice,
+  calculateBoxPriceHigh,
   DEFAULT_BOX_CONDITION_DISCOUNT_RATES,
   DEFAULT_BOX_DISCOUNT_RATES,
   DEFAULT_PSA10_DISCOUNT_RATES,
@@ -95,7 +96,7 @@ export function prepareCards(
     const isBox = isBoxRow(rawImport);
     const priceHigh = sourcePrice > 0
       ? isBox
-        ? calculateBoxPrice(sourcePrice, normalizedBoxDiscountRates.shrink)
+        ? calculateBoxPriceHigh(sourcePrice, normalizedBoxDiscountRates.shrink)
         : calculateBuyPriceHigh(sourcePrice, nonBoxDiscountRate)
       : 0;
     const priceLow = sourcePrice > 0

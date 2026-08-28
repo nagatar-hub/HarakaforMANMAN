@@ -138,12 +138,12 @@ describe('prepareOrderListCards', () => {
     });
   });
 
-  it('新2商材のBOXもHaraka固有設定を使わずPeleka規則へ揃える', () => {
+  it('新2商材のBOX上限も設定の7%引きを使い、既存下限の計算は維持する', () => {
     const pricingSettings = {
       ...DEFAULT_STORE_PRICING_SETTINGS,
       box_discount_rates: {
         ...DEFAULT_STORE_PRICING_SETTINGS.box_discount_rates,
-        'WEISS SCHWARZ': { shrink: 0.99, no_shrink: 0.99 },
+        'WEISS SCHWARZ': { shrink: 0.07, no_shrink: 0.13 },
       },
     };
     const result = prepareOrderListCards(
@@ -158,7 +158,7 @@ describe('prepareOrderListCards', () => {
     );
 
     expect(result[0]).toMatchObject({
-      price_high: 73_500,
+      price_high: 73_000,
       price_low: 68_000,
     });
   });

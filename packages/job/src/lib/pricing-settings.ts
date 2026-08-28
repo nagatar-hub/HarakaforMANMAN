@@ -19,11 +19,13 @@ export async function loadStorePricingSettings(
   supabase: SupabaseClient,
   storeName: string,
 ): Promise<StorePricingSettings> {
-  const { data: storeConfig } = await supabase
+  const { data: storeConfig, error } = await supabase
     .from('store_config')
     .select('settings')
     .eq('store', storeName)
     .single();
+
+  if (error) throw new Error(`価格設定の取得に失敗しました: ${error.message}`);
 
   return normalizeStorePricingSettings(storeConfig?.settings);
 }

@@ -14,8 +14,10 @@ import { composePage } from '../lib/image-composer.js';
 import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-drive.js';
 import { downloadTemplateAsset } from '../lib/asset-storage.js';
 import { makeBoxLayout } from '../lib/box-layout.js';
+import { isBoxRow } from '../lib/box-row.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
-import { applyCurrentPsa10DiscountRates, loadPsa10DiscountRates } from '../lib/pricing-settings.js';
+import { loadStorePricingSettings } from '../lib/pricing-settings.js';
+import { applyCurrentShinsokuBoxPrices, loadShinsokuBoxPriceMap } from '../lib/shinsoku-box-price-source.js';
 import {
   formatGenerationDate,
   getJstDateParts,
@@ -189,8 +191,12 @@ async function _runRegeneratePage(
 
   // card_ids の順序を保持
   const orderedCards = page.card_ids.map(id => cardMap.get(id)!).filter(Boolean);
-  const psa10DiscountRates = await loadPsa10DiscountRates(supabase, STORE_NAME);
-  const orderedCardsWithCurrentPrices = applyCurrentPsa10DiscountRates(orderedCards, psa10DiscountRates);
+  const accessToken = await getAccessToken();
+  const pricingSettings = await loadStorePricingSettings(supabase, STORE_NAME);
+  const boxPrices = await loadShinsokuBoxPriceMap(accessToken);
+  // Selection IDs remain available for source recovery; missing BOX prices never render.
+  const orderedCardsWithCurrentPrices = applyCurrentShinsokuBoxPrices(orderedCards, boxPrices, pricingSettings)
+    .filter(card => !isBoxRow(card) || (card.price_high ?? 0) > 0);
 
   console.log(`[regenerate-page] カード数: ${orderedCardsWithCurrentPrices.length}`);
 
@@ -221,7 +227,6 @@ async function _runRegeneratePage(
   const profileLayout = profile.layout_config as LayoutConfig;
 
   // ---- 4. アセットダウンロード ----
-  const accessToken = await getAccessToken();
 
   const label = page.page_label ?? '';
   const isBOX = label === 'BOX' || label.startsWith('BOX-');
@@ -422,6 +427,8 @@ async function _runRegeneratePage(
       supabase,
       runId: page.run_id,
       accessToken: buybackSheetAccessToken,
+      boxPrices,
+      pricingSettings,
     });
     if (publishResult.status === 'completed') {
       console.log(`[regenerate-page] Google Sheet更新完了: ${publishResult.rowCount}商品`);

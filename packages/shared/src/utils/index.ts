@@ -14,6 +14,7 @@ export {
   calculateBuyPriceLow,
   calculatePsa10PriceLow,
   calculateBoxPrice,
+  calculateBoxPriceHigh,
   calculateBoxPriceLow,
 } from './price.js';
 export type { BoxConditionDiscountRates, BoxDiscountRates, Psa10DiscountRates, StorePricingSettings } from './price.js';

@@ -203,7 +203,7 @@ describe('prepareCards', () => {
         },
       );
 
-      expect(result[0].price_high).toBe(9500);
+      expect(result[0].price_high).toBe(9000);
       expect(result[0].price_low).toBe(8500);
     });
 
