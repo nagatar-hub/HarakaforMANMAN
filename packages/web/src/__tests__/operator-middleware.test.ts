@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { middleware } from '../middleware';
+import { config, middleware } from '../middleware';
 import {
   OPERATOR_SESSION_COOKIE,
   createOperatorSession,
@@ -20,6 +20,10 @@ function restoreToken(): void {
 }
 
 afterEach(restoreToken);
+
+test('custom buyback pages require the same operator authentication as runs', () => {
+  expect(config.matcher).toEqual(['/runs/:path*', '/custom-buyback/:path*', '/gallery/custom/:path*']);
+});
 
 test('/runs redirects an unauthenticated request to Google operator login', async () => {
   process.env.ORDER_LIST_IMPORT_API_TOKEN = secret;

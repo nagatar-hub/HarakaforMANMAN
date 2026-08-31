@@ -2,8 +2,7 @@ import type { Database } from '@haraka/shared';
 import { getBuybackSheetAccessToken } from '../lib/auth.js';
 import { publishManmanBuybackSheet } from '../lib/buyback-sheet.js';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
-
-const STORE_NAME = 'manman';
+import { STORE_NAME } from '../lib/store.js';
 
 export async function runPublishBuybackSheet(): Promise<void> {
   const supabase = await createSupabaseClientFromSecrets();

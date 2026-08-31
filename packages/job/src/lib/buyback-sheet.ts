@@ -11,8 +11,9 @@ import { replaceSheetValues } from './google-sheets.js';
 import { loadStorePricingSettings } from './pricing-settings.js';
 import { applyCurrentShinsokuBoxPrices, loadShinsokuBoxPriceMap } from './shinsoku-box-price-source.js';
 import { isBoxRow } from './box-row.js';
+import { STORE_NAME } from './store.js';
 
-const MANMAN_STORE_NAME = 'manman';
+const DEFAULT_STORE_NAME = 'manman';
 const DEFAULT_SPREADSHEET_ID = '1wEbAwrpoLTsRT7eD6aQJcvzzb0SDViCiatmIiGyqFL0';
 const TARGET_SHEET_ID = 0;
 const QUERY_BATCH_SIZE = 200;
@@ -83,6 +84,16 @@ export function isBuybackSheetPublishDisabled(): boolean {
   return ['1', 'true'].includes(
     process.env.BUYBACK_SHEET_PUBLISH_DISABLED?.trim().toLowerCase() ?? '',
   );
+}
+
+export function resolveBuybackSpreadsheetId(
+  storeName: string,
+  configuredId = process.env.BUYBACK_SPREADSHEET_ID?.trim(),
+  legacyManmanId = process.env.MANMAN_BUYBACK_SPREADSHEET_ID?.trim(),
+): string {
+  if (configuredId) return configuredId;
+  if (storeName === DEFAULT_STORE_NAME) return legacyManmanId || DEFAULT_SPREADSHEET_ID;
+  throw new Error(`${storeName}用のBUYBACK_SPREADSHEET_IDが未設定です`);
 }
 
 function franchiseRank(franchise: string): number {
@@ -255,19 +266,12 @@ export async function publishManmanBuybackSheet(params: {
     return { status: 'skipped', rowCount: 0, contentHash: null, spreadsheetId: null };
   }
 
-  const storeName = process.env.STORE_NAME?.trim() || MANMAN_STORE_NAME;
-  if (storeName !== MANMAN_STORE_NAME) {
-    console.log(`[buyback-sheet] skipped for store=${storeName}`);
-    return { status: 'skipped', rowCount: 0, contentHash: null, spreadsheetId: null };
-  }
-
-  const spreadsheetId = process.env.MANMAN_BUYBACK_SPREADSHEET_ID?.trim()
-    || DEFAULT_SPREADSHEET_ID;
+  const spreadsheetId = resolveBuybackSpreadsheetId(STORE_NAME);
 
   const findLatestCompletedRun = async () => params.supabase
     .from('run')
     .select('id')
-    .eq('store', MANMAN_STORE_NAME)
+    .eq('store', STORE_NAME)
     .eq('status', 'completed')
     .not('generate_done_at', 'is', null)
     .not('order_list_import_id', 'is', null)
@@ -291,7 +295,7 @@ export async function publishManmanBuybackSheet(params: {
     .from('run')
     .select('id, store, order_list_import_id')
     .eq('id', params.runId)
-    .eq('store', MANMAN_STORE_NAME)
+    .eq('store', STORE_NAME)
     .eq('status', 'completed')
     .not('generate_done_at', 'is', null)
     .single<Pick<Database['public']['Tables']['run']['Row'], 'id' | 'store' | 'order_list_import_id'>>();
@@ -306,7 +310,7 @@ export async function publishManmanBuybackSheet(params: {
     .from('order_list_import')
     .select('id, business_date, store')
     .eq('id', run.order_list_import_id)
-    .eq('store', MANMAN_STORE_NAME)
+    .eq('store', STORE_NAME)
     .single<Pick<Database['public']['Tables']['order_list_import']['Row'], 'id' | 'business_date' | 'store'>>();
   if (importError || !orderListImport) {
     throw new Error(`オーダーリスト取込が見つかりません: ${importError?.message ?? run.order_list_import_id}`);
@@ -320,7 +324,7 @@ export async function publishManmanBuybackSheet(params: {
   if (pageError) throw new Error(`生成ページの取得に失敗しました: ${pageError.message}`);
 
   const boxPrices = params.boxPrices ?? await loadShinsokuBoxPriceMap(params.accessToken);
-  const pricingSettings = params.pricingSettings ?? await loadStorePricingSettings(params.supabase, MANMAN_STORE_NAME);
+  const pricingSettings = params.pricingSettings ?? await loadStorePricingSettings(params.supabase, STORE_NAME);
   const hasStorePages = (pages ?? []).some(page => page.kind === 'store');
   let orderedCardIds = hasStorePages ? flattenGeneratedStorePageCardIds(pages ?? []) : [];
   let storedCards = await fetchPreparedCards(params.supabase, orderedCardIds);
@@ -381,7 +385,7 @@ export async function publishManmanBuybackSheet(params: {
   });
 
   console.log(
-    `[buyback-sheet] published: store=${MANMAN_STORE_NAME}, run=${params.runId}, rows=${values.length - 1}, hash=${contentHash}`,
+    `[buyback-sheet] published: store=${STORE_NAME}, run=${params.runId}, rows=${values.length - 1}, hash=${contentHash}`,
   );
   return {
     status: 'completed',

@@ -1,7 +1,7 @@
 jest.mock('server-only', () => ({}), { virtual: true });
 
 import { loadDashboardData } from '../lib/dashboard-data';
-import { STORE_NAME } from '../lib/store';
+import { resolveStoreName, STORE_NAME } from '../lib/store';
 
 type DashboardClient = NonNullable<Parameters<typeof loadDashboardData>[0]>;
 
@@ -20,6 +20,11 @@ describe('dashboard store isolation', () => {
   test('uses the server-owned MANMAN identity even if a public value disagrees', () => {
     process.env.NEXT_PUBLIC_STORE_NAME = 'oripark';
     expect(STORE_NAME).toBe('manman');
+  });
+
+  test('allows a separate server-owned store identity for another deployment', () => {
+    expect(resolveStoreName({ STORE_NAME: ' manman-akihabara ' })).toBe('manman-akihabara');
+    expect(resolveStoreName({ NEXT_PUBLIC_STORE_NAME: 'oripark' })).toBe('manman');
   });
 
   test('scopes the parent run before reading rows derived from its ID', async () => {

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { GalleryTabs } from './gallery-tabs';
 import { FRANCHISE_JA as SHARED_FRANCHISE_JA } from '@haraka/shared';
 
 export const dynamic = 'force-dynamic';
@@ -24,6 +25,7 @@ export default async function GalleryPage() {
     <div>
       <div className="mb-14">
         <h1 className="page-title text-2xl sm:text-4xl text-text-primary">ギャラリー</h1>
+        <div className="mt-5"><GalleryTabs active="standard" /></div>
       </div>
 
       {dates.length === 0 ? (

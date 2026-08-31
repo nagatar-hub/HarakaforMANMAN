@@ -7,6 +7,7 @@ import Image from 'next/image';
 import { FranchiseTabs } from '@/components/franchise-tabs';
 import { ImageModal } from '@/components/image-modal';
 import { PageDetailModal } from './page-detail-modal';
+import { GalleryTabs } from '../gallery-tabs';
 import { fetchImagesAsFiles, shareFiles, downloadFilesAsZip, isShareSupported, latestRunImages } from '@/lib/download-images';
 import type { DownloadableImage } from '@/lib/download-images';
 import { FRANCHISE_JA as SHARED_FRANCHISE_JA } from '@haraka/shared';
@@ -285,6 +286,7 @@ export default function GalleryDatePage() {
           )}
         </div>
       </div>
+      <div className="mb-8"><GalleryTabs active="standard" /></div>
 
       {loading ? (
         <p className="text-text-secondary">読み込み中...</p>

@@ -31,5 +31,5 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
 }
 
 export const config = {
-  matcher: ['/runs/:path*'],
+  matcher: ['/runs/:path*', '/custom-buyback/:path*', '/gallery/custom/:path*'],
 };

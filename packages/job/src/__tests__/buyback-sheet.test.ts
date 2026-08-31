@@ -4,11 +4,18 @@ import {
   BUYBACK_SHEET_HEADERS,
   flattenGeneratedStorePageCardIds,
   publishManmanBuybackSheet,
+  resolveBuybackSpreadsheetId,
 } from '../lib/buyback-sheet';
 
 type PublishPage = Pick<GeneratedPageRow, 'franchise' | 'page_index' | 'card_ids' | 'status' | 'kind'>;
 
 describe('buyback Sheet publication isolation', () => {
+
+  it('別店舗は専用の買取表IDがない限り既存満満表へフォールバックしない', () => {
+    expect(() => resolveBuybackSpreadsheetId('manman-akihabara', undefined, 'legacy-manman-sheet')).toThrow('未設定');
+    expect(resolveBuybackSpreadsheetId('manman-akihabara', 'akihabara-sheet', 'legacy-manman-sheet')).toBe('akihabara-sheet');
+    expect(resolveBuybackSpreadsheetId('manman', undefined, 'legacy-manman-sheet')).toBe('legacy-manman-sheet');
+  });
 
   it('欠損BOXだけ除外し、残りの商品を公開する。全BOX欠損ならヘッダーだけを出力する', () => {
     const cards = [makeCard({ id: 'missing-box', order_list_item_id: 'box-row', grade: 'BOX', price_high: 0 }), makeCard()];

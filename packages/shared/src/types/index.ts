@@ -19,11 +19,18 @@ export type {
   CardSource,
   PageStatus,
   OrderListFranchise,
+  CustomBuybackFranchise,
   OrderListImportStatus,
   OrderListMatchStatus,
   OrderListMatchMethod,
   ExcelProductMappingStatus,
   PriceSource,
+  CustomBuybackProductType,
+  CustomBuybackKind,
+  CustomBuybackSheetStatus,
+  CustomBuybackSheetRow,
+  CustomBuybackItemRow,
+  CustomBuybackPageRow,
   PostPlanStatus,
   PostItemStatus,
   XCredentialStatus,
@@ -39,6 +46,7 @@ export type {
   PostItemRow,
   PostItemAssetRow,
   LayoutTemplateRow,
+  RarityIconRow,
 } from './database.js';
 export type { Franchise } from './franchise.js';
 export { FRANCHISES, FRANCHISE_JA, FRANCHISE_STORAGE_SLUG, KECAK_SHEET_MAP } from './franchise.js';

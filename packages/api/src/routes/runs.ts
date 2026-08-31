@@ -14,7 +14,7 @@ import { authorizeInternalApiRequest } from '../lib/internal-api-auth.js';
 export const runRoutes = new Hono();
 
 const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
-const GENERATE_JOB_NAME = process.env.GENERATE_JOB_NAME?.trim() || 'haraka-manman-generate';
+const GENERATE_JOB_NAME = process.env.GENERATE_JOB_NAME?.trim() || `haraka-${STORE_NAME}-generate`;
 
 export function redactGenerateClaimToken(run: Record<string, unknown>): Record<string, unknown> {
   const publicRun = { ...run };

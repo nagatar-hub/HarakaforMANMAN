@@ -17,7 +17,7 @@ type ClaimedRun = Pick<RunRow, 'id' | 'generate_claimed_at' | 'generate_claim_to
 type Supabase = Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>;
 
 const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
-const JOB_NAME = process.env.GENERATE_JOB_NAME?.trim() || 'haraka-manman-generate';
+const JOB_NAME = process.env.GENERATE_JOB_NAME?.trim() || `haraka-${STORE_NAME}-generate`;
 export const GENERATE_CLAIM_LEASE_MS = 75 * 60 * 1000;
 
 export function isStaleGenerateClaim(

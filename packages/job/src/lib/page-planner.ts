@@ -27,6 +27,7 @@ import type {
   LayoutConfig,
 } from '@haraka/shared';
 import { selectLayoutCombination } from './layout-selector.js';
+import { STORE_NAME } from './store.js';
 
 // ---------------------------------------------------------------------------
 // ユーティリティ
@@ -94,7 +95,7 @@ function makeLegacyLayout(totalSlots: number): LayoutTemplateRow {
   };
   return {
     id: '',
-    store: 'manman',
+    store: STORE_NAME,
     kind: 'store',
     franchise: 'Pokemon',
     name: `${totalSlots}枠`,

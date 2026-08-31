@@ -28,7 +28,7 @@ const MAX_REQUEST_SIZE = 16 * 1024 * 1024;
 const PAGE_SIZE = 1000;
 const PARSER_VERSION = 'order-list-v2';
 const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
-const ORDER_LIST_SYNC_JOB_NAME = process.env.ORDER_LIST_SYNC_JOB_NAME?.trim() || 'haraka-manman-sync';
+const ORDER_LIST_SYNC_JOB_NAME = process.env.ORDER_LIST_SYNC_JOB_NAME?.trim() || `haraka-${STORE_NAME}-sync`;
 orderListImportRoutes.use('*', async (c, next) => {
   const auth = authorizeInternalApiRequest(c.req.header('authorization'));
   if (auth === 'misconfigured') {

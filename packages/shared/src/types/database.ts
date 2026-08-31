@@ -35,11 +35,15 @@ export type RunStatus = 'running' | 'completed' | 'failed';
 export type RuleMatchType = 'exact' | 'contains' | 'regex';
 export type RuleBehavior = 'isolate' | 'merge' | 'exclude' | 'group';
 export type OrderListFranchise = Franchise;
+export type CustomBuybackFranchise = Extract<Franchise, 'Pokemon' | 'ONE PIECE' | 'YU-GI-OH!'>;
 export type OrderListImportStatus = 'parsed' | 'confirmed' | 'processing' | 'applied' | 'failed';
 export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'excluded' | 'invalid';
 export type OrderListMatchMethod = 'existing_mapping' | 'exact_image' | 'exact_identity' | 'manual';
 export type ExcelProductMappingStatus = 'active' | 'disabled';
 export type PriceSource = 'order_list' | 'kecak' | 'spectre' | 'manual';
+export type CustomBuybackProductType = 'psa' | 'box';
+export type CustomBuybackKind = 'postal' | 'store';
+export type CustomBuybackSheetStatus = 'draft' | 'rendering' | 'ready' | 'failed';
 
 export type StoreConfigRow = {
   store: string;
@@ -199,6 +203,77 @@ export type PreparedCardRow = {
 };
 
 export type PageStatus = 'pending' | 'generated' | 'failed';
+
+export type CustomBuybackSheetRow = {
+  id: string;
+  store: string;
+  name: string;
+  franchise: CustomBuybackFranchise;
+  product_type: CustomBuybackProductType;
+  kind: CustomBuybackKind;
+  price_snapshot_run_id: string;
+  price_business_date: string;
+  display_date: string;
+  status: CustomBuybackSheetStatus;
+  revision: number;
+  last_rendered_revision: number | null;
+  error_message: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RarityIconRow = {
+  id: string;
+  franchise: Franchise | null;
+  name: string;
+  storage_path: string;
+  drive_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CustomBuybackItemRow = {
+  id: string;
+  sheet_id: string;
+  source_prepared_card_id: string | null;
+  source_db_card_id: string | null;
+  excel_product_id: string | null;
+  position: number;
+  card_name: string;
+  grade: string | null;
+  list_no: string | null;
+  rarity: string | null;
+  rarity_icon_url: string | null;
+  tag: string | null;
+  image_url: string | null;
+  alt_image_url: string | null;
+  image_status: ImageStatus;
+  source_price_high: number | null;
+  source_price_low: number | null;
+  final_price_high: number | null;
+  final_price_low: number | null;
+  price_source: PriceSource;
+  price_source_date: string;
+  override_reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CustomBuybackPageRow = {
+  id: string;
+  sheet_id: string;
+  page_index: number;
+  layout_template_id: string;
+  item_ids: string[];
+  status: PageStatus;
+  rendered_revision: number;
+  image_key: string | null;
+  image_url: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
 // --- X投稿機能 ---
 export type PostPlanStatus = 'draft' | 'posting' | 'completed' | 'partial' | 'failed';
@@ -524,6 +599,56 @@ export type Database = {
         Update: Partial<Omit<LayoutTemplateRow, 'id' | 'created_at'>>;
         Relationships: [];
       };
+      custom_buyback_sheet: {
+        Row: CustomBuybackSheetRow;
+        Insert: Omit<CustomBuybackSheetRow, 'id' | 'created_at' | 'updated_at' | 'status' | 'revision' | 'last_rendered_revision' | 'error_message'> & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+          status?: CustomBuybackSheetStatus;
+          revision?: number;
+          last_rendered_revision?: number | null;
+          error_message?: string | null;
+        };
+        Update: Partial<Omit<CustomBuybackSheetRow, 'id' | 'store' | 'created_at'>>;
+        Relationships: [];
+      };
+      rarity_icon: {
+        Row: RarityIconRow;
+        Insert: Omit<RarityIconRow, 'id' | 'created_at' | 'updated_at' | 'drive_id' | 'franchise'> & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+          drive_id?: string | null;
+          franchise?: Franchise | null;
+        };
+        Update: Partial<Omit<RarityIconRow, 'id' | 'created_at'>>;
+        Relationships: [];
+      };
+      custom_buyback_item: {
+        Row: CustomBuybackItemRow;
+        Insert: Omit<CustomBuybackItemRow, 'id' | 'created_at' | 'updated_at'> & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Omit<CustomBuybackItemRow, 'id' | 'sheet_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      custom_buyback_page: {
+        Row: CustomBuybackPageRow;
+        Insert: Omit<CustomBuybackPageRow, 'id' | 'created_at' | 'updated_at' | 'status' | 'image_key' | 'image_url' | 'error_message'> & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+          status?: PageStatus;
+          image_key?: string | null;
+          image_url?: string | null;
+          error_message?: string | null;
+        };
+        Update: Partial<Omit<CustomBuybackPageRow, 'id' | 'sheet_id' | 'created_at'>>;
+        Relationships: [];
+      };
       store_config: {
         Row: StoreConfigRow;
         Insert: Omit<StoreConfigRow, 'updated_at'> & { updated_at?: string };
@@ -603,6 +728,44 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      reorder_custom_buyback_items: {
+        Args: { p_sheet_id: string; p_store: string; p_item_ids: string[] };
+        Returns: undefined;
+      };
+      bulk_update_custom_buyback_prices: {
+        Args: {
+          p_sheet_id: string;
+          p_store: string;
+          p_item_ids: string[];
+          p_operation: 'add' | 'percent' | 'round' | 'reset';
+          p_value: number;
+        };
+        Returns: undefined;
+      };
+      clone_custom_buyback_sheet: {
+        Args: { p_sheet_id: string; p_store: string; p_name: string; p_created_by: string | null };
+        Returns: string;
+      };
+      refresh_custom_buyback_prices: {
+        Args: {
+          p_sheet_id: string;
+          p_store: string;
+          p_run_id: string;
+          p_business_date: string;
+          p_item_ids: string[];
+          p_prepared_card_ids: string[];
+          p_preserve_overrides: boolean;
+        };
+        Returns: undefined;
+      };
+      add_custom_buyback_items: {
+        Args: { p_sheet_id: string; p_store: string; p_prepared_card_ids: string[] };
+        Returns: undefined;
+      };
+      delete_custom_buyback_item: {
+        Args: { p_sheet_id: string; p_store: string; p_item_id: string };
+        Returns: undefined;
+      };
       resolve_order_list_item_mapping: {
         Args: {
           p_import_id: string;
