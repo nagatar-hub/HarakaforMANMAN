@@ -9,11 +9,12 @@ export function isRunActive(run: RunGenerationState): boolean {
 }
 
 export function findEligibleGenerationRun<T extends RunGenerationState>(runs: readonly T[]): T | null {
-  return runs.find((run) => (
+  const run = runs[0];
+  return run && (
     run.status === 'completed'
     && Boolean(run.plan_done_at)
     && !run.generate_done_at
-  )) ?? null;
+  ) ? run : null;
 }
 
 export function getRunDisplayStatus(run: RunGenerationState): string {

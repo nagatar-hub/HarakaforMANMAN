@@ -12,7 +12,7 @@ import {
   draftsForImport,
   firstReviewStatus,
   isLatestOrderListImportId,
-  latestUsableOrderListImportId,
+  latestOrderListImportId,
   mappingSelections,
   newCardSelections,
   nextReviewStatus,
@@ -292,7 +292,7 @@ export function OrderListMatchReview({
   const confirmationCancelRef = useRef<HTMLButtonElement>(null);
 
   const importSelectionCandidates = imports.map((item) => item.import);
-  const latestImportId = latestUsableOrderListImportId(importSelectionCandidates);
+  const latestImportId = latestOrderListImportId(importSelectionCandidates);
   const selectedImport = imports.find((item) => item.import.id === selectedImportId) ?? null;
   const latestImport = imports.find((item) => item.import.id === latestImportId) ?? null;
   const selectedImportIsLatest = isLatestOrderListImportId(

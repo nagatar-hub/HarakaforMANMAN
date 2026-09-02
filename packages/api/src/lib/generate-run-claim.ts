@@ -14,7 +14,6 @@ export const GENERATE_CLAIM_LEASE_MS = 75 * 60 * 1000;
 
 export interface GenerateRunClaimStore {
   recoverStaleUnstarted(staleBeforeIso: string): Promise<void>;
-  findLatestEligible(): Promise<Pick<RunRow, 'id'> | null>;
   claimEligible(
     id: string,
     claimedAtIso: string,
@@ -38,12 +37,12 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 export function parseGenerateRunRequest(value: unknown):
   | { ok: true; runId: string | null }
   | { ok: false; error: string } {
-  if (value === undefined || value === null) return { ok: true, runId: null };
+  if (value === undefined || value === null) return { ok: false, error: 'run_idを指定してください' };
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return { ok: false, error: 'JSONオブジェクトを指定してください' };
   }
   const runId = (value as { run_id?: unknown }).run_id;
-  if (runId === undefined || runId === null || runId === '') return { ok: true, runId: null };
+  if (runId === undefined || runId === null || runId === '') return { ok: false, error: 'run_idを指定してください' };
   if (typeof runId !== 'string' || !UUID_PATTERN.test(runId.trim())) {
     return { ok: false, error: 'run_idが正しくありません' };
   }
@@ -56,25 +55,21 @@ export async function claimGenerateRun(
   now = new Date(),
   createClaimToken: () => string = randomUUID,
 ): Promise<GenerateRunClaim> {
-  const claimedAtIso = now.toISOString();
-  const staleBeforeIso = new Date(now.getTime() - GENERATE_CLAIM_LEASE_MS).toISOString();
-  await store.recoverStaleUnstarted(staleBeforeIso);
-
-  const target = requestedRunId
-    ? { id: requestedRunId }
-    : await store.findLatestEligible();
-  if (!target) {
+  if (!requestedRunId) {
     throw new GenerateRunClaimError(
-      '画像生成待ちのRunがありません。先にオーダーリストを反映してください。',
+      'run_idを指定してください。過去のRunは自動選択しません。',
       404,
     );
   }
+  const claimedAtIso = now.toISOString();
+  const staleBeforeIso = new Date(now.getTime() - GENERATE_CLAIM_LEASE_MS).toISOString();
+  await store.recoverStaleUnstarted(staleBeforeIso);
 
   const claimToken = createClaimToken();
   if (!UUID_PATTERN.test(claimToken)) {
     throw new Error('画像生成claim tokenのUUID生成に失敗しました');
   }
-  const claimed = await store.claimEligible(target.id, claimedAtIso, claimToken);
+  const claimed = await store.claimEligible(requestedRunId, claimedAtIso, claimToken);
   if (!claimed) {
     throw new GenerateRunClaimError(
       'このRunはすでに処理中、または画像生成済みです。実行履歴を更新してください。',
@@ -107,22 +102,29 @@ export function createSupabaseGenerateRunClaimStore(
       if (error) throw new Error('期限切れ画像生成claimの解除に失敗しました: ' + error.message);
     },
 
-    async findLatestEligible() {
-      const { data, error } = await supabase
+    async claimEligible(id, claimedAtIso, claimToken) {
+      const { data: latestImport, error: latestImportError } = await supabase
+        .from('order_list_import')
+        .select('id')
+        .eq('store', storeName)
+        .order('business_date', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (latestImportError) throw new Error('最新オーダーリスト取込の確認に失敗しました: ' + latestImportError.message);
+      if (!latestImport) return null;
+
+      const { data: latestRun, error: latestRunError } = await supabase
         .from('run')
         .select('id')
         .eq('store', storeName)
-        .eq('status', 'completed')
-        .not('plan_done_at', 'is', null)
-        .is('generate_done_at', null)
+        .eq('order_list_import_id', latestImport.id)
         .order('started_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (error) throw new Error('画像生成対象Runの検索に失敗しました: ' + error.message);
-      return data;
-    },
+      if (latestRunError) throw new Error('最新Runの確認に失敗しました: ' + latestRunError.message);
+      if (!latestRun || latestRun.id !== id) return null;
 
-    async claimEligible(id, claimedAtIso, claimToken) {
       const { data, error } = await supabase
         .from('run')
         .update({
@@ -133,6 +135,7 @@ export function createSupabaseGenerateRunClaimStore(
         })
         .eq('id', id)
         .eq('store', storeName)
+        .eq('order_list_import_id', latestImport.id)
         .eq('status', 'completed')
         .not('plan_done_at', 'is', null)
         .is('generate_done_at', null)

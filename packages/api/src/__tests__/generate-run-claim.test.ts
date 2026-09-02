@@ -10,11 +10,12 @@ import {
 } from '../lib/generate-run-claim.js';
 
 function createRecordingSupabase(maybeData: unknown = null) {
+  const maybeDataSequence = Array.isArray(maybeData) ? [...maybeData] : null;
   const calls: Array<[string, ...unknown[]]> = [];
   const query: Record<string, (...args: unknown[]) => unknown> & {
     then?: (resolve: (value: { error: null }) => unknown, reject: (reason: unknown) => unknown) => unknown;
   } = {};
-  for (const method of ['update', 'eq', 'is', 'not', 'lt', 'select']) {
+  for (const method of ['update', 'eq', 'is', 'not', 'lt', 'select', 'order', 'limit']) {
     query[method] = (...args: unknown[]) => {
       calls.push([method, ...args]);
       return query;
@@ -22,7 +23,7 @@ function createRecordingSupabase(maybeData: unknown = null) {
   }
   query.maybeSingle = async () => {
     calls.push(['maybeSingle']);
-    return { data: maybeData, error: null };
+    return { data: maybeDataSequence ? (maybeDataSequence.shift() ?? null) : maybeData, error: null };
   };
   query.then = (resolve, reject) => Promise.resolve({ error: null }).then(resolve, reject);
 
@@ -39,10 +40,6 @@ function createStore(ids: string[]): GenerateRunClaimStore {
   const eligible = new Set(ids);
   return {
     async recoverStaleUnstarted() {},
-    async findLatestEligible() {
-      const id = eligible.values().next().value as string | undefined;
-      return id ? { id } : null;
-    },
     async claimEligible(id, claimedAtIso, claimToken) {
       if (!eligible.delete(id)) return null;
       return {
@@ -60,7 +57,7 @@ function createStore(ids: string[]): GenerateRunClaimStore {
 }
 
 test('画像生成リクエストはUUIDのrun_idだけを受け付ける', () => {
-  assert.deepEqual(parseGenerateRunRequest({}), { ok: true, runId: null });
+  assert.deepEqual(parseGenerateRunRequest({}), { ok: false, error: 'run_idを指定してください' });
   assert.deepEqual(
     parseGenerateRunRequest({ run_id: 'FC6B20A5-73F7-472A-B704-9D1FEF750C35' }),
     { ok: true, runId: 'fc6b20a5-73f7-472a-b704-9d1fef750c35' },
@@ -69,7 +66,7 @@ test('画像生成リクエストはUUIDのrun_idだけを受け付ける', () =
   assert.equal(invalid.ok, false);
 });
 
-test('明示run_idと自動選択はいずれも同じclaim処理を通る', async () => {
+test('明示run_idだけをclaimし、過去Runの自動選択はしない', async () => {
   const explicitStore = createStore(['10000000-0000-4000-8000-000000000001']);
   const explicit = await claimGenerateRun(
     explicitStore,
@@ -77,9 +74,10 @@ test('明示run_idと自動選択はいずれも同じclaim処理を通る', asy
   );
   assert.equal(explicit.id, '10000000-0000-4000-8000-000000000001');
 
-  const latestStore = createStore(['20000000-0000-4000-8000-000000000002']);
-  const latest = await claimGenerateRun(latestStore, null);
-  assert.equal(latest.id, '20000000-0000-4000-8000-000000000002');
+  await assert.rejects(
+    claimGenerateRun(createStore(['20000000-0000-4000-8000-000000000002']), null),
+    /過去のRunは自動選択しません/,
+  );
 });
 
 test('同じrun_idの二重claimは片方だけ成功する', async () => {
@@ -116,10 +114,6 @@ test('claim前に75分超の未着手claimを回復し、claim時刻を保存す
     async recoverStaleUnstarted(staleBeforeIso) {
       calls.push('recover:' + staleBeforeIso);
     },
-    async findLatestEligible() {
-      calls.push('find');
-      return { id };
-    },
     async claimEligible(claimId, claimedAtIso, receivedToken) {
       calls.push('claim:' + claimedAtIso + ':' + receivedToken);
       return {
@@ -134,12 +128,11 @@ test('claim前に75分超の未着手claimを回復し、claim時刻を保存す
     },
   };
 
-  const claimed = await claimGenerateRun(store, null, now, () => claimToken);
+  const claimed = await claimGenerateRun(store, id, now, () => claimToken);
   assert.equal(claimed.generate_claimed_at, now.toISOString());
   assert.equal(claimed.generate_claim_token, claimToken);
   assert.deepEqual(calls, [
     'recover:' + new Date(now.getTime() - GENERATE_CLAIM_LEASE_MS).toISOString(),
-    'find',
     'claim:' + now.toISOString() + ':' + claimToken,
   ]);
 });
@@ -160,6 +153,20 @@ test('Supabase storeは期限切れ回復とreleaseを未着手かつ同一lease
     .claimEligible(runId, claimedAt, claimToken);
   assert.equal(claimed?.generate_claim_token, claimToken);
   assert.deepEqual(claim.calls, [
+    ['from', 'order_list_import'],
+    ['select', 'id'],
+    ['eq', 'store', 'manman'],
+    ['order', 'business_date', { ascending: false }],
+    ['order', 'created_at', { ascending: false }],
+    ['limit', 1],
+    ['maybeSingle'],
+    ['from', 'run'],
+    ['select', 'id'],
+    ['eq', 'store', 'manman'],
+    ['eq', 'order_list_import_id', runId],
+    ['order', 'started_at', { ascending: false }],
+    ['limit', 1],
+    ['maybeSingle'],
     ['from', 'run'],
     ['update', {
       status: 'running',
@@ -169,6 +176,7 @@ test('Supabase storeは期限切れ回復とreleaseを未着手かつ同一lease
     }],
     ['eq', 'id', runId],
     ['eq', 'store', 'manman'],
+    ['eq', 'order_list_import_id', runId],
     ['eq', 'status', 'completed'],
     ['not', 'plan_done_at', 'is', null],
     ['is', 'generate_done_at', null],
@@ -216,4 +224,16 @@ test('Supabase storeは期限切れ回復とreleaseを未着手かつ同一lease
     ['select', 'id'],
     ['maybeSingle'],
   ]);
+});
+
+test('Supabase storeは最新取込内の古いRunをclaimしない', async () => {
+  const oldRunId = '60000000-0000-4000-8000-000000000006';
+  const latestRunId = '70000000-0000-4000-8000-000000000007';
+  const db = createRecordingSupabase([{ id: 'latest-import' }, { id: latestRunId }]);
+
+  const claimed = await createSupabaseGenerateRunClaimStore(db.client, 'manman')
+    .claimEligible(oldRunId, '2026-07-15T03:00:00.000Z', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+
+  assert.equal(claimed, null);
+  assert.equal(db.calls.some(([method]) => method === 'update'), false);
 });

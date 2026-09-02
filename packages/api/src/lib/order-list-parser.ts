@@ -389,6 +389,14 @@ function isDataRowEmpty(row: Row, maxColumn: number): boolean {
   return true;
 }
 
+function isWorksheetEmpty(worksheet: Worksheet): boolean {
+  for (let rowNumber = 1; rowNumber <= worksheet.actualRowCount; rowNumber += 1) {
+    const row = worksheet.getRow(rowNumber);
+    if (!isDataRowEmpty(row, Math.max(row.cellCount, worksheet.actualColumnCount))) return false;
+  }
+  return true;
+}
+
 function buildRawRow(row: Row, headerInfo: HeaderInfo): Record<string, OrderListRawCellValue> {
   const rawRow: Record<string, OrderListRawCellValue> = {};
   const keyCounts = new Map<string, number>();
@@ -696,12 +704,23 @@ export async function parseOrderListWorkbook(buffer: Buffer): Promise<OrderListP
     const worksheet = workbook.getWorksheet(sheetName);
     if (!worksheet) {
       structuralIssues.push(makeIssue(
-        'error',
+        'warning',
         'missing_sheet',
-        '必須シート「' + sheetName + '」がありません。',
+        'シート「' + sheetName + '」がないため、0件として扱います。',
         { sheetName }
       ));
       sheetMetadata.set(sheetName, { found: false, headerRowNumber: null });
+      continue;
+    }
+
+    if (isWorksheetEmpty(worksheet)) {
+      structuralIssues.push(makeIssue(
+        'warning',
+        'empty_sheet',
+        'シート「' + sheetName + '」にデータ行がありません。',
+        { sheetName }
+      ));
+      sheetMetadata.set(sheetName, { found: true, headerRowNumber: null });
       continue;
     }
 

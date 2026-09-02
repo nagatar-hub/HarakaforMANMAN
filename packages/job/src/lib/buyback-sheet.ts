@@ -268,26 +268,33 @@ export async function publishManmanBuybackSheet(params: {
 
   const spreadsheetId = resolveBuybackSpreadsheetId(STORE_NAME);
 
-  const findLatestCompletedRun = async () => params.supabase
-    .from('run')
-    .select('id')
-    .eq('store', STORE_NAME)
-    .eq('status', 'completed')
-    .not('generate_done_at', 'is', null)
-    .not('order_list_import_id', 'is', null)
-    .order('started_at', { ascending: false })
-    .limit(1)
-    .maybeSingle<Pick<Database['public']['Tables']['run']['Row'], 'id'>>();
+  const findLatestRunId = async (): Promise<string | null> => {
+    const { data: latestImport, error: importError } = await params.supabase
+      .from('order_list_import')
+      .select('id')
+      .eq('store', STORE_NAME)
+      .order('business_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle<Pick<Database['public']['Tables']['order_list_import']['Row'], 'id'>>();
+    if (importError) throw new Error(`最新のMANMAN取込取得に失敗しました: ${importError.message}`);
+    if (!latestImport) return null;
 
-  const { data: latestRun, error: latestRunError } = await findLatestCompletedRun();
-  if (latestRunError) {
-    throw new Error(`最新のMANMAN実行取得に失敗しました: ${latestRunError.message}`);
-  }
-  if (!latestRun) {
-    throw new Error('公開可能な完了済みMANMAN実行がありません');
-  }
-  if (latestRun.id !== params.runId) {
-    console.log(`[buyback-sheet] skipped historical run=${params.runId}; latest=${latestRun.id}`);
+    const { data, error } = await params.supabase
+      .from('run')
+      .select('id')
+      .eq('store', STORE_NAME)
+      .eq('order_list_import_id', latestImport.id)
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .maybeSingle<Pick<Database['public']['Tables']['run']['Row'], 'id'>>();
+    if (error) throw new Error(`最新のMANMAN実行取得に失敗しました: ${error.message}`);
+    return data?.id ?? null;
+  };
+
+  const latestRunId = await findLatestRunId();
+  if (latestRunId !== params.runId) {
+    console.log(`[buyback-sheet] skipped non-latest run=${params.runId}; latest=${latestRunId ?? 'none'}`);
     return { status: 'skipped', rowCount: 0, contentHash: null, spreadsheetId };
   }
 
@@ -364,14 +371,10 @@ export async function publishManmanBuybackSheet(params: {
   const contentHash = createHash('sha256').update(JSON.stringify(values)).digest('hex');
 
   // データ収集中に新しいRunが完了していた場合、古いRunで上書きしない。
-  const { data: latestRunBeforeWrite, error: latestRunBeforeWriteError } =
-    await findLatestCompletedRun();
-  if (latestRunBeforeWriteError) {
-    throw new Error(`書き込み前の最新MANMAN実行確認に失敗しました: ${latestRunBeforeWriteError.message}`);
-  }
-  if (!latestRunBeforeWrite || latestRunBeforeWrite.id !== params.runId) {
+  const latestRunBeforeWriteId = await findLatestRunId();
+  if (latestRunBeforeWriteId !== params.runId) {
     console.log(
-      `[buyback-sheet] skipped stale write run=${params.runId}; latest=${latestRunBeforeWrite?.id ?? 'none'}`,
+      `[buyback-sheet] skipped stale write run=${params.runId}; latest=${latestRunBeforeWriteId ?? 'none'}`,
     );
     return { status: 'skipped', rowCount: 0, contentHash: null, spreadsheetId };
   }

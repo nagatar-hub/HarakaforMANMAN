@@ -130,6 +130,64 @@ test('全角括弧やヘッダー内空白を正規化して列を特定する',
   assert.equal(result.rows.length, 5);
 });
 
+test('完全空白・ヘッダーのみの商材を0件として扱い、他商材を読み続ける', async () => {
+  const workbook = new ExcelJS.Workbook();
+  addSheet(workbook, 'ポケモン', [validRow('PK-1')]);
+  addSheet(workbook, 'ワンピース', []);
+  workbook.addWorksheet('遊戯王').getCell('A1').fill = {
+    type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' },
+  };
+  addSheet(workbook, 'ヴァイス', []);
+  addSheet(workbook, 'ドラゴンボール', [validRow('DB-1')]);
+
+  const result = await parseOrderListWorkbook(await asBuffer(workbook));
+
+  assert.equal(result.structuralValid, true);
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.rows.map((row) => row.excelProductId), ['PK-1', 'DB-1']);
+  assert.equal(result.issues.filter((item) => item.code === 'empty_sheet').length, 3);
+  assert.deepEqual(
+    result.summary.sheets.map(({ sheetName, found, headerRowNumber, totalRows }) => ({
+      sheetName, found, headerRowNumber, totalRows,
+    })),
+    [
+      { sheetName: 'ポケモン', found: true, headerRowNumber: 1, totalRows: 1 },
+      { sheetName: 'ワンピース', found: true, headerRowNumber: 1, totalRows: 0 },
+      { sheetName: '遊戯王', found: true, headerRowNumber: null, totalRows: 0 },
+      { sheetName: 'ヴァイス', found: true, headerRowNumber: 1, totalRows: 0 },
+      { sheetName: 'ドラゴンボール', found: true, headerRowNumber: 1, totalRows: 1 },
+    ],
+  );
+});
+
+test('欠落した商材シートを0件として扱い、存在する商材を読み続ける', async () => {
+  const workbook = new ExcelJS.Workbook();
+  addSheet(workbook, 'ポケモン', [validRow('PK-1')]);
+
+  const result = await parseOrderListWorkbook(await asBuffer(workbook));
+
+  assert.equal(result.structuralValid, true);
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.rows.map((row) => row.excelProductId), ['PK-1']);
+  assert.equal(result.issues.filter((item) => item.code === 'missing_sheet').length, 4);
+});
+
+test('内容があるのに必須ヘッダーがない商材は0件扱いせず拒否する', async () => {
+  const workbook = new ExcelJS.Workbook();
+  addSheet(workbook, 'ポケモン', [validRow('PK-1')]);
+  addSheet(workbook, 'ワンピース', [validRow('OP-1')]);
+  workbook.addWorksheet('遊戯王').addRow(['壊れたデータ']);
+  addNewProductSheets(workbook);
+
+  const result = await parseOrderListWorkbook(await asBuffer(workbook));
+
+  assert.equal(result.structuralValid, false);
+  assert.equal(result.valid, false);
+  assert.equal(result.issues.some((item) => (
+    item.code === 'header_row_not_found' && item.sheetName === '遊戯王'
+  )), true);
+});
+
 test('未対応の追加シートを構造エラーとして報告する', async () => {
   const workbook = new ExcelJS.Workbook();
   addSheet(workbook, 'ポケモン', [validRow('PK-1')]);

@@ -218,30 +218,30 @@ export function matchCustomBuybackRefreshCards(
 }
 
 async function latestPriceSnapshot(supabase: DbClient): Promise<LatestPriceSnapshot | null> {
+  const { data: sourceImport, error: importError } = await supabase
+    .from('order_list_import')
+    .select('*')
+    .eq('store', STORE_NAME)
+    .order('business_date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle<OrderListImportRow>();
+  if (importError) throw new Error(`価格基準日取得失敗: ${importError.message}`);
+  if (!sourceImport
+    || sourceImport.status !== 'applied'
+    || !sourceImport.structural_valid
+    || !sourceImport.persistence_complete) return null;
+
   const { data: run, error: runError } = await supabase
     .from('run')
     .select('*')
     .eq('store', STORE_NAME)
-    .eq('status', 'completed')
-    .not('completed_at', 'is', null)
-    .not('order_list_import_id', 'is', null)
-    .order('completed_at', { ascending: false })
+    .eq('order_list_import_id', sourceImport.id)
+    .order('started_at', { ascending: false })
     .limit(1)
     .maybeSingle<RunRow>();
   if (runError) throw new Error(`最新Run取得失敗: ${runError.message}`);
-  if (!run?.order_list_import_id) return null;
-
-  const { data: sourceImport, error: importError } = await supabase
-    .from('order_list_import')
-    .select('*')
-    .eq('id', run.order_list_import_id)
-    .eq('store', STORE_NAME)
-    .eq('status', 'applied')
-    .eq('structural_valid', true)
-    .eq('persistence_complete', true)
-    .maybeSingle<OrderListImportRow>();
-  if (importError) throw new Error(`価格基準日取得失敗: ${importError.message}`);
-  if (!sourceImport) return null;
+  if (!run || run.status !== 'completed' || !run.completed_at) return null;
   return {
     runId: run.id,
     businessDate: sourceImport.business_date,

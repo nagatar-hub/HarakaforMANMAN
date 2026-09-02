@@ -168,14 +168,24 @@ export async function runWatchdog() {
 
   console.log(`[watchdog] 本日の${STORE_NAME}オーダーリストRunを検索 (since ${todayStart.toISOString()})`);
 
-  const { data: runs, error: runsError } = await supabase
+  const { data: latestImport, error: importError } = await supabase
+    .from('order_list_import')
+    .select('id')
+    .eq('store', STORE_NAME)
+    .order('business_date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (importError) throw new Error(`最新オーダーリスト取込検索失敗: ${importError.message}`);
+
+  const { data: runs, error: runsError } = latestImport ? await supabase
     .from('run')
     .select('*')
     .eq('store', STORE_NAME)
-    .not('order_list_import_id', 'is', null)
+    .eq('order_list_import_id', latestImport.id)
     .gte('started_at', todayStart.toISOString())
     .order('started_at', { ascending: false })
-    .returns<RunRow[]>();
+    .returns<RunRow[]>() : { data: [], error: null };
 
   if (runsError) throw new Error(`run テーブル検索失敗: ${runsError.message}`);
 

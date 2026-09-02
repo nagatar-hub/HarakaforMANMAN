@@ -85,6 +85,14 @@ test('同一SHAでも旧parserの取込はcurrent parserのduplicateとして再
       sha256: 'same-sha',
       created_at: '2026-08-20T00:00:00.000Z',
     },
+    {
+      id: 'v3-import',
+      store: 'manman',
+      business_date: '2026-08-19',
+      parser_version: 'order-list-v3',
+      sha256: 'same-sha',
+      created_at: '2026-08-21T00:00:00.000Z',
+    },
   ];
   const filters: Array<[string, unknown]> = [];
   const query = {
@@ -109,9 +117,9 @@ test('同一SHAでも旧parserの取込はcurrent parserのduplicateとして再
     'same-sha',
   );
 
-  assert.equal(result.data?.id, 'v2-import');
+  assert.equal(result.data?.id, 'v3-import');
   assert.equal(filters.some(([column, value]) => (
-    column === 'parser_version' && value === 'order-list-v2'
+    column === 'parser_version' && value === 'order-list-v3'
   )), true);
 });
 

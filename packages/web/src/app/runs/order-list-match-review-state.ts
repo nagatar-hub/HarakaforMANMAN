@@ -266,15 +266,11 @@ export type OrderListImportSelectionCandidate = {
   persistence_complete?: boolean;
 };
 
-/**
- * APIの新しい順を維持し、初回表示では最初の正常保存済み取込を選ぶ。
- * 操作者が明示的に選んだ履歴は、一覧に残っている限り更新後も保持する。
- */
-export function latestUsableOrderListImportId(
+/** APIの新しい順を維持し、失敗した最新取込もそのまま表示する。 */
+export function latestOrderListImportId(
   imports: readonly OrderListImportSelectionCandidate[],
 ): string {
-  return imports.find((item) => item.structural_valid === true
-    && item.persistence_complete === true)?.id ?? imports[0]?.id ?? '';
+  return imports[0]?.id ?? '';
 }
 
 export function selectDefaultOrderListImportId(
@@ -282,14 +278,14 @@ export function selectDefaultOrderListImportId(
   currentId = '',
 ): string {
   if (currentId && imports.some((item) => item.id === currentId)) return currentId;
-  return latestUsableOrderListImportId(imports);
+  return latestOrderListImportId(imports);
 }
 
 export function isLatestOrderListImportId(
   imports: readonly OrderListImportSelectionCandidate[],
   selectedId: string,
 ): boolean {
-  return selectedId !== '' && latestUsableOrderListImportId(imports) === selectedId;
+  return selectedId !== '' && latestOrderListImportId(imports) === selectedId;
 }
 
 type OrderListSyncRequestStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;

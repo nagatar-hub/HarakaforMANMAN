@@ -68,9 +68,24 @@ function applyFilters(rows: RunRow[], filters: Filter[], limit?: number): RunRow
   return limit === undefined ? filtered : filtered.slice(0, limit);
 }
 
-function makeSupabase(rows: RunRow[], casMissIds = new Set<string>()) {
+function makeSupabase(
+  rows: RunRow[],
+  casMissIds = new Set<string>(),
+  latestImportId: string | null | undefined = undefined,
+) {
   return {
     from(table: string) {
+      if (table === 'order_list_import') {
+        const query: Record<string, jest.Mock> = {};
+        for (const method of ['select', 'eq', 'order', 'limit']) {
+          query[method] = jest.fn(() => query);
+        }
+        query.maybeSingle = jest.fn(async () => {
+          const id = latestImportId === undefined ? rows[0]?.order_list_import_id : latestImportId;
+          return { data: id ? { id } : null, error: null };
+        });
+        return query;
+      }
       if (table !== 'run') throw new Error(`Unexpected table: ${table}`);
       const filters: Filter[] = [];
       let limit: number | undefined;
@@ -135,6 +150,18 @@ describe('runWatchdog', () => {
     expect(sendDiscordNotification).toHaveBeenCalledWith(expect.objectContaining({
       title: '⚠️ 本日のオーダーリスト未反映',
     }));
+  });
+
+  it('最新取込にRunがなければ同日の古いRunへフォールバックしない', async () => {
+    const oldRun = makeRun({ id: 'old-run', order_list_import_id: 'old-import' });
+    (createSupabaseClientFromSecrets as jest.Mock).mockResolvedValue(
+      makeSupabase([oldRun], new Set(), 'failed-latest-import'),
+    );
+
+    await runWatchdog();
+
+    expect(runCloudRunJob).not.toHaveBeenCalled();
+    expect(oldRun.status).toBe('completed');
   });
 
   it('WATCHDOG_MODE=recoveryなら全期間回収だけで終了する', async () => {

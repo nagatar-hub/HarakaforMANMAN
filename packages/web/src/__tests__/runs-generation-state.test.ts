@@ -23,12 +23,19 @@ function run(overrides: Partial<TestRun> = {}): TestRun {
   };
 }
 
-test('selects exactly the first completed planned run without generated images', () => {
-  const generatedNewest = run({ id: 'generated', generate_done_at: '2026-07-15T01:00:00Z' });
+test('selects the newest run only when it is completed, planned, and not generated', () => {
   const eligible = run({ id: 'eligible' });
   const olderEligible = run({ id: 'older-eligible' });
 
-  expect(findEligibleGenerationRun([generatedNewest, eligible, olderEligible])?.id).toBe('eligible');
+  expect(findEligibleGenerationRun([eligible, olderEligible])?.id).toBe('eligible');
+});
+
+test('does not fall back to an older run when the newest run is failed or already generated', () => {
+  const generatedNewest = run({ id: 'generated', generate_done_at: '2026-07-15T01:00:00Z' });
+  const olderEligible = run({ id: 'older-eligible' });
+
+  expect(findEligibleGenerationRun([generatedNewest, olderEligible])).toBeNull();
+  expect(findEligibleGenerationRun([run({ status: 'failed' }), olderEligible])).toBeNull();
 });
 
 test('does not select running, failed, unplanned, or generated runs', () => {

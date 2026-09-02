@@ -7,7 +7,7 @@ import {
   firstReviewStatus,
   getOrCreateOrderListSyncRequestId,
   isLatestOrderListImportId,
-  latestUsableOrderListImportId,
+  latestOrderListImportId,
   isLaunchPendingConfirmation,
   mappingSelections,
   newCardSelections,
@@ -74,7 +74,7 @@ test('同期可能な最新取込は共通helperのIDだけで判定する', () 
   expect(isLatestOrderListImportId(imports, '')).toBe(false);
 });
 
-test('先頭が構造不正または保存未完了なら次の正常保存済み取込を選ぶ', () => {
+test('最新取込が構造不正または保存未完了でも旧取込へフォールバックしない', () => {
   const imports = [
     { id: 'latest-invalid', status: 'failed', structural_valid: false, persistence_complete: true },
     { id: 'latest-incomplete', status: 'failed', structural_valid: true, persistence_complete: false },
@@ -82,11 +82,11 @@ test('先頭が構造不正または保存未完了なら次の正常保存済�
     { id: 'older-usable', status: 'applied', structural_valid: true, persistence_complete: true },
   ];
 
-  expect(latestUsableOrderListImportId(imports)).toBe('latest-usable');
-  expect(selectDefaultOrderListImportId(imports)).toBe('latest-usable');
-  expect(isLatestOrderListImportId(imports, 'latest-usable')).toBe(true);
-  expect(isLatestOrderListImportId(imports, 'latest-invalid')).toBe(false);
-  expect(latestUsableOrderListImportId(imports.slice(0, 2))).toBe('latest-invalid');
+  expect(latestOrderListImportId(imports)).toBe('latest-invalid');
+  expect(selectDefaultOrderListImportId(imports)).toBe('latest-invalid');
+  expect(isLatestOrderListImportId(imports, 'latest-invalid')).toBe(true);
+  expect(isLatestOrderListImportId(imports, 'latest-usable')).toBe(false);
+  expect(latestOrderListImportId([])).toBe('');
 });
 
 test('仮選択は取込ごとに保持し、同じ商品を選び直すと上書きする', () => {
