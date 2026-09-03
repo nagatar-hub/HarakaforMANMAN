@@ -98,6 +98,7 @@ test('ブラウザ側の共有キーなしでserver Bearerとqueryを安全に�
   expect(String(input)).toBe('https://api.internal.example/api/order-list/imports?limit=30');
   const headers = new Headers(init?.headers);
   expect(headers.get('authorization')).toBe(`Bearer ${'a'.repeat(32)}`);
+  expect(headers.get('x-haraka-operator-email')).toBe('operator@example.com');
   expect(headers.has('x-order-list-operator-key')).toBe(false);
 });
 test('strips a leading BOM from API_BASE_URL before building the upstream URL', async () => {

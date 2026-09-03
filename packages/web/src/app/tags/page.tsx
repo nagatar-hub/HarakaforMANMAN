@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { FRANCHISES as FRANCHISE_KEYS, FRANCHISE_JA } from '@haraka/shared';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = '/api/backend';
 
 const FRANCHISES = FRANCHISE_KEYS.map((key) => ({ key, label: FRANCHISE_JA[key] }));
 

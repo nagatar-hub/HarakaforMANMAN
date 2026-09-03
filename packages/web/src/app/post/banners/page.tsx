@@ -14,7 +14,7 @@ type Banner = {
   created_at: string;
 };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = '/api/backend';
 const FRANCHISE_JA: Readonly<Record<string, string>> = SHARED_FRANCHISE_JA;
 
 export default function BannersPage() {

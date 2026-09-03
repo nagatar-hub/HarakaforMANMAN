@@ -5,45 +5,26 @@ import {
   readCookie,
   verifyOperatorSession,
 } from '@/lib/operator-auth';
+import { serverApiBaseUrl } from '@/lib/server-api-url';
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
-
 type RouteContext = { params: Promise<{ path: string[] }> };
 
 function isSameOriginWrite(request: Request): boolean {
   if (request.method === 'GET' || request.method === 'HEAD') return true;
-  const requestUrl = new URL(request.url);
-  const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim();
-  const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
-  const externalHost = forwardedHost || request.headers.get('host') || requestUrl.host;
-  const externalProtocol = forwardedProto ? `${forwardedProto}:` : requestUrl.protocol;
-  let requestOrigin: string;
-  try {
-    requestOrigin = new URL(`${externalProtocol}//${externalHost}`).origin;
-  } catch {
-    return false;
-  }
   const origin = request.headers.get('origin');
   const fetchSite = request.headers.get('sec-fetch-site');
-  if (origin) return origin === requestOrigin && (!fetchSite || fetchSite === 'same-origin');
-  if (fetchSite) return fetchSite === 'same-origin';
-  const referer = request.headers.get('referer');
-  if (!referer) return false;
-  try {
-    return new URL(referer).origin === requestOrigin;
-  } catch {
-    return false;
-  }
+  return origin === new URL(request.url).origin
+    && (!fetchSite || fetchSite === 'same-origin');
 }
 
-async function proxyCustomBuybackRequest(request: Request, context: RouteContext): Promise<Response> {
+async function proxyBackendRequest(request: Request, context: RouteContext): Promise<Response> {
   if (!isSameOriginWrite(request)) {
     return Response.json({ error: '同一画面からの操作のみ受け付けます' }, { status: 403 });
   }
-  const apiBaseUrl = process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
   const apiToken = process.env.ORDER_LIST_IMPORT_API_TOKEN?.trim();
   if (!apiToken || apiToken.length < 32) {
-    return Response.json({ error: 'カスタム買取表APIの認証設定がありません' }, { status: 503 });
+    return Response.json({ error: 'APIの認証設定がありません' }, { status: 503 });
   }
 
   let operatorEmail: string | null = null;
@@ -57,15 +38,15 @@ async function proxyCustomBuybackRequest(request: Request, context: RouteContext
   }
 
   const { path } = await context.params;
-  const upstreamUrl = new URL(`/api/custom-buyback/${path.map(encodeURIComponent).join('/')}`, apiBaseUrl);
+  const upstreamUrl = new URL(`/${path.map(encodeURIComponent).join('/')}`, serverApiBaseUrl());
   upstreamUrl.search = new URL(request.url).search;
   const headers = new Headers({
     Accept: request.headers.get('accept') ?? 'application/json',
     Authorization: `Bearer ${apiToken}`,
   });
-  if (operatorEmail) headers.set('X-Haraka-Operator-Email', operatorEmail);
   const contentType = request.headers.get('content-type');
   if (contentType) headers.set('Content-Type', contentType);
+  if (operatorEmail) headers.set('X-Haraka-Operator-Email', operatorEmail);
 
   let body: ArrayBuffer | undefined;
   if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -88,19 +69,21 @@ async function proxyCustomBuybackRequest(request: Request, context: RouteContext
       signal: request.signal,
     });
     const responseHeaders = new Headers();
-    const responseType = upstream.headers.get('content-type');
-    if (responseType) responseHeaders.set('Content-Type', responseType);
+    for (const name of ['content-type', 'content-disposition', 'location']) {
+      const value = upstream.headers.get(name);
+      if (value) responseHeaders.set(name, value);
+    }
     return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
   } catch (error) {
     return Response.json({
-      error: 'カスタム買取表APIに接続できません',
+      error: 'APIに接続できません',
       detail: error instanceof Error ? error.message : String(error),
     }, { status: 502 });
   }
 }
 
-export const GET = proxyCustomBuybackRequest;
-export const POST = proxyCustomBuybackRequest;
-export const PATCH = proxyCustomBuybackRequest;
-export const PUT = proxyCustomBuybackRequest;
-export const DELETE = proxyCustomBuybackRequest;
+export const GET = proxyBackendRequest;
+export const POST = proxyBackendRequest;
+export const PUT = proxyBackendRequest;
+export const PATCH = proxyBackendRequest;
+export const DELETE = proxyBackendRequest;

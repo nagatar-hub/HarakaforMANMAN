@@ -18,6 +18,7 @@ const originalEnv = {
   NEXTAUTH_URL: process.env.NEXTAUTH_URL,
   ORDER_LIST_IMPORT_API_TOKEN: process.env.ORDER_LIST_IMPORT_API_TOKEN,
   ORDER_LIST_OPERATOR_EMAILS: process.env.ORDER_LIST_OPERATOR_EMAILS,
+  STORE_NAME: process.env.STORE_NAME,
 };
 
 function configureOperatorOAuth(): void {
@@ -129,6 +130,34 @@ test('operator callback issues a session to a verified allowlisted user', async 
   await expect(verifyOperatorSession({ session, secret })).resolves.toMatchObject({
     ok: true,
     value: { email: 'operator@example.com' },
+  });
+});
+
+test('Tokyo operator callback accepts a verified tomstocks.net user without an individual allowlist', async () => {
+  configureOperatorOAuth();
+  process.env.STORE_NAME = 'manman-akihabara';
+  delete process.env.ORDER_LIST_OPERATOR_EMAILS;
+  const nonce = 'nonce-tokyo-domain';
+  const state = await createOperatorState({ nonce, returnTo: '/runs', target: 'operator', secret });
+  global.fetch = jest.fn()
+    .mockResolvedValueOnce(Response.json({
+      access_token: 'access-token',
+      expires_in: 3600,
+      token_type: 'Bearer',
+      scope: 'openid email',
+    }))
+    .mockResolvedValueOnce(Response.json({
+      email: 'staff@tomstocks.net',
+      email_verified: true,
+    })) as typeof fetch;
+
+  const response = await completeGoogleOAuth(callbackRequest(state, nonce));
+
+  expect(response.status).toBe(307);
+  const session = response.cookies.get(OPERATOR_SESSION_COOKIE)?.value;
+  await expect(verifyOperatorSession({ session, secret })).resolves.toMatchObject({
+    ok: true,
+    value: { email: 'staff@tomstocks.net' },
   });
 });
 

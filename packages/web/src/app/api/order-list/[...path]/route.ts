@@ -1,7 +1,7 @@
 import {
   OPERATOR_SESSION_COOKIE,
+  isOperatorEmailAllowed,
   operatorAuthRequiredFromEnv,
-  operatorEmailAllowlistFromEnv,
   readCookie,
   verifyOperatorSession,
 } from '@/lib/operator-auth';
@@ -31,12 +31,14 @@ async function proxyOrderListRequest(request: Request, context: RouteContext): P
   if (!apiToken || apiToken.length < 32) {
     return Response.json({ error: 'オーダーリスト取込の認証設定がありません' }, { status: 503 });
   }
+  let operatorEmail: string | null = null;
   if (operatorAuthRequiredFromEnv()) {
     const session = readCookie(request.headers.get('cookie'), OPERATOR_SESSION_COOKIE);
     const sessionResult = await verifyOperatorSession({ session, secret: apiToken });
-    if (!sessionResult.ok || !operatorEmailAllowlistFromEnv().has(sessionResult.value.email)) {
+    if (!sessionResult.ok || !isOperatorEmailAllowed(sessionResult.value.email)) {
       return Response.json({ error: 'Operator authentication required' }, { status: 401 });
     }
+    operatorEmail = sessionResult.value.email;
   }
 
   const { path } = await context.params;
@@ -52,6 +54,7 @@ async function proxyOrderListRequest(request: Request, context: RouteContext): P
   });
   const contentType = request.headers.get('content-type');
   if (contentType) headers.set('Content-Type', contentType);
+  if (operatorEmail) headers.set('X-Haraka-Operator-Email', operatorEmail);
 
   let body: ReadableStream<Uint8Array> | undefined;
   let receivedBytes = 0;

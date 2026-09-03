@@ -121,7 +121,8 @@ async function verifyValue(
 }
 
 export function operatorAuthRequiredFromEnv(): boolean {
-  return process.env.OPERATOR_AUTH_REQUIRED?.trim().toLowerCase() !== 'false';
+  return operatorStoreNameFromEnv() === TOKYO_MANMAN_STORE_NAME
+    || process.env.OPERATOR_AUTH_REQUIRED?.trim().toLowerCase() !== 'false';
 }
 
 export function operatorAuthSecretFromEnv(): OperatorAuthResult<string> {
@@ -263,11 +264,40 @@ export function operatorEmailAllowlistFromEnv(): Set<string> {
   );
 }
 
+const TOKYO_MANMAN_STORE_NAME = 'manman-akihabara';
+const TOKYO_OPERATOR_DOMAIN = 'tomstocks.net';
+
+function operatorStoreNameFromEnv(): string {
+  return process.env.STORE_NAME?.trim() || 'manman';
+}
+
+export function operatorAccessConfigured(
+  allowedEmails = operatorEmailAllowlistFromEnv(),
+  storeName = operatorStoreNameFromEnv(),
+): boolean {
+  return allowedEmails.size > 0 || storeName === TOKYO_MANMAN_STORE_NAME;
+}
+
+export function isOperatorEmailAllowed(
+  value: string,
+  allowedEmails = operatorEmailAllowlistFromEnv(),
+  storeName = operatorStoreNameFromEnv(),
+): boolean {
+  const email = value.trim().toLowerCase();
+  if (allowedEmails.has(email)) return true;
+  const parts = email.split('@');
+  return storeName === TOKYO_MANMAN_STORE_NAME
+    && parts.length === 2
+    && Boolean(parts[0])
+    && parts[1] === TOKYO_OPERATOR_DOMAIN;
+}
+
 export function validateOperatorUserInfo(
   value: unknown,
   allowedEmails = operatorEmailAllowlistFromEnv(),
+  storeName = operatorStoreNameFromEnv(),
 ): OperatorAuthResult<GoogleOperatorUser> {
-  if (allowedEmails.size === 0) {
+  if (!operatorAccessConfigured(allowedEmails, storeName)) {
     return { ok: false, error: 'ORDER_LIST_OPERATOR_EMAILS is not configured' };
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -278,7 +308,7 @@ export function validateOperatorUserInfo(
   if (!email || data.email_verified !== true) {
     return { ok: false, error: 'A verified Google email address is required' };
   }
-  if (!allowedEmails.has(email)) {
+  if (!isOperatorEmailAllowed(email, allowedEmails, storeName)) {
     return { ok: false, error: 'This Google account is not an allowed operator' };
   }
   return { ok: true, value: { email, emailVerified: true } };

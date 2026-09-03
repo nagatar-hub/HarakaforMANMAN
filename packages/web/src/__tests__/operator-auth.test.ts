@@ -3,6 +3,9 @@ import {
   OPERATOR_STATE_TTL_SECONDS,
   createOperatorSession,
   createOperatorState,
+  isOperatorEmailAllowed,
+  operatorAccessConfigured,
+  operatorAuthRequiredFromEnv,
   safeRelativeReturnTo,
   validateOperatorUserInfo,
   verifyOperatorSession,
@@ -156,5 +159,44 @@ describe('operator input validation', () => {
       email: 'operator@example.com',
       email_verified: true,
     }, new Set())).toMatchObject({ ok: false });
+  });
+
+  test('allows the exact tomstocks.net domain only for Tokyo Manman', () => {
+    const emptyAllowlist = new Set<string>();
+
+    expect(operatorAccessConfigured(emptyAllowlist, 'manman-akihabara')).toBe(true);
+    expect(isOperatorEmailAllowed(
+      ' Staff@TomStocks.net ', emptyAllowlist, 'manman-akihabara',
+    )).toBe(true);
+    expect(validateOperatorUserInfo({
+      email: 'staff@tomstocks.net',
+      email_verified: true,
+    }, emptyAllowlist, 'manman-akihabara')).toMatchObject({ ok: true });
+    expect(isOperatorEmailAllowed(
+      'staff@tomstocks.net.attacker.example', emptyAllowlist, 'manman-akihabara',
+    )).toBe(false);
+    expect(isOperatorEmailAllowed(
+      'staff@@tomstocks.net', emptyAllowlist, 'manman-akihabara',
+    )).toBe(false);
+    expect(operatorAccessConfigured(emptyAllowlist, 'manman')).toBe(false);
+    expect(isOperatorEmailAllowed('staff@tomstocks.net', emptyAllowlist, 'manman')).toBe(false);
+  });
+
+  test('Tokyo Manman cannot disable operator authentication through the legacy opt-out', () => {
+    const originalStore = process.env.STORE_NAME;
+    const originalRequired = process.env.OPERATOR_AUTH_REQUIRED;
+    try {
+      process.env.STORE_NAME = 'manman-akihabara';
+      process.env.OPERATOR_AUTH_REQUIRED = 'false';
+      expect(operatorAuthRequiredFromEnv()).toBe(true);
+
+      process.env.STORE_NAME = 'manman';
+      expect(operatorAuthRequiredFromEnv()).toBe(false);
+    } finally {
+      if (originalStore === undefined) delete process.env.STORE_NAME;
+      else process.env.STORE_NAME = originalStore;
+      if (originalRequired === undefined) delete process.env.OPERATOR_AUTH_REQUIRED;
+      else process.env.OPERATOR_AUTH_REQUIRED = originalRequired;
+    }
   });
 });

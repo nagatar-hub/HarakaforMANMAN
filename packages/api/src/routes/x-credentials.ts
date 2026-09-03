@@ -8,6 +8,8 @@ import {
 } from '../lib/x-auth.js';
 import { verifyCredentials } from '../lib/x-client.js';
 import { STORE_NAME } from '../lib/store-scope.js';
+import { authorizeInternalApiRequest, normalizeOperatorEmail } from '../lib/internal-api-auth.js';
+import { buildOperatorAuditEntry, persistOperatorAudit } from '../lib/operator-audit.js';
 
 const FRONTEND_URL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
 
@@ -27,7 +29,12 @@ xCredentialRoutes.get('/x/credentials', async (c) => {
 
 // Initiate OAuth 2.0 PKCE flow
 xCredentialRoutes.get('/x/oauth/authorize', async (c) => {
-  const { url } = buildAuthorizationUrl();
+  const auth = authorizeInternalApiRequest(c.req.header('authorization'));
+  if (auth === 'misconfigured') return c.json({ error: 'APIの認証設定がありません' }, 503);
+  if (auth !== 'authorized') return c.json({ error: 'Unauthorized' }, 401);
+  const operatorEmail = normalizeOperatorEmail(c.req.header('x-haraka-operator-email'));
+  if (!operatorEmail) return c.json({ error: 'Operator identity required' }, 401);
+  const { url } = buildAuthorizationUrl(operatorEmail);
   return c.json({ url });
 });
 
@@ -45,14 +52,14 @@ xCredentialRoutes.get('/x/oauth/callback', async (c) => {
     return c.redirect(`${FRONTEND_URL}/post/credentials?error=${encodeURIComponent('Missing code or state')}`);
   }
 
-  const verifier = getVerifierForState(state);
-  if (!verifier) {
+  const oauthRequest = getVerifierForState(state);
+  if (!oauthRequest) {
     return c.redirect(`${FRONTEND_URL}/post/credentials?error=${encodeURIComponent('Invalid or expired state. Please try again.')}`);
   }
 
   try {
     // Exchange code for tokens
-    const tokens = await exchangeCodeForTokens(code, verifier);
+    const tokens = await exchangeCodeForTokens(code, oauthRequest.verifier);
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
 
     // Fetch user info
@@ -105,6 +112,16 @@ xCredentialRoutes.get('/x/oauth/callback', async (c) => {
       if (insertError) throw new Error(insertError.message);
     }
 
+    const audit = buildOperatorAuditEntry({
+      store: STORE_NAME,
+      actorEmail: oauthRequest.operatorEmail,
+      method: 'GET',
+      url: c.req.url,
+      statusCode: 302,
+      targetId: user.id,
+      auditReadMutation: true,
+    });
+    if (audit) await persistOperatorAudit(audit);
     return c.redirect(`${FRONTEND_URL}/post/credentials?success=true&username=${encodeURIComponent(user.username)}`);
   } catch (e: any) {
     return c.redirect(`${FRONTEND_URL}/post/credentials?error=${encodeURIComponent(e.message)}`);

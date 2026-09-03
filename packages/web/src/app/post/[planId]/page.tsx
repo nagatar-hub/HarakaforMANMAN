@@ -31,7 +31,7 @@ type PostPlan = {
   items: PostItem[];
 };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = '/api/backend';
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; label: string }> = {
   pending: { bg: 'bg-gray-800', text: 'text-gray-400', label: '待機' },

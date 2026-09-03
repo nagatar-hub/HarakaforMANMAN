@@ -16,6 +16,8 @@ import { storeConfigRoutes } from './routes/store-config.js';
 import { customBuybackRoutes } from './routes/custom-buyback.js';
 import { orderListImportRoutes } from './routes/order-list-imports.js';
 import { STORE_NAME } from './lib/store-scope.js';
+import { buildOperatorAuditEntry, persistOperatorAudit } from './lib/operator-audit.js';
+import { authorizeInternalMutationRequest, normalizeOperatorEmail } from './lib/internal-api-auth.js';
 
 const app = new Hono();
 
@@ -34,7 +36,37 @@ app.use('*', cors({
 
 app.use('*', async (c, next) => {
   c.header('X-Haraka-Store', STORE_NAME);
-  await next();
+  const authorization = c.req.header('authorization');
+  const requestedActorEmail = c.req.header('x-haraka-operator-email');
+  const mutationAuth = authorizeInternalMutationRequest(
+    c.req.method,
+    authorization,
+    undefined,
+    requestedActorEmail,
+  );
+  if (mutationAuth === 'misconfigured') {
+    return c.json({ error: 'APIの認証設定がありません' }, 503);
+  }
+  if (mutationAuth === 'unauthorized') return c.json({ error: 'Unauthorized' }, 401);
+  if (mutationAuth === 'operator_required') {
+    return c.json({ error: 'Operator identity required' }, 401);
+  }
+  const actorEmail = normalizeOperatorEmail(requestedActorEmail) ?? undefined;
+  let statusCode = 500;
+  try {
+    await next();
+    statusCode = c.res.status;
+  } finally {
+    const audit = buildOperatorAuditEntry({
+      store: STORE_NAME,
+      actorEmail,
+      method: c.req.method,
+      url: c.req.url,
+      statusCode,
+      targetId: c.req.header('x-haraka-audit-target-id'),
+    });
+    if (audit) await persistOperatorAudit(audit);
+  }
 });
 
 app.route('/api', healthRoutes);

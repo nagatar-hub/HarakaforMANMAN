@@ -97,7 +97,7 @@ function formatDate(iso: string | null) {
   return new Date(iso).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = '/api/backend';
 
 type Toast = {
   id: string;

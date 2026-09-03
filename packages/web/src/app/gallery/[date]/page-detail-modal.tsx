@@ -47,7 +47,7 @@ type PageDetail = {
   status: string;
 };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = '/api/backend';
 
 function formatPrice(val: number | null): string {
   if (val == null) return '-';

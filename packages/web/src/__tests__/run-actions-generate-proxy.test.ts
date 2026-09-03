@@ -136,6 +136,8 @@ test('forwards only the selected run ID with a server-side Bearer token', async 
   const [input, init] = upstreamFetch.mock.calls[0];
   expect(String(input)).toBe('https://api.internal.example/api/jobs/generate');
   expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${'a'.repeat(32)}`);
+  expect(new Headers(init?.headers).get('x-haraka-operator-email')).toBe('operator@example.com');
+  expect(new Headers(init?.headers).get('x-haraka-audit-target-id')).toBe('run-1');
   expect(JSON.parse(forwardedBody)).toEqual({ run_id: 'run-1' });
 });
 

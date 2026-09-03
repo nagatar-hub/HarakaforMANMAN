@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   OPERATOR_SESSION_COOKIE,
+  isOperatorEmailAllowed,
   operatorAuthRequiredFromEnv,
   operatorAuthSecretFromEnv,
-  operatorEmailAllowlistFromEnv,
   verifyOperatorSession,
 } from '@/lib/operator-auth';
 
@@ -19,7 +19,7 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
       session,
       secret: secretResult.value,
     });
-    if (verified.ok && operatorEmailAllowlistFromEnv().has(verified.value.email)) {
+    if (verified.ok && isOperatorEmailAllowed(verified.value.email)) {
       return NextResponse.next();
     }
   }
@@ -31,5 +31,13 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
 }
 
 export const config = {
-  matcher: ['/runs/:path*', '/custom-buyback/:path*', '/gallery/custom/:path*'],
+  matcher: [
+    '/runs/:path*',
+    '/custom-buyback/:path*',
+    '/db/:path*',
+    '/tags/:path*',
+    '/settings/:path*',
+    '/gallery/:path*',
+    '/post/:path*',
+  ],
 };

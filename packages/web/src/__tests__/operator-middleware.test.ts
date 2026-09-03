@@ -22,7 +22,15 @@ function restoreToken(): void {
 afterEach(restoreToken);
 
 test('custom buyback pages require the same operator authentication as runs', () => {
-  expect(config.matcher).toEqual(['/runs/:path*', '/custom-buyback/:path*', '/gallery/custom/:path*']);
+  expect(config.matcher).toEqual([
+    '/runs/:path*',
+    '/custom-buyback/:path*',
+    '/db/:path*',
+    '/tags/:path*',
+    '/settings/:path*',
+    '/gallery/:path*',
+    '/post/:path*',
+  ]);
 });
 
 test('/runs redirects an unauthenticated request to Google operator login', async () => {

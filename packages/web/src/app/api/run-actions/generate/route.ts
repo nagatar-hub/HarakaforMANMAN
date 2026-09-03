@@ -1,7 +1,7 @@
 import {
   OPERATOR_SESSION_COOKIE,
+  isOperatorEmailAllowed,
   operatorAuthRequiredFromEnv,
-  operatorEmailAllowlistFromEnv,
   readCookie,
   verifyOperatorSession,
 } from '@/lib/operator-auth';
@@ -28,12 +28,14 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: '実行APIの認証設定がありません' }, { status: 503 });
   }
 
+  let operatorEmail: string | null = null;
   if (operatorAuthRequiredFromEnv()) {
     const session = readCookie(request.headers.get('cookie'), OPERATOR_SESSION_COOKIE);
     const sessionResult = await verifyOperatorSession({ session, secret: apiToken });
-    if (!sessionResult.ok || !operatorEmailAllowlistFromEnv().has(sessionResult.value.email)) {
+    if (!sessionResult.ok || !isOperatorEmailAllowed(sessionResult.value.email)) {
       return Response.json({ error: 'Operator authentication required' }, { status: 401 });
     }
+    operatorEmail = sessionResult.value.email;
   }
 
   let payload: GenerateRequest;
@@ -57,6 +59,8 @@ export async function POST(request: Request): Promise<Response> {
         Accept: 'application/json',
         Authorization: `Bearer ${apiToken}`,
         'Content-Type': 'application/json',
+        ...(operatorEmail ? { 'X-Haraka-Operator-Email': operatorEmail } : {}),
+        ...(operatorEmail ? { 'X-Haraka-Audit-Target-Id': payload.run_id.trim() } : {}),
       },
       body: JSON.stringify({ run_id: payload.run_id.trim() }),
       cache: 'no-store',

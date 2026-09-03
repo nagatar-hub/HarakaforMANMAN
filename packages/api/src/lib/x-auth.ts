@@ -9,7 +9,7 @@ const SCOPES = 'tweet.read tweet.write users.read offline.access media.write';
 const TOKEN_REFRESH_MARGIN_SEC = 600;
 
 // In-memory PKCE store (state -> verifier)
-const pkceStore = new Map<string, { verifier: string; createdAt: number }>();
+const pkceStore = new Map<string, { verifier: string; operatorEmail: string; createdAt: number }>();
 
 // Cleanup expired entries every 5 minutes
 const cleanupTimer = setInterval(() => {
@@ -33,12 +33,12 @@ export function generateCodeChallenge(verifier: string): string {
   return base64UrlEncode(hash);
 }
 
-export function buildAuthorizationUrl(): { url: string; state: string } {
+export function buildAuthorizationUrl(operatorEmail: string): { url: string; state: string } {
   const verifier = generateCodeVerifier();
   const challenge = generateCodeChallenge(verifier);
   const state = crypto.randomUUID();
 
-  pkceStore.set(state, { verifier, createdAt: Date.now() });
+  pkceStore.set(state, { verifier, operatorEmail, createdAt: Date.now() });
 
   const params = new URLSearchParams({
     response_type: 'code',
@@ -56,12 +56,12 @@ export function buildAuthorizationUrl(): { url: string; state: string } {
   };
 }
 
-export function getVerifierForState(state: string): string | null {
+export function getVerifierForState(state: string): { verifier: string; operatorEmail: string } | null {
   const entry = pkceStore.get(state);
   if (!entry) return null;
   pkceStore.delete(state);
   if (Date.now() - entry.createdAt > 10 * 60 * 1000) return null;
-  return entry.verifier;
+  return { verifier: entry.verifier, operatorEmail: entry.operatorEmail };
 }
 
 export async function exchangeCodeForTokens(code: string, codeVerifier: string) {

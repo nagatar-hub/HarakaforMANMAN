@@ -19,7 +19,7 @@ type Template = {
   is_default: boolean;
 };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = '/api/backend';
 
 function resolvePreview(template: string, variables: Variable[]): string {
   const now = new Date();

@@ -28,6 +28,8 @@ export type {
   CustomBuybackProductType,
   CustomBuybackKind,
   CustomBuybackSheetStatus,
+  OperatorAuditMethod,
+  OperatorAuditLogRow,
   CustomBuybackSheetRow,
   CustomBuybackItemRow,
   CustomBuybackPageRow,

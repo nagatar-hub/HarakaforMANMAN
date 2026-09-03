@@ -17,8 +17,9 @@ import {
   createOperatorSession,
   fetchGoogleOperatorUser,
   isOperatorState,
+  isOperatorEmailAllowed,
+  operatorAccessConfigured,
   operatorAuthSecretFromEnv,
-  operatorEmailAllowlistFromEnv,
   verifyOperatorSession,
   verifyOperatorState,
 } from '@/lib/operator-auth';
@@ -46,7 +47,7 @@ async function hasCurrentOperatorSession(
 ): Promise<boolean> {
   const session = request.cookies.get(OPERATOR_SESSION_COOKIE)?.value;
   const verified = await verifyOperatorSession({ session, secret });
-  return verified.ok && operatorEmailAllowlistFromEnv().has(verified.value.email);
+  return verified.ok && isOperatorEmailAllowed(verified.value.email);
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
@@ -59,7 +60,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   const secretResult = operatorAuthSecretFromEnv();
-  if (!secretResult.ok || operatorEmailAllowlistFromEnv().size === 0) {
+  if (!secretResult.ok || !operatorAccessConfigured()) {
     return clearOperatorNonce(NextResponse.json(
       { error: 'Operator authentication is not configured' },
       { status: 503 },

@@ -44,6 +44,18 @@ export type PriceSource = 'order_list' | 'kecak' | 'spectre' | 'manual';
 export type CustomBuybackProductType = 'psa' | 'box';
 export type CustomBuybackKind = 'postal' | 'store';
 export type CustomBuybackSheetStatus = 'draft' | 'rendering' | 'ready' | 'failed';
+export type OperatorAuditMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+export type OperatorAuditLogRow = {
+  id: string;
+  store: string;
+  actor_email: string;
+  http_method: OperatorAuditMethod;
+  request_path: string;
+  target_id: string | null;
+  status_code: number;
+  created_at: string;
+};
 
 export type StoreConfigRow = {
   store: string;
@@ -647,6 +659,12 @@ export type Database = {
           error_message?: string | null;
         };
         Update: Partial<Omit<CustomBuybackPageRow, 'id' | 'sheet_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      operator_audit_log: {
+        Row: OperatorAuditLogRow;
+        Insert: Omit<OperatorAuditLogRow, 'id' | 'created_at'> & { id?: string; created_at?: string };
+        Update: never;
         Relationships: [];
       };
       store_config: {
