@@ -4,7 +4,9 @@ import { groupCustomGalleryEntries, type CustomGalleryEntry } from '../app/galle
 function entry(id: string, displayDate: string, updatedAt: string): CustomGalleryEntry {
   const sheet = {
     id, store: 'oripark', name: id, franchise: 'Pokemon', product_type: 'psa', kind: 'store',
-    price_snapshot_run_id: 'run-1', price_business_date: '2026-08-03', display_date: displayDate,
+    catalog_source: 'prepared_card', price_snapshot_run_id: 'run-1', kaitori_checker_run_id: null,
+    kaitori_checker_source_store: null,
+    price_business_date: '2026-08-03', display_date: displayDate,
     status: 'draft', revision: 0, last_rendered_revision: null, error_message: null, created_by: null,
     created_at: '2026-08-03T00:00:00Z', updated_at: updatedAt,
   } satisfies CustomBuybackSheetRow;

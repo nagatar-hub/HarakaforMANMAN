@@ -7,6 +7,11 @@
 import { createSupabaseClient } from './supabase.js';
 
 const BATCH_SIZE = 500;
+type BatchResult = PromiseLike<{ error: { message: string } | null }>;
+type DynamicTable = {
+  insert(rows: Record<string, unknown>[]): BatchResult;
+  upsert(rows: Record<string, unknown>[], options: { onConflict: string }): BatchResult;
+};
 
 /**
  * 大量データをバッチに分割して insert する
@@ -18,8 +23,8 @@ export async function batchInsert<T extends Record<string, unknown>>(
 ): Promise<void> {
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
-    const { error } = await (supabase.from(table) as ReturnType<ReturnType<typeof createSupabaseClient>['from']>)
-      .insert(batch);
+    const dynamicFrom = supabase.from as unknown as (name: string) => DynamicTable;
+    const { error } = await dynamicFrom(table).insert(batch);
     if (error) throw new Error(`${table} insert failed (batch ${Math.floor(i / BATCH_SIZE) + 1}): ${error.message}`);
   }
 }
@@ -37,8 +42,8 @@ export async function batchUpsert<T extends Record<string, unknown>>(
 ): Promise<void> {
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
-    const { error } = await (supabase.from(table) as ReturnType<ReturnType<typeof createSupabaseClient>['from']>)
-      .upsert(batch, { onConflict });
+    const dynamicFrom = supabase.from as unknown as (name: string) => DynamicTable;
+    const { error } = await dynamicFrom(table).upsert(batch, { onConflict });
     if (error) throw new Error(`${table} upsert failed (batch ${Math.floor(i / BATCH_SIZE) + 1}): ${error.message}`);
   }
 }

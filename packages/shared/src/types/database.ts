@@ -41,9 +41,13 @@ export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'excl
 export type OrderListMatchMethod = 'existing_mapping' | 'exact_image' | 'exact_identity' | 'manual';
 export type ExcelProductMappingStatus = 'active' | 'disabled';
 export type PriceSource = 'order_list' | 'kecak' | 'spectre' | 'manual';
+export type CustomBuybackPriceSource = PriceSource | 'kaitori_checker';
 export type CustomBuybackProductType = 'psa' | 'box';
 export type CustomBuybackKind = 'postal' | 'store';
 export type CustomBuybackSheetStatus = 'draft' | 'rendering' | 'ready' | 'failed';
+export type CustomBuybackCatalogSource = 'prepared_card' | 'kaitori_checker';
+export type KaitoriCheckerSyncTrigger = 'scheduler' | 'manual';
+export type KaitoriCheckerSyncStatus = 'queued' | 'running' | 'applied' | 'failed';
 export type OperatorAuditMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 export type OperatorAuditLogRow = {
@@ -223,7 +227,10 @@ export type CustomBuybackSheetRow = {
   franchise: CustomBuybackFranchise;
   product_type: CustomBuybackProductType;
   kind: CustomBuybackKind;
-  price_snapshot_run_id: string;
+  catalog_source: CustomBuybackCatalogSource;
+  price_snapshot_run_id: string | null;
+  kaitori_checker_run_id: string | null;
+  kaitori_checker_source_store: string | null;
   price_business_date: string;
   display_date: string;
   status: CustomBuybackSheetStatus;
@@ -249,6 +256,11 @@ export type CustomBuybackItemRow = {
   id: string;
   sheet_id: string;
   source_prepared_card_id: string | null;
+  source_kaitori_product_id: number | null;
+  source_kaitori_condition_id: number | null;
+  source_kaitori_shop_id: number | null;
+  source_kaitori_edition_id: number | null;
+  source_shop_name: string | null;
   source_db_card_id: string | null;
   excel_product_id: string | null;
   position: number;
@@ -265,7 +277,8 @@ export type CustomBuybackItemRow = {
   source_price_low: number | null;
   final_price_high: number | null;
   final_price_low: number | null;
-  price_source: PriceSource;
+  demand: number;
+  price_source: CustomBuybackPriceSource;
   price_source_date: string;
   override_reason: string | null;
   created_at: string;
@@ -508,6 +521,46 @@ export type OrderListItemRow = {
   updated_at: string;
 };
 
+export type KaitoriCheckerSyncRunRow = {
+  id: string;
+  store: string;
+  request_key: string;
+  trigger: KaitoriCheckerSyncTrigger;
+  claim_token: string;
+  status: KaitoriCheckerSyncStatus;
+  progress_page: number;
+  product_count: number;
+  offer_count: number;
+  ranking_count: number;
+  content_hash: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+  sheet_published_at: string | null;
+  sheet_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KaitoriCheckerCustomBuybackCatalogRow = {
+  run_id: string;
+  store: string;
+  source_product_id: number;
+  category: string;
+  condition_id: number;
+  condition_name: string | null;
+  shop_id: number;
+  shop_name: string;
+  edition_id: number;
+  edition_name: string | null;
+  buy_price: number;
+  name: string;
+  full_name: string | null;
+  model_number: string | null;
+  rarity: string | null;
+  image_url: string | null;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -557,6 +610,17 @@ export type Database = {
             created_at?: string;
           };
         Update: Partial<Omit<OrderListItemRow, 'id' | 'created_at'>>;
+        Relationships: [];
+      };
+      kaitori_checker_sync_run: {
+        Row: KaitoriCheckerSyncRunRow;
+        Insert: Pick<KaitoriCheckerSyncRunRow, 'store' | 'request_key' | 'trigger' | 'claim_token'> &
+          Partial<Omit<KaitoriCheckerSyncRunRow, 'id' | 'store' | 'request_key' | 'trigger' | 'claim_token' | 'created_at' | 'updated_at'>> & {
+            id?: string;
+            created_at?: string;
+            updated_at?: string;
+          };
+        Update: Partial<Omit<KaitoriCheckerSyncRunRow, 'id' | 'store' | 'request_key' | 'claim_token' | 'created_at'>>;
         Relationships: [];
       };
       raw_import: {
@@ -744,7 +808,12 @@ export type Database = {
         Relationships: [];
       };
     };
-    Views: Record<string, never>;
+    Views: {
+      kaitori_checker_custom_buyback_catalog: {
+        Row: KaitoriCheckerCustomBuybackCatalogRow;
+        Relationships: [];
+      };
+    };
     Functions: {
       reorder_custom_buyback_items: {
         Args: { p_sheet_id: string; p_store: string; p_item_ids: string[] };
@@ -778,6 +847,20 @@ export type Database = {
       };
       add_custom_buyback_items: {
         Args: { p_sheet_id: string; p_store: string; p_prepared_card_ids: string[] };
+        Returns: undefined;
+      };
+      add_custom_buyback_kaitori_items: {
+        Args: { p_sheet_id: string; p_store: string; p_source_product_ids: number[] };
+        Returns: undefined;
+      };
+      refresh_custom_buyback_kaitori_prices: {
+        Args: {
+          p_sheet_id: string;
+          p_store: string;
+          p_run_id: string;
+          p_business_date: string;
+          p_preserve_overrides: boolean;
+        };
         Returns: undefined;
       };
       delete_custom_buyback_item: {

@@ -10,11 +10,11 @@ export function reorderCustomBuybackItems(items: CustomBuybackItemRow[], itemIds
 
 export function customBuybackCsv(items: CustomBuybackItemRow[]): string {
   const rows: Array<Array<string | number | null>> = [
-    ['位置', '商品名', 'グレード', 'リスト番号', 'レアリティ', '元価格(高)', '元価格(低)', '表示価格(高)', '表示価格(低)', '手修正理由', '価格基準日', 'Excel商品ID'],
+    ['位置', '商品名', 'グレード', 'リスト番号', 'レアリティ', '元価格', '表示価格', '募集数', '最高価格店舗', '手修正理由', '価格基準日', '買取Checker商品ID', 'Excel商品ID'],
     ...items.map((item) => [
       item.position + 1, item.card_name, item.grade, item.list_no, item.rarity,
-      item.source_price_high, item.source_price_low, item.final_price_high, item.final_price_low,
-      item.override_reason, item.price_source_date, item.excel_product_id,
+      item.source_price_high, item.final_price_high, item.demand, item.source_shop_name,
+      item.override_reason, item.price_source_date, item.source_kaitori_product_id, item.excel_product_id,
     ]),
   ];
   const escape = (value: string | number | null) => {

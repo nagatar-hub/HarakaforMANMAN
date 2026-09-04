@@ -46,6 +46,8 @@ export interface ComposePageParams {
   rowCardAdjust?: Record<number, number>;
   /** 空きスロットをカード裏面で埋める枚数 */
   totalSlots?: number;
+  /** prepared_card.id → 表に表示する募集数 */
+  demandByCardId?: Map<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +72,22 @@ function createPriceTextSvg(params: {
   const y = Math.round(height / 2 + fontSize * 0.35);
   const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"><text x="${width / 2}" y="${y}" font-family="${GOTHIC_FONT}" font-size="${fontSize}" font-weight="bold" fill="${color}" text-anchor="middle">${escapeXml(text)}</text></svg>`;
   return Buffer.from(svg);
+}
+
+export function createDemandTextSvg(params: {
+  demand: number;
+  unit?: '枚' | '個';
+  width: number;
+  height: number;
+  fontSize: number;
+}): Buffer {
+  const { demand, unit = '枚', width, height, fontSize } = params;
+  const y = Math.round(height / 2 + fontSize * 0.35);
+  return Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"><text x="${width / 2}" y="${y}" font-family="${GOTHIC_FONT}" font-size="${fontSize}" font-weight="bold" fill="#111" text-anchor="middle">${demand}${unit}募集！</text></svg>`);
+}
+
+export function demandUnitForCard(card: Pick<PreparedCardRow, 'grade' | 'tag'>): '枚' | '個' {
+  return card.grade?.trim().toUpperCase() === 'BOX' || card.tag?.trim().toUpperCase() === 'BOX' ? '個' : '枚';
 }
 
 /**
@@ -135,6 +153,7 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
     rowPriceAdjust,
     rowCardAdjust,
     totalSlots,
+    demandByCardId,
   } = params;
 
   const cols = gridCols ?? assetProfile.grid_cols;
@@ -254,6 +273,21 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
         });
         composites.push({
           input: priceLowSvg,
+          left: priceX,
+          top: Math.round(rowConfig.priceLowY + adjustPriceY + (rowAdj?.priceLowYDelta ?? 0)),
+        });
+      }
+
+      const demand = demandByCardId?.get(card.id);
+      if (demand && demand > 0) {
+        composites.push({
+          input: createDemandTextSvg({
+            demand,
+            unit: demandUnitForCard(card),
+            width: layout.priceBoxWidth,
+            height: layout.priceBoxHeight,
+            fontSize: Math.max(12, Math.round(fontSize * 0.78)),
+          }),
           left: priceX,
           top: Math.round(rowConfig.priceLowY + adjustPriceY + (rowAdj?.priceLowYDelta ?? 0)),
         });

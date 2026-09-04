@@ -17,6 +17,7 @@ import type {
   Database,
   LayoutTemplateRow,
   OrderListImportRow,
+  PreparedCardRow,
   RunRow,
 } from '@haraka/shared';
 import { createSupabaseClient } from '../lib/supabase.js';
@@ -31,9 +32,17 @@ const KINDS = new Set<CustomBuybackKind>(['postal', 'store']);
 const CATALOG_LIMIT = 100;
 const CATALOG_FETCH_LIMIT = 2500;
 const GALLERY_PAGE_FETCH_LIMIT = 1000;
+const KAITORI_CHECKER_SOURCE_STORE = process.env.KAITORI_CHECKER_SOURCE_STORE?.trim() || 'oripark';
 const CUSTOM_RENDER_JOB_NAME = process.env.CUSTOM_RENDER_JOB_NAME?.trim() || `haraka-${STORE_NAME}-custom-render`;
+const PREPARED_CARD_SELECT = 'id, db_card_id, excel_product_id, franchise, card_name, grade, list_no, rarity, rarity_icon_url, tag, image_url, alt_image_url, image_status, price_high, price_low, price_source, price_source_date';
 
 type DbClient = SupabaseClient<Database>;
+type KaitoriCheckerCustomBuybackCatalogRow = Database['public']['Views']['kaitori_checker_custom_buyback_catalog']['Row'];
+type KaitoriCheckerSyncRunRow = Database['public']['Tables']['kaitori_checker_sync_run']['Row'];
+type PreparedCatalogRow = Pick<PreparedCardRow,
+  'id' | 'db_card_id' | 'excel_product_id' | 'franchise' | 'card_name' | 'grade' | 'list_no' | 'rarity'
+  | 'rarity_icon_url' | 'tag' | 'image_url' | 'alt_image_url' | 'image_status' | 'price_high' | 'price_low'
+  | 'price_source' | 'price_source_date'>;
 
 type CustomBuybackGalleryPage = Pick<
   CustomBuybackPageRow,
@@ -44,6 +53,7 @@ type LatestPriceSnapshot = {
   runId: string;
   businessDate: string;
   isCurrent: boolean;
+  fetchedAt: string;
 };
 
 type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -126,10 +136,10 @@ export function parseCustomBuybackSheetPatch(body: unknown): ParseResult<{
   return { ok: true, value };
 }
 
-export function parseCustomBuybackPricePatch(body: unknown, productType: CustomBuybackProductType): ParseResult<{
-  finalPriceHigh: number | null;
-  finalPriceLow: number | null;
-  overrideReason: string | null;
+export function parseCustomBuybackPricePatch(body: unknown, _productType: CustomBuybackProductType): ParseResult<{
+  finalPriceHigh?: number;
+  demand?: number;
+  overrideReason?: string | null;
   reset: boolean;
 }> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -137,20 +147,45 @@ export function parseCustomBuybackPricePatch(body: unknown, productType: CustomB
   }
   const input = body as Record<string, unknown>;
   if (input.reset === true) {
-    return { ok: true, value: { finalPriceHigh: null, finalPriceLow: null, overrideReason: null, reset: true } };
+    return { ok: true, value: { reset: true } };
   }
-  const high = finitePrice(input.final_price_high);
-  const low = productType === 'box' ? null : finitePrice(input.final_price_low);
-  if (high == null || high <= 0) return { ok: false, error: '表示価格は1円以上で入力してください' };
-  if (productType === 'psa' && (low == null || low <= 0)) {
-    return { ok: false, error: 'PSAの下限価格は1円以上で入力してください' };
-  }
+  const hasHigh = Object.hasOwn(input, 'final_price_high');
+  const hasDemand = Object.hasOwn(input, 'demand');
+  if (!hasHigh && !hasDemand) return { ok: false, error: '価格または枚数を入力してください' };
+  const high = hasHigh ? finitePrice(input.final_price_high) : undefined;
+  if (hasHigh && (high == null || high <= 0)) return { ok: false, error: '表示価格は1円以上で入力してください' };
+  const demand = hasDemand && typeof input.demand === 'number' && Number.isInteger(input.demand)
+    && input.demand >= 1 && input.demand <= 999 ? input.demand : undefined;
+  if (hasDemand && demand === undefined) return { ok: false, error: '枚数は1〜999の整数で入力してください' };
   const reason = typeof input.override_reason === 'string' ? input.override_reason.trim() : '';
   if (reason.length > 240) return { ok: false, error: '修正理由は240文字以下にしてください' };
   return {
     ok: true,
-    value: { finalPriceHigh: high, finalPriceLow: low, overrideReason: reason || null, reset: false },
+    value: {
+      ...(high === undefined ? {} : { finalPriceHigh: high as number, overrideReason: reason || null }),
+      ...(demand === undefined ? {} : { demand }),
+      reset: false,
+    },
   };
+}
+
+export function parseCustomBuybackCatalogIds(
+  body: unknown,
+  source: CustomBuybackSheetRow['catalog_source'],
+): ParseResult<string[]> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: '入力形式が正しくありません' };
+  const input = body as Record<string, unknown>;
+  const rawIds = source === 'kaitori_checker' ? input.catalog_ids : input.catalog_ids ?? input.prepared_card_ids;
+  if (!Array.isArray(rawIds) || rawIds.length === 0 || rawIds.length > 100
+    || rawIds.some((id) => typeof id !== 'string' || !id)) {
+    return { ok: false, error: 'catalog_idsは1〜100件の配列にしてください' };
+  }
+  const ids = rawIds as string[];
+  if (new Set(ids).size !== ids.length) return { ok: false, error: '同じカードが重複しています' };
+  if (source === 'kaitori_checker' && ids.some((id) => !/^\d+$/.test(id) || !Number.isSafeInteger(Number(id)) || Number(id) <= 0)) {
+    return { ok: false, error: 'catalog_idsに不正な商品IDがあります' };
+  }
+  return { ok: true, value: ids };
 }
 
 export function applyCustomBuybackBulkPrice(
@@ -217,7 +252,7 @@ export function matchCustomBuybackRefreshCards(
   return { ok: true, itemIds: items.map((item) => item.id), preparedCardIds };
 }
 
-async function latestPriceSnapshot(supabase: DbClient): Promise<LatestPriceSnapshot | null> {
+async function latestPreparedCardSnapshot(supabase: DbClient): Promise<LatestPriceSnapshot | null> {
   const { data: sourceImport, error: importError } = await supabase
     .from('order_list_import')
     .select('*')
@@ -246,7 +281,84 @@ async function latestPriceSnapshot(supabase: DbClient): Promise<LatestPriceSnaps
     runId: run.id,
     businessDate: sourceImport.business_date,
     isCurrent: sourceImport.business_date === tokyoBusinessDate(),
+    fetchedAt: run.completed_at,
   };
+}
+
+async function latestKaitoriCheckerSnapshot(
+  supabase: DbClient,
+  sourceStore = KAITORI_CHECKER_SOURCE_STORE,
+): Promise<LatestPriceSnapshot | null> {
+  const { data, error } = await supabase
+    .from('kaitori_checker_sync_run')
+    .select('*')
+    .eq('store', sourceStore)
+    .eq('status', 'applied')
+    .order('completed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle<KaitoriCheckerSyncRunRow>();
+  if (error) throw new Error(`買取チェッカー価格取得失敗: ${error.message}`);
+  if (!data?.completed_at) return null;
+  const businessDate = tokyoBusinessDate(new Date(data.completed_at));
+  return {
+    runId: data.id,
+    businessDate,
+    isCurrent: businessDate === tokyoBusinessDate(),
+    fetchedAt: data.completed_at,
+  };
+}
+
+function usesKaitoriChecker(franchise: CustomBuybackFranchise): boolean {
+  return franchise !== 'YU-GI-OH!';
+}
+
+function mapPreparedCatalogCard(row: PreparedCatalogRow): CustomBuybackCatalogCard {
+  return {
+    ...row,
+    source: 'prepared_card',
+    source_product_id: null,
+    condition_name: row.grade,
+    shop_name: null,
+  };
+}
+
+export function mapKaitoriCheckerCatalogCard(
+  row: KaitoriCheckerCustomBuybackCatalogRow,
+  franchise: CustomBuybackFranchise,
+  productType: CustomBuybackProductType,
+  priceDate: string,
+): CustomBuybackCatalogCard {
+  return {
+    id: String(row.source_product_id),
+    source: 'kaitori_checker',
+    source_product_id: row.source_product_id,
+    db_card_id: null,
+    excel_product_id: null,
+    franchise,
+    card_name: row.name,
+    grade: row.condition_name,
+    list_no: row.model_number,
+    rarity: row.rarity,
+    rarity_icon_url: null,
+    tag: productType === 'box' ? 'BOX' : null,
+    image_url: row.image_url,
+    alt_image_url: null,
+    image_status: row.image_url ? 'ok' : 'unchecked',
+    price_high: row.buy_price,
+    price_low: null,
+    price_source: 'kaitori_checker',
+    price_source_date: priceDate,
+    condition_name: row.condition_name,
+    shop_name: row.shop_name,
+  };
+}
+
+export function buildKaitoriCheckerCatalogOrFilter(query: string): string {
+  const escaped = query.normalize('NFKC').trim().replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const pattern = `"%${escaped}%"`;
+  return ['name', 'full_name', 'model_number', 'rarity', 'shop_name']
+    .map((field) => `${field}.ilike.${pattern}`)
+    .join(',');
 }
 
 async function ownedSheet(supabase: DbClient, sheetId: string): Promise<CustomBuybackSheetRow | null> {
@@ -316,12 +428,34 @@ customBuybackRoutes.get('/custom-buyback/catalog', async (c) => {
 
   try {
     const supabase = createSupabaseClient();
-    const snapshot = await latestPriceSnapshot(supabase);
+    const kaitoriSource = usesKaitoriChecker(franchise);
+    const snapshot = kaitoriSource
+      ? await latestKaitoriCheckerSnapshot(supabase)
+      : await latestPreparedCardSnapshot(supabase);
     if (!snapshot) return c.json({ error: '利用できる完了済み価格データがありません' }, 503);
+
+    if (kaitoriSource) {
+      let query = supabase
+        .from('kaitori_checker_custom_buyback_catalog')
+        .select('*')
+        .eq('run_id', snapshot.runId)
+        .eq('store', KAITORI_CHECKER_SOURCE_STORE)
+        .eq('category', franchise === 'Pokemon' ? 'pokemon' : 'one_piece')
+        .eq('condition_id', productType === 'psa' ? 1 : 2)
+        .order('buy_price', { ascending: false })
+        .limit(CATALOG_LIMIT);
+      if (queryText) query = query.or(buildKaitoriCheckerCatalogOrFilter(queryText));
+      const { data, error } = await query.returns<KaitoriCheckerCustomBuybackCatalogRow[]>();
+      if (error) throw new Error(`カード検索失敗: ${error.message}`);
+      return c.json({
+        snapshot,
+        cards: (data ?? []).map((row) => mapKaitoriCheckerCatalogCard(row, franchise, productType, snapshot.businessDate)),
+      });
+    }
 
     let catalogQuery = supabase
       .from('prepared_card')
-      .select('id, db_card_id, excel_product_id, franchise, card_name, grade, list_no, rarity, rarity_icon_url, tag, image_url, alt_image_url, image_status, price_high, price_low, price_source, price_source_date')
+      .select(PREPARED_CARD_SELECT)
       .eq('run_id', snapshot.runId)
       .eq('franchise', franchise)
       .order('price_high', { ascending: false })
@@ -330,7 +464,7 @@ customBuybackRoutes.get('/custom-buyback/catalog', async (c) => {
       ? catalogQuery.eq('tag', 'BOX')
       : catalogQuery.ilike('grade', 'PSA%').or('tag.neq.BOX,tag.is.null');
     if (queryText) catalogQuery = catalogQuery.or(buildCustomBuybackCatalogOrFilter(queryText));
-    const { data, error } = await catalogQuery.returns<CustomBuybackCatalogCard[]>();
+    const { data, error } = await catalogQuery.returns<PreparedCatalogRow[]>();
     if (error) throw new Error(`カード検索失敗: ${error.message}`);
 
     const cards = (data ?? [])
@@ -341,6 +475,7 @@ customBuybackRoutes.get('/custom-buyback/catalog', async (c) => {
         return [card.card_name, card.grade, card.list_no, card.rarity, card.tag, card.excel_product_id]
           .some((value) => value?.toLocaleLowerCase('ja-JP').includes(queryText));
       })
+      .map(mapPreparedCatalogCard)
       .slice(0, CATALOG_LIMIT);
     return c.json({ snapshot, cards });
   } catch (error) {
@@ -407,9 +542,12 @@ customBuybackRoutes.post('/custom-buyback/sheets', async (c) => {
 
   try {
     const supabase = createSupabaseClient();
-    const snapshot = await latestPriceSnapshot(supabase);
+    const kaitoriSource = usesKaitoriChecker(parsed.value.franchise);
+    const snapshot = kaitoriSource
+      ? await latestKaitoriCheckerSnapshot(supabase)
+      : await latestPreparedCardSnapshot(supabase);
     if (!snapshot) return c.json({ error: '利用できる完了済み価格データがありません' }, 503);
-    if (!snapshot.isCurrent) {
+    if (!kaitoriSource && !snapshot.isCurrent) {
       return c.json({
         error: `当日の価格データがありません。最新は${snapshot.businessDate}です。`,
         latest_business_date: snapshot.businessDate,
@@ -424,7 +562,10 @@ customBuybackRoutes.post('/custom-buyback/sheets', async (c) => {
         franchise: parsed.value.franchise,
         product_type: parsed.value.productType,
         kind: parsed.value.kind,
-        price_snapshot_run_id: snapshot.runId,
+        catalog_source: kaitoriSource ? 'kaitori_checker' : 'prepared_card',
+        price_snapshot_run_id: kaitoriSource ? null : snapshot.runId,
+        kaitori_checker_run_id: kaitoriSource ? snapshot.runId : null,
+        kaitori_checker_source_store: kaitoriSource ? KAITORI_CHECKER_SOURCE_STORE : null,
         price_business_date: snapshot.businessDate,
         display_date: parsed.value.displayDate,
         created_by: createdBy,
@@ -508,20 +649,15 @@ customBuybackRoutes.delete('/custom-buyback/sheets/:sheetId', async (c) => {
 customBuybackRoutes.post('/custom-buyback/sheets/:sheetId/items', async (c) => {
   let body: unknown;
   try { body = await c.req.json<unknown>(); } catch { return c.json({ error: 'JSONが正しくありません' }, 400); }
-  const rawIds = body && typeof body === 'object' && !Array.isArray(body)
-    ? (body as Record<string, unknown>).prepared_card_ids
-    : null;
-  if (!Array.isArray(rawIds) || rawIds.length === 0 || rawIds.length > 100 || rawIds.some((id) => typeof id !== 'string')) {
-    return c.json({ error: 'prepared_card_idsは1〜100件の配列にしてください' }, 400);
-  }
-  const preparedCardIds = [...new Set(rawIds as string[])];
-  if (preparedCardIds.length !== rawIds.length) return c.json({ error: '同じカードが重複しています' }, 400);
 
   try {
     const supabase = createSupabaseClient();
     const sheet = await ownedSheet(supabase, c.req.param('sheetId'));
     if (!sheet) return c.json({ error: 'カスタム買取表が見つかりません' }, 404);
     if (sheet.status === 'rendering') return c.json({ error: '画像生成中はカードを変更できません' }, 409);
+    const parsedIds = parseCustomBuybackCatalogIds(body, sheet.catalog_source);
+    if (!parsedIds.ok) return c.json({ error: parsedIds.error }, 400);
+    const catalogIds = parsedIds.value;
 
     const { data: currentItems, error: currentError } = await supabase
       .from('custom_buyback_item')
@@ -530,17 +666,53 @@ customBuybackRoutes.post('/custom-buyback/sheets/:sheetId/items', async (c) => {
       .order('position')
       .returns<CustomBuybackItemRow[]>();
     if (currentError) throw new Error(currentError.message);
-    if ((currentItems?.length ?? 0) + preparedCardIds.length > CUSTOM_BUYBACK_MAX_ITEMS) {
+    if ((currentItems?.length ?? 0) + catalogIds.length > CUSTOM_BUYBACK_MAX_ITEMS) {
       return c.json({ error: `1つの表は最大${CUSTOM_BUYBACK_MAX_ITEMS}件です` }, 400);
     }
 
+    if (sheet.catalog_source === 'kaitori_checker') {
+      if (!sheet.kaitori_checker_run_id) return c.json({ error: '表の価格スナップショットがありません' }, 409);
+      const sourceProductIds = catalogIds.map(Number);
+      const { data: cards, error: cardError } = await supabase
+        .from('kaitori_checker_custom_buyback_catalog')
+        .select('*')
+        .eq('run_id', sheet.kaitori_checker_run_id)
+        .eq('store', sheet.kaitori_checker_source_store ?? KAITORI_CHECKER_SOURCE_STORE)
+        .eq('category', sheet.franchise === 'Pokemon' ? 'pokemon' : 'one_piece')
+        .eq('condition_id', sheet.product_type === 'psa' ? 1 : 2)
+        .in('source_product_id', sourceProductIds)
+        .returns<KaitoriCheckerCustomBuybackCatalogRow[]>();
+      if (cardError) throw new Error(cardError.message);
+      if ((cards?.length ?? 0) !== sourceProductIds.length) {
+        return c.json({ error: '選択商品に別Run・別タイトル・別状態の商品が含まれています' }, 400);
+      }
+      const existingIds = new Set((currentItems ?? []).map((item) => item.source_kaitori_product_id).filter((id) => id != null));
+      if (sourceProductIds.some((id) => existingIds.has(id))) return c.json({ error: 'すでに追加済みの商品が含まれています' }, 409);
+      const { error: insertError } = await supabase.rpc('add_custom_buyback_kaitori_items', {
+        p_sheet_id: sheet.id,
+        p_store: STORE_NAME,
+        p_source_product_ids: sourceProductIds,
+      });
+      if (insertError) {
+        if (insertError.code === '23505') return c.json({ error: 'すでに追加済みの商品があります' }, 409);
+        throw new Error(insertError.message);
+      }
+      const { data: inserted, error: readError } = await supabase.from('custom_buyback_item').select('*')
+        .eq('sheet_id', sheet.id).in('source_kaitori_product_id', sourceProductIds).returns<CustomBuybackItemRow[]>();
+      if (readError) throw new Error(readError.message);
+      return c.json({ added: inserted ?? [], total: (currentItems?.length ?? 0) + (inserted?.length ?? 0) }, 201);
+    }
+
+    const preparedCardIds = catalogIds;
+    if (!sheet.price_snapshot_run_id) return c.json({ error: '表の価格スナップショットがありません' }, 409);
+
     const { data: cards, error: cardError } = await supabase
       .from('prepared_card')
-      .select('id, db_card_id, excel_product_id, franchise, card_name, grade, list_no, rarity, rarity_icon_url, tag, image_url, alt_image_url, image_status, price_high, price_low, price_source, price_source_date')
+      .select(PREPARED_CARD_SELECT)
       .eq('run_id', sheet.price_snapshot_run_id)
       .eq('franchise', sheet.franchise)
       .in('id', preparedCardIds)
-      .returns<CustomBuybackCatalogCard[]>();
+      .returns<PreparedCatalogRow[]>();
     if (cardError) throw new Error(cardError.message);
     if ((cards?.length ?? 0) !== preparedCardIds.length) {
       return c.json({ error: '選択カードに別Runまたは別タイトルの商品が含まれています' }, 400);
@@ -597,13 +769,16 @@ customBuybackRoutes.patch('/custom-buyback/sheets/:sheetId/items/:itemId', async
     const values = parsed.value.reset
       ? {
           final_price_high: item.source_price_high,
-          final_price_low: sheet.product_type === 'box' ? null : item.source_price_low,
+          final_price_low: null,
           override_reason: null,
         }
       : {
-          final_price_high: parsed.value.finalPriceHigh,
-          final_price_low: parsed.value.finalPriceLow,
-          override_reason: parsed.value.overrideReason,
+          ...(parsed.value.finalPriceHigh === undefined ? {} : {
+            final_price_high: parsed.value.finalPriceHigh,
+            final_price_low: null,
+            override_reason: parsed.value.overrideReason,
+          }),
+          ...(parsed.value.demand === undefined ? {} : { demand: parsed.value.demand }),
         };
     const { data: updated, error: updateError } = await supabase
       .from('custom_buyback_item')
@@ -744,9 +919,14 @@ customBuybackRoutes.post('/custom-buyback/sheets/:sheetId/refresh-prices', async
     const sheet = await ownedSheet(supabase, c.req.param('sheetId'));
     if (!sheet) return c.json({ error: 'カスタム買取表が見つかりません' }, 404);
     if (sheet.status === 'rendering') return c.json({ error: '画像生成中は価格を更新できません' }, 409);
-    const snapshot = await latestPriceSnapshot(supabase);
+    const snapshot = sheet.catalog_source === 'kaitori_checker'
+      ? await latestKaitoriCheckerSnapshot(
+          supabase,
+          sheet.kaitori_checker_source_store ?? KAITORI_CHECKER_SOURCE_STORE,
+        )
+      : await latestPreparedCardSnapshot(supabase);
     if (!snapshot) return c.json({ error: '利用できる完了済み価格データがありません' }, 503);
-    if (!snapshot.isCurrent) {
+    if (sheet.catalog_source === 'prepared_card' && !snapshot.isCurrent) {
       return c.json({ error: `当日の価格データがありません。最新は${snapshot.businessDate}です。` }, 409);
     }
     const { data: items, error: itemError } = await supabase.from('custom_buyback_item')
@@ -757,24 +937,38 @@ customBuybackRoutes.post('/custom-buyback/sheets/:sheetId/refresh-prices', async
       return c.json({ error: '価格更新するカードがありません' }, 400);
     }
 
+    if (sheet.catalog_source === 'kaitori_checker') {
+      const { error: refreshError } = await supabase.rpc('refresh_custom_buyback_kaitori_prices', {
+        p_sheet_id: sheet.id,
+        p_store: STORE_NAME,
+        p_run_id: snapshot.runId,
+        p_business_date: snapshot.businessDate,
+        p_preserve_overrides: preserveOverrides,
+      });
+      if (refreshError) return c.json({ error: '価格更新を完了できませんでした。表は変更していません。' }, 409);
+      const refreshed = await ownedSheet(supabase, sheet.id);
+      if (!refreshed) throw new Error('更新した表を取得できません');
+      return c.json(await sheetDetail(supabase, refreshed));
+    }
+
     const dbIds = [...new Set(currentItems.map((item) => item.source_db_card_id).filter((id): id is string => Boolean(id)))];
     const excelIds = [...new Set(currentItems.map((item) => item.excel_product_id).filter((id): id is string => Boolean(id)))];
     const candidateById = new Map<string, CustomBuybackCatalogCard>();
-    const select = 'id, db_card_id, excel_product_id, franchise, card_name, grade, list_no, rarity, rarity_icon_url, tag, image_url, alt_image_url, image_status, price_high, price_low, price_source, price_source_date';
+    const select = PREPARED_CARD_SELECT;
     for (let offset = 0; offset < Math.max(dbIds.length, excelIds.length); offset += 100) {
       const queries = [];
       const dbChunk = dbIds.slice(offset, offset + 100);
       const excelChunk = excelIds.slice(offset, offset + 100);
       if (dbChunk.length > 0) queries.push(supabase.from('prepared_card').select(select)
-        .eq('run_id', snapshot.runId).eq('franchise', sheet.franchise).in('db_card_id', dbChunk).returns<CustomBuybackCatalogCard[]>());
+        .eq('run_id', snapshot.runId).eq('franchise', sheet.franchise).in('db_card_id', dbChunk).returns<PreparedCatalogRow[]>());
       if (excelChunk.length > 0) queries.push(supabase.from('prepared_card').select(select)
-        .eq('run_id', snapshot.runId).eq('franchise', sheet.franchise).in('excel_product_id', excelChunk).returns<CustomBuybackCatalogCard[]>());
+        .eq('run_id', snapshot.runId).eq('franchise', sheet.franchise).in('excel_product_id', excelChunk).returns<PreparedCatalogRow[]>());
       const results = await Promise.all(queries);
       for (const result of results) {
         if (result.error) throw new Error(`当日価格候補取得失敗: ${result.error.message}`);
         for (const card of result.data ?? []) {
           if (card.price_source_date === snapshot.businessDate && isCustomBuybackCatalogCard(card, sheet.product_type)) {
-            candidateById.set(card.id, card);
+            candidateById.set(card.id, mapPreparedCatalogCard(card));
           }
         }
       }
@@ -813,9 +1007,7 @@ customBuybackRoutes.post('/custom-buyback/sheets/:sheetId/render', async (c) => 
     const detail = await sheetDetail(supabase, sheet);
     if (detail.items.length === 0) return c.json({ error: 'カードを1件以上追加してください' }, 400);
     if (!detail.preview || detail.preview.length === 0) return c.json({ error: '利用できるレイアウトがありません' }, 409);
-    const priceInvalid = detail.items.some((item) =>
-      !item.final_price_high || (sheet.product_type === 'psa' && !item.final_price_low),
-    );
+    const priceInvalid = detail.items.some((item) => !item.final_price_high);
     if (priceInvalid) return c.json({ error: '表示価格が未設定のカードがあります' }, 400);
 
     const revision = sheet.revision + 1;

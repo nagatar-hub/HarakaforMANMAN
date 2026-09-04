@@ -28,9 +28,11 @@ export function customItemToPreparedCard(
   item: CustomBuybackItemRow,
   sheet: CustomBuybackSheetRow,
 ): PreparedCardRow {
+  const sourceRunId = sheet.price_snapshot_run_id ?? sheet.kaitori_checker_run_id;
+  if (!sourceRunId) throw new Error('カスタム買取表の価格スナップショットがありません');
   return {
     id: item.id,
-    run_id: sheet.price_snapshot_run_id,
+    run_id: sourceRunId,
     raw_import_id: null,
     order_list_item_id: null,
     excel_product_id: item.excel_product_id,
@@ -45,10 +47,10 @@ export function customItemToPreparedCard(
     rarity_icon_url: item.rarity_icon_url,
     tag: item.tag,
     price_high: item.final_price_high,
-    price_low: sheet.product_type === 'box' ? null : item.final_price_low,
+    price_low: null,
     image_status: item.image_status,
     source: 'manual',
-    price_source: item.price_source,
+    price_source: item.price_source === 'kaitori_checker' ? 'manual' : item.price_source,
     price_source_date: item.price_source_date,
     created_at: item.created_at,
   };
@@ -113,8 +115,8 @@ async function renderSheet(supabase: Supabase, sheet: CustomBuybackSheetRow, rev
   const profile = profilesResult.data?.[0];
   if (items.length === 0) throw new Error('カードが1件もありません');
   if (!profile) throw new Error(`asset_profile がありません: ${sheet.franchise}`);
-  if (items.some((item) => !item.final_price_high || (sheet.product_type === 'psa' && !item.final_price_low))) {
-    throw new Error('表示価格が未設定のカードがあります');
+  if (items.some((item) => !item.final_price_high || !Number.isInteger(item.demand) || item.demand <= 0)) {
+    throw new Error('表示価格または募集数が未設定の商品があります');
   }
 
   const plans = planCustomBuybackPages(items.map((item) => item.id), layouts, sheet.product_type);
@@ -267,7 +269,8 @@ async function renderOnePage(params: RenderOnePageParams): Promise<void> {
       rarityIconBuffers,
       cardImageBuffers,
       dateText,
-      skipPriceLow: sheet.product_type === 'box' || layout.skip_price_low,
+      skipPriceLow: true,
+      demandByCardId: new Map(items.map((item) => [item.id, item.demand])),
       layoutAdjust: layout.layout_config.layoutAdjust,
       rowPriceAdjust: layout.layout_config.rowPriceAdjust,
       rowCardAdjust: layout.layout_config.rowCardAdjust,

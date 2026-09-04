@@ -1,31 +1,30 @@
-import type {
-  CustomBuybackProductType,
-  LayoutTemplateRow,
-  PreparedCardRow,
-} from '../types/database.js';
+import type { CustomBuybackProductType, LayoutTemplateRow, PreparedCardRow } from '../types/database.js';
 
 export const CUSTOM_BUYBACK_MAX_ITEMS = 400;
 
-export type CustomBuybackCatalogCard = Pick<
-  PreparedCardRow,
-  | 'id'
-  | 'db_card_id'
-  | 'excel_product_id'
-  | 'franchise'
-  | 'card_name'
-  | 'grade'
-  | 'list_no'
-  | 'rarity'
-  | 'rarity_icon_url'
-  | 'tag'
-  | 'image_url'
-  | 'alt_image_url'
-  | 'image_status'
-  | 'price_high'
-  | 'price_low'
-  | 'price_source'
-  | 'price_source_date'
->;
+export type CustomBuybackCatalogCard = {
+  id: string;
+  source: 'prepared_card' | 'kaitori_checker';
+  source_product_id: number | null;
+  db_card_id: string | null;
+  excel_product_id: string | null;
+  franchise: string;
+  card_name: string;
+  grade: string | null;
+  list_no: string | null;
+  rarity: string | null;
+  rarity_icon_url: string | null;
+  tag: string | null;
+  image_url: string | null;
+  alt_image_url: string | null;
+  image_status: 'unchecked' | 'ok' | 'fallback' | 'dead';
+  price_high: number | null;
+  price_low: number | null;
+  price_source: 'order_list' | 'kecak' | 'spectre' | 'manual' | 'kaitori_checker';
+  price_source_date: string | null;
+  condition_name: string | null;
+  shop_name: string | null;
+};
 
 export type CustomLayoutCandidate = Pick<
   LayoutTemplateRow,

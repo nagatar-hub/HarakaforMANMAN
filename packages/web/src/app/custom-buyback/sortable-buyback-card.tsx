@@ -14,20 +14,19 @@ type Props = {
   compact?: boolean;
   disabled?: boolean;
   onToggle: (id: string) => void;
-  onPriceChange: (id: string, field: 'final_price_high' | 'final_price_low', value: number | null) => void;
-  onSavePrice: (item: CustomBuybackItemRow) => void;
+  onValueChange: (id: string, field: 'final_price_high' | 'demand', value: number | null) => void;
+  onSave: (item: CustomBuybackItemRow) => void;
   onResetPrice: (id: string) => void;
   onDelete?: (id: string) => void;
 };
 
 export function SortableBuybackCard({
-  item, productType, selected, compact = false, disabled = false, onToggle, onPriceChange, onSavePrice, onResetPrice, onDelete,
+  item, productType, selected, compact = false, disabled = false, onToggle, onValueChange, onSave, onResetPrice, onDelete,
 }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled });
   const imageUrl = item.image_url || item.alt_image_url;
   const overridden = item.override_reason != null
-    || item.final_price_high !== item.source_price_high
-    || item.final_price_low !== item.source_price_low;
+    || item.final_price_high !== item.source_price_high;
 
   return (
     <article
@@ -51,6 +50,7 @@ export function SortableBuybackCard({
             <div className="min-w-0">
               <p className="line-clamp-2 text-xs font-bold leading-snug text-text-primary">{item.card_name}</p>
               <p className="mt-0.5 truncate text-[10px] text-text-secondary">{[item.grade, item.list_no, item.rarity].filter(Boolean).join(' · ')}</p>
+              <p className="mt-0.5 truncate text-[9px] text-text-secondary">最高価格: ¥{item.source_price_high?.toLocaleString() ?? '-'} · {item.source_shop_name ?? '店舗不明'} · {item.grade ?? item.tag ?? '状態不明'}</p>
             </div>
             <button
               type="button"
@@ -65,23 +65,20 @@ export function SortableBuybackCard({
           </div>
           <div className="mt-1.5 grid grid-cols-2 gap-1">
             <PriceInput
-              label="表示 高"
+              label="表示価格"
               value={item.final_price_high}
               source={item.source_price_high}
-              onChange={(value) => onPriceChange(item.id, 'final_price_high', value)}
-              onBlur={() => onSavePrice(item)}
+              onChange={(value) => onValueChange(item.id, 'final_price_high', value)}
+              onBlur={() => onSave(item)}
               disabled={disabled}
             />
-            {productType === 'psa' ? (
-              <PriceInput
-                label="表示 低"
-                value={item.final_price_low}
-                source={item.source_price_low}
-                onChange={(value) => onPriceChange(item.id, 'final_price_low', value)}
-                onBlur={() => onSavePrice(item)}
-                disabled={disabled}
-              />
-            ) : <div />}
+            <NumberInput
+              label={`募集数（${productType === 'psa' ? '枚' : '個'}）`}
+              value={item.demand}
+              onChange={(value) => onValueChange(item.id, 'demand', value)}
+              onBlur={() => onSave(item)}
+              disabled={disabled}
+            />
           </div>
           <div className="mt-1 flex items-center justify-between gap-1">
             <span className={`text-[9px] ${overridden ? 'font-bold text-accent' : 'text-text-secondary'}`}>
@@ -100,6 +97,16 @@ export function SortableBuybackCard({
       </div>
     </article>
   );
+}
+
+function NumberInput({ label, value, onChange, onBlur, disabled = false }: {
+  label: string;
+  value: number | null;
+  onChange: (value: number | null) => void;
+  onBlur: () => void;
+  disabled?: boolean;
+}) {
+  return <label className="block"><span className="block text-[9px] text-text-secondary">{label}</span><input type="number" min={1} max={999} disabled={disabled} value={value ?? ''} onChange={(event) => onChange(event.target.value === '' ? null : Number(event.target.value))} onBlur={onBlur} className="w-full rounded-md border border-border-card bg-warm-50 px-1.5 py-1 text-right text-[11px] font-bold outline-none focus:border-accent" /></label>;
 }
 
 function PriceInput({ label, value, source, onChange, onBlur, disabled = false }: {

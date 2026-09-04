@@ -3,8 +3,11 @@ import { afterEach, test } from 'node:test';
 import {
   applyCustomBuybackBulkPrice,
   buildCustomBuybackCatalogOrFilter,
+  buildKaitoriCheckerCatalogOrFilter,
   customBuybackRoutes,
+  mapKaitoriCheckerCatalogCard,
   matchCustomBuybackRefreshCards,
+  parseCustomBuybackCatalogIds,
   parseCustomBuybackCreate,
   parseCustomBuybackPricePatch,
   parseCustomBuybackSheetPatch,
@@ -52,12 +55,30 @@ test('sheet date patch accepts real calendar dates and rejects impossible dates'
   assert.equal(parseCustomBuybackSheetPatch({}).ok, false);
 });
 
-test('BOX ignores a low price while PSA requires one', () => {
-  assert.deepEqual(parseCustomBuybackPricePatch({ final_price_high: 12000 }, 'box'), {
+test('price and demand patch accepts either field and constrains demand', () => {
+  assert.deepEqual(parseCustomBuybackPricePatch({ final_price_high: 12000, demand: 25 }, 'box'), {
     ok: true,
-    value: { finalPriceHigh: 12000, finalPriceLow: null, overrideReason: null, reset: false },
+    value: { finalPriceHigh: 12000, overrideReason: null, demand: 25, reset: false },
   });
-  assert.equal(parseCustomBuybackPricePatch({ final_price_high: 12000 }, 'psa').ok, false);
+  assert.deepEqual(parseCustomBuybackPricePatch({ demand: 1 }, 'psa'), {
+    ok: true, value: { demand: 1, reset: false },
+  });
+  assert.deepEqual(parseCustomBuybackPricePatch({ reset: true, demand: 99 }, 'psa'), {
+    ok: true, value: { reset: true },
+  });
+  assert.equal(parseCustomBuybackPricePatch({ demand: 0 }, 'psa').ok, false);
+  assert.equal(parseCustomBuybackPricePatch({ demand: 1000 }, 'box').ok, false);
+});
+
+test('catalog IDs preserve legacy input and constrain kaitori product IDs', () => {
+  assert.deepEqual(parseCustomBuybackCatalogIds({ prepared_card_ids: ['a'] }, 'prepared_card'), {
+    ok: true, value: ['a'],
+  });
+  assert.deepEqual(parseCustomBuybackCatalogIds({ catalog_ids: ['123'] }, 'kaitori_checker'), {
+    ok: true, value: ['123'],
+  });
+  assert.equal(parseCustomBuybackCatalogIds({ catalog_ids: ['x'] }, 'kaitori_checker').ok, false);
+  assert.equal(parseCustomBuybackCatalogIds({ catalog_ids: ['1', '1'] }, 'kaitori_checker').ok, false);
 });
 
 test('bulk price helpers support add, percent, round, and reset without negatives', () => {
@@ -76,9 +97,11 @@ test('bulk price helpers support add, percent, round, and reset without negative
 test('price refresh matches stable Excel IDs and rejects duplicate target cards', () => {
   const candidate = {
     id: 'new-1', db_card_id: 'db-1', excel_product_id: 'excel-1', franchise: 'Pokemon',
+    source: 'prepared_card', source_product_id: null,
     card_name: 'ピカチュウ', grade: 'PSA10', list_no: '001', rarity: 'SAR', rarity_icon_url: null,
     tag: null, image_url: null, alt_image_url: null, image_status: 'ok',
     price_high: 12000, price_low: 10000, price_source: 'order_list', price_source_date: '2026-08-03',
+    condition_name: 'PSA10', shop_name: null,
   } as const;
   assert.deepEqual(matchCustomBuybackRefreshCards([
     { id: 'item-1', source_db_card_id: 'db-1', excel_product_id: 'excel-1', card_name: '旧名でも可', grade: 'PSA10', list_no: '001' },
@@ -93,4 +116,16 @@ test('catalog search quotes PostgREST OR values before composing fields', () => 
   const filter = buildCustomBuybackCatalogOrFilter(' ピカチュウ",SAR\\ ');
   assert.match(filter, /^card_name\.ilike\."%ピカチュウ\\",SAR\\\\%"/);
   assert.equal(filter.match(/\.ilike\./g)?.length, 6);
+});
+
+test('kaitori catalog rows map to source-neutral PSA cards with the highest offer', () => {
+  const card = mapKaitoriCheckerCatalogCard({
+    run_id: 'run', store: 'oripark', source_product_id: 123, category: 'pokemon', condition_id: 1,
+    condition_name: 'PSA10', shop_id: 9, shop_name: '最高店', edition_id: 0, edition_name: null,
+    buy_price: 45600, name: 'ピカチュウ', full_name: null, model_number: 'SV1-001', rarity: 'SAR', image_url: 'https://img.test/1.jpg',
+  }, 'Pokemon', 'psa', '2026-09-04');
+  assert.deepEqual({ id: card.id, source: card.source, high: card.price_high, low: card.price_low, shop: card.shop_name }, {
+    id: '123', source: 'kaitori_checker', high: 45600, low: null, shop: '最高店',
+  });
+  assert.match(buildKaitoriCheckerCatalogOrFilter(' ピカチュウ"\\ '), /^name\.ilike\."%ピカチュウ\\"\\\\%"/);
 });
