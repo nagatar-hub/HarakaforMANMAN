@@ -57,6 +57,7 @@ type LatestPriceSnapshot = {
 };
 
 type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
+type CustomBuybackCatalogSort = 'price_desc' | 'price_asc' | 'name_asc';
 
 export const customBuybackRoutes = new Hono();
 
@@ -186,6 +187,36 @@ export function parseCustomBuybackCatalogIds(
     return { ok: false, error: 'catalog_idsに不正な商品IDがあります' };
   }
   return { ok: true, value: ids };
+}
+
+export function parseCustomBuybackCatalogQuery(input: {
+  minPrice?: string;
+  maxPrice?: string;
+  sort?: string;
+}): ParseResult<{
+  minPrice?: number;
+  maxPrice?: number;
+  sort: CustomBuybackCatalogSort;
+}> {
+  const parsePrice = (value: string | undefined): number | undefined | null => {
+    if (value === undefined) return undefined;
+    if (!/^\d+$/.test(value)) return null;
+    const price = Number(value);
+    return Number.isSafeInteger(price) && price <= 100_000_000 ? price : null;
+  };
+  const minPrice = parsePrice(input.minPrice);
+  const maxPrice = parsePrice(input.maxPrice);
+  if (minPrice === null || maxPrice === null) {
+    return { ok: false, error: '価格帯は0〜100,000,000円の整数で入力してください' };
+  }
+  if (minPrice !== undefined && maxPrice !== undefined && minPrice > maxPrice) {
+    return { ok: false, error: '最低価格は最高価格以下にしてください' };
+  }
+  const sort = input.sort ?? 'price_desc';
+  if (sort !== 'price_desc' && sort !== 'price_asc' && sort !== 'name_asc') {
+    return { ok: false, error: '並び順が正しくありません' };
+  }
+  return { ok: true, value: { minPrice, maxPrice, sort } };
 }
 
 export function applyCustomBuybackBulkPrice(
@@ -425,6 +456,13 @@ customBuybackRoutes.get('/custom-buyback/catalog', async (c) => {
   const queryText = (c.req.query('q') ?? '').normalize('NFKC').trim().toLocaleLowerCase('ja-JP');
   if (!franchise || !FRANCHISES.has(franchise)) return c.json({ error: 'カードタイトルが正しくありません' }, 400);
   if (!productType || !PRODUCT_TYPES.has(productType)) return c.json({ error: 'PSAまたはBOXを選択してください' }, 400);
+  const catalogQueryInput = parseCustomBuybackCatalogQuery({
+    minPrice: c.req.query('min_price'),
+    maxPrice: c.req.query('max_price'),
+    sort: c.req.query('sort'),
+  });
+  if (!catalogQueryInput.ok) return c.json({ error: catalogQueryInput.error }, 400);
+  const { minPrice, maxPrice, sort } = catalogQueryInput.value;
 
   try {
     const supabase = createSupabaseClient();
@@ -441,10 +479,14 @@ customBuybackRoutes.get('/custom-buyback/catalog', async (c) => {
         .eq('run_id', snapshot.runId)
         .eq('store', KAITORI_CHECKER_SOURCE_STORE)
         .eq('category', franchise === 'Pokemon' ? 'pokemon' : 'one_piece')
-        .eq('condition_id', productType === 'psa' ? 1 : 2)
-        .order('buy_price', { ascending: false })
-        .limit(CATALOG_LIMIT);
+        .eq('condition_id', productType === 'psa' ? 1 : 2);
       if (queryText) query = query.or(buildKaitoriCheckerCatalogOrFilter(queryText));
+      if (minPrice !== undefined) query = query.gte('buy_price', minPrice);
+      if (maxPrice !== undefined) query = query.lte('buy_price', maxPrice);
+      query = sort === 'name_asc'
+        ? query.order('name', { ascending: true })
+        : query.order('buy_price', { ascending: sort === 'price_asc' });
+      query = query.limit(CATALOG_LIMIT);
       const { data, error } = await query.returns<KaitoriCheckerCustomBuybackCatalogRow[]>();
       if (error) throw new Error(`カード検索失敗: ${error.message}`);
       return c.json({
@@ -457,13 +499,17 @@ customBuybackRoutes.get('/custom-buyback/catalog', async (c) => {
       .from('prepared_card')
       .select(PREPARED_CARD_SELECT)
       .eq('run_id', snapshot.runId)
-      .eq('franchise', franchise)
-      .order('price_high', { ascending: false })
-      .limit(CATALOG_FETCH_LIMIT);
+      .eq('franchise', franchise);
     catalogQuery = productType === 'box'
       ? catalogQuery.eq('tag', 'BOX')
       : catalogQuery.ilike('grade', 'PSA%').or('tag.neq.BOX,tag.is.null');
     if (queryText) catalogQuery = catalogQuery.or(buildCustomBuybackCatalogOrFilter(queryText));
+    if (minPrice !== undefined) catalogQuery = catalogQuery.gte('price_high', minPrice);
+    if (maxPrice !== undefined) catalogQuery = catalogQuery.lte('price_high', maxPrice);
+    catalogQuery = sort === 'name_asc'
+      ? catalogQuery.order('card_name', { ascending: true })
+      : catalogQuery.order('price_high', { ascending: sort === 'price_asc' });
+    catalogQuery = catalogQuery.limit(CATALOG_FETCH_LIMIT);
     const { data, error } = await catalogQuery.returns<PreparedCatalogRow[]>();
     if (error) throw new Error(`カード検索失敗: ${error.message}`);
 

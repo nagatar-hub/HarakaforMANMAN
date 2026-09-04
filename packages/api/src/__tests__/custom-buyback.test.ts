@@ -8,6 +8,7 @@ import {
   mapKaitoriCheckerCatalogCard,
   matchCustomBuybackRefreshCards,
   parseCustomBuybackCatalogIds,
+  parseCustomBuybackCatalogQuery,
   parseCustomBuybackCreate,
   parseCustomBuybackPricePatch,
   parseCustomBuybackSheetPatch,
@@ -79,6 +80,20 @@ test('catalog IDs preserve legacy input and constrain kaitori product IDs', () =
   });
   assert.equal(parseCustomBuybackCatalogIds({ catalog_ids: ['x'] }, 'kaitori_checker').ok, false);
   assert.equal(parseCustomBuybackCatalogIds({ catalog_ids: ['1', '1'] }, 'kaitori_checker').ok, false);
+});
+
+test('catalog query accepts bounded integer prices and allowlisted sorting', () => {
+  assert.deepEqual(parseCustomBuybackCatalogQuery({}), {
+    ok: true, value: { minPrice: undefined, maxPrice: undefined, sort: 'price_desc' },
+  });
+  assert.deepEqual(parseCustomBuybackCatalogQuery({ minPrice: '0', maxPrice: '100000000', sort: 'name_asc' }), {
+    ok: true, value: { minPrice: 0, maxPrice: 100_000_000, sort: 'name_asc' },
+  });
+  assert.equal(parseCustomBuybackCatalogQuery({ minPrice: '-1' }).ok, false);
+  assert.equal(parseCustomBuybackCatalogQuery({ maxPrice: '1.5' }).ok, false);
+  assert.equal(parseCustomBuybackCatalogQuery({ maxPrice: '100000001' }).ok, false);
+  assert.equal(parseCustomBuybackCatalogQuery({ minPrice: '200', maxPrice: '100' }).ok, false);
+  assert.equal(parseCustomBuybackCatalogQuery({ sort: 'newest' }).ok, false);
 });
 
 test('bulk price helpers support add, percent, round, and reset without negatives', () => {

@@ -1,5 +1,27 @@
 import type { CustomBuybackItemRow } from '@haraka/shared';
 
+export type CatalogFilters = {
+  q: string;
+  minPrice: string;
+  maxPrice: string;
+  sort: 'price_desc' | 'price_asc' | 'name_asc';
+};
+
+export const DEFAULT_CATALOG_FILTERS: CatalogFilters = { q: '', minPrice: '', maxPrice: '', sort: 'price_desc' };
+
+export function catalogSearchParams(filters: CatalogFilters): URLSearchParams {
+  const params = new URLSearchParams({ q: filters.q, sort: filters.sort });
+  if (filters.minPrice !== '') params.set('min_price', filters.minPrice);
+  if (filters.maxPrice !== '') params.set('max_price', filters.maxPrice);
+  return params;
+}
+
+export function isCatalogPriceRangeValid(filters: CatalogFilters): boolean {
+  const validPrice = (value: string) => value === '' || (/^\d+$/.test(value) && Number(value) <= 100_000_000);
+  return validPrice(filters.minPrice) && validPrice(filters.maxPrice)
+    && (filters.minPrice === '' || filters.maxPrice === '' || Number(filters.minPrice) <= Number(filters.maxPrice));
+}
+
 export function reorderCustomBuybackItems(items: CustomBuybackItemRow[], itemIds: string[]): CustomBuybackItemRow[] {
   const byId = new Map(items.map((item) => [item.id, item]));
   if (itemIds.length !== items.length || new Set(itemIds).size !== items.length || itemIds.some((id) => !byId.has(id))) {

@@ -1,5 +1,5 @@
 import type { CustomBuybackItemRow } from '@haraka/shared';
-import { customBuybackCsv, reorderCustomBuybackItems, safeDownloadName } from '../app/custom-buyback/custom-buyback-state';
+import { catalogSearchParams, customBuybackCsv, isCatalogPriceRangeValid, reorderCustomBuybackItems, safeDownloadName } from '../app/custom-buyback/custom-buyback-state';
 
 function item(id: string, position: number): CustomBuybackItemRow {
   return {
@@ -31,4 +31,20 @@ test('CSV includes BOM and safely quotes commas and double quotes', () => {
 
 test('download names exclude Windows-invalid characters', () => {
   expect(safeDownloadName('8/3: PSA*')).toBe('8_3_ PSA_');
+});
+
+test('catalog filters map to API parameters and reject an inverted price range', () => {
+  expect(catalogSearchParams({ q: 'リザードン', minPrice: '1000', maxPrice: '5000', sort: 'price_desc' }).toString())
+    .toBe('q=%E3%83%AA%E3%82%B6%E3%83%BC%E3%83%89%E3%83%B3&sort=price_desc&min_price=1000&max_price=5000');
+  expect(isCatalogPriceRangeValid({ q: '', minPrice: '5001', maxPrice: '5000', sort: 'price_asc' })).toBe(false);
+});
+
+test.each(['-1', '1.5', '100000001'])('catalog price rejects invalid API-bound value %s', (value) => {
+  expect(isCatalogPriceRangeValid({ q: '', minPrice: value, maxPrice: '', sort: 'price_desc' })).toBe(false);
+  expect(isCatalogPriceRangeValid({ q: '', minPrice: '', maxPrice: value, sort: 'price_desc' })).toBe(false);
+});
+
+test('catalog price accepts empty values and inclusive API boundaries', () => {
+  expect(isCatalogPriceRangeValid({ q: '', minPrice: '', maxPrice: '', sort: 'price_desc' })).toBe(true);
+  expect(isCatalogPriceRangeValid({ q: '', minPrice: '0', maxPrice: '100000000', sort: 'price_desc' })).toBe(true);
 });

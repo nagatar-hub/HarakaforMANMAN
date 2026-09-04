@@ -2,14 +2,15 @@
 
 import Image from 'next/image';
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import type { CustomBuybackCatalogCard, CustomBuybackFranchise, CustomBuybackItemRow, CustomBuybackPageRow, CustomBuybackProductType, CustomBuybackSheetRow, CustomPagePlan, LayoutTemplateRow } from '@haraka/shared';
 import { tokyoBusinessDate } from '@haraka/shared';
 import { downloadImagesAsZip, downloadSingleImage } from '@/lib/download-images';
 import { SortableBuybackCard, passthroughImageLoader } from './sortable-buyback-card';
-import { customBuybackCsv, reorderCustomBuybackItems, safeDownloadName } from './custom-buyback-state';
+import { DEFAULT_CATALOG_FILTERS, catalogSearchParams, customBuybackCsv, isCatalogPriceRangeValid, reorderCustomBuybackItems, safeDownloadName, type CatalogFilters } from './custom-buyback-state';
 
 type SheetDetail = {
   sheet: CustomBuybackSheetRow;
@@ -41,8 +42,12 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
   const [flash, setFlash] = useState<Flash | null>(null);
   const [showCatalog, setShowCatalog] = useState(false);
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
-  const [catalogQuery, setCatalogQuery] = useState('');
+  const [catalogFilters, setCatalogFilters] = useState<CatalogFilters>(DEFAULT_CATALOG_FILTERS);
   const [catalogSelection, setCatalogSelection] = useState<Set<string>>(new Set());
+  const [catalogKnownCards, setCatalogKnownCards] = useState<Map<string, CustomBuybackCatalogCard>>(new Map());
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const catalogReturnFocus = useRef<HTMLElement | null>(null);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [bulkOperation, setBulkOperation] = useState<'add' | 'percent' | 'round' | 'reset'>('add');
   const [bulkValue, setBulkValue] = useState(0);
@@ -92,14 +97,15 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
 
   function showError(error: unknown) { setFlash({ type: 'error', message: messageOf(error) }); }
   async function selectSheet(id: string) {
-    setSelectedSheetId(id); setLoading(true); setShowCatalog(false); setCatalog(null); setCatalogSelection(new Set()); setUndoStack([]); setRedoStack([]);
+    setSelectedSheetId(id); setLoading(true); setShowCatalog(false); setCatalog(null); setCatalogFilters(DEFAULT_CATALOG_FILTERS); setCatalogSelection(new Set()); setCatalogKnownCards(new Map()); setUndoStack([]); setRedoStack([]);
     try { await loadDetail(id); } catch (error) { showError(error); } finally { setLoading(false); }
   }
-  function startNew() { setSelectedSheetId(null); setDetail(null); setShowCatalog(false); setCatalog(null); setCatalogSelection(new Set()); setFlash(null); }
+  function startNew() { setSelectedSheetId(null); setDetail(null); setShowCatalog(false); setCatalog(null); setCatalogFilters(DEFAULT_CATALOG_FILTERS); setCatalogSelection(new Set()); setCatalogKnownCards(new Map()); setFlash(null); }
   async function createSheet(input: { name: string; franchise: CustomBuybackFranchise; product_type: CustomBuybackProductType; kind: 'postal' | 'store'; display_date: string }) {
     setBusy('create');
     try {
       const created = await apiJson<CustomBuybackSheetRow>('sheets', { method: 'POST', body: JSON.stringify(input) });
+      setCatalog(null); setCatalogFilters(DEFAULT_CATALOG_FILTERS); setCatalogSelection(new Set()); setCatalogKnownCards(new Map());
       await loadSheets(created.id); await loadDetail(created.id); setSelectedSheetId(created.id);
       setFlash({ type: 'success', message: '新しいカスタム買取表を作成しました' });
     } catch (error) { showError(error); } finally { setBusy(null); }
@@ -117,15 +123,32 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
       setFlash({ type: 'success', message: '表の日付を変更しました。画像へ反映するには再生成してください。' });
     } catch (error) { showError(error); } finally { setBusy(null); }
   }
-  async function searchCatalog() {
+  const searchCatalog = useCallback(async (filters: CatalogFilters, signal: AbortSignal) => {
     if (!detail) return;
-    setBusy('catalog');
+    setCatalogLoading(true); setCatalogError(null);
     try {
-      const params = new URLSearchParams({ franchise: detail.sheet.franchise, product_type: detail.sheet.product_type, q: catalogQuery });
-      setCatalog(await apiJson<CatalogResponse>(`catalog?${params}`)); setCatalogSelection(new Set());
-    } catch (error) { showError(error); } finally { setBusy(null); }
-  }
-  function openCatalog() { setShowCatalog(true); if (!catalog) void searchCatalog(); }
+      const params = catalogSearchParams(filters);
+      params.set('franchise', detail.sheet.franchise); params.set('product_type', detail.sheet.product_type);
+      const response = await apiJson<CatalogResponse>(`catalog?${params}`, { signal });
+      setCatalog(response);
+      setCatalogKnownCards((current) => {
+        const next = new Map(current);
+        response.cards.forEach((card) => next.set(catalogCardId(card), card));
+        return next;
+      });
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setCatalogError(messageOf(error));
+    } finally { if (!signal.aborted) setCatalogLoading(false); }
+  }, [detail?.sheet.franchise, detail?.sheet.product_type]);
+  useEffect(() => {
+    if (!showCatalog) return;
+    if (!isCatalogPriceRangeValid(catalogFilters)) { setCatalogLoading(false); setCatalogError(null); return; }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => void searchCatalog(catalogFilters, controller.signal), 250);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [showCatalog, catalogFilters, searchCatalog]);
+  function openCatalog() { catalogReturnFocus.current = document.activeElement as HTMLElement | null; setShowCatalog(true); }
+  const closeCatalog = useCallback(() => { setShowCatalog(false); window.setTimeout(() => catalogReturnFocus.current?.focus(), 0); }, []);
   async function addCatalogCards() {
     if (!detail || catalogSelection.size === 0) return;
     const count = catalogSelection.size; setBusy('add');
@@ -205,6 +228,7 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
     setBusy('clone');
     try {
       const cloned = await apiJson<SheetDetail>(`sheets/${detail.sheet.id}/clone`, { method: 'POST', body: JSON.stringify({ name }) });
+      setShowCatalog(false); setCatalog(null); setCatalogFilters(DEFAULT_CATALOG_FILTERS); setCatalogSelection(new Set()); setCatalogKnownCards(new Map());
       await loadSheets(cloned.sheet.id); setSelectedSheetId(cloned.sheet.id); setDetail(cloned);
       setFlash({ type: 'success', message: 'カード・価格・並び順をまとめて複製しました' });
     } catch (error) { showError(error); } finally { setBusy(null); }
@@ -252,7 +276,7 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
   }, [detail]);
 
   return (
-    <div className="pb-10">
+    <div className="relative left-1/2 w-[calc(100vw-1.5rem)] max-w-[1720px] -translate-x-1/2 pb-10 sm:w-[calc(100vw-3rem)]">
       <header className="mb-6 flex flex-col gap-3 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
         <div><p className="mb-1 text-xs font-bold uppercase tracking-[0.2em] text-accent">Custom Buyback Studio</p><h1 className="page-title text-3xl text-text-primary sm:text-5xl">カスタム買取表</h1><p className="mt-2 max-w-2xl text-sm text-text-secondary">取得した最高価格を起点に、必要な商品だけを選び、表示価格・募集数・配置を調整できます。</p></div>
         <div className="flex flex-wrap gap-2"><Link href="/gallery/custom" className="rounded-full border border-border-card bg-white px-5 py-2.5 text-sm font-bold hover:bg-warm-50">ギャラリーを見る</Link><button type="button" onClick={startNew} className="rounded-full bg-text-primary px-5 py-2.5 text-sm font-bold text-white hover:bg-warm-800">＋ 新しい表</button></div>
@@ -268,10 +292,10 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
         <section className="min-w-0">
           {loading ? <div className="rounded-2xl border border-border-card bg-card-bg p-12 text-center text-text-secondary">読み込み中...</div> : !detail ? <CreateSheetPanel busy={busy === 'create'} onCreate={createSheet} /> : <div className="space-y-5">
             <SheetToolbar detail={detail} busy={busy} generatedCount={generatedPages.length} onDisplayDateChange={(value) => void updateDisplayDate(value)} onAdd={openCatalog} onClone={() => void cloneSheet()} onRefresh={() => void refreshPrices(true)} onResetRefresh={() => void refreshPrices(false)} onRender={() => void renderSheet()} onCsv={downloadCsv} onZip={() => void downloadImagesAsZip(generatedPages.map((page) => ({ image_url: page.image_url!, filename: `${safeDownloadName(detail.sheet.name)}_${String(page.page_index + 1).padStart(2, '0')}.png` })), `${safeDownloadName(detail.sheet.name)}.zip`)} onDelete={() => void deleteSheet()} />
-            {showCatalog && <CatalogPanel catalogSource={detail.sheet.catalog_source} productType={detail.sheet.product_type} query={catalogQuery} setQuery={setCatalogQuery} result={catalog} selection={catalogSelection} busy={busy} existingSourceIds={new Set(detail.items.map((item) => item.source_kaitori_product_id == null ? item.source_prepared_card_id : String(item.source_kaitori_product_id)).filter((id): id is string => Boolean(id)))} onSearch={() => void searchCatalog()} onToggle={(id) => setCatalogSelection((current) => toggleSet(current, id))} onAdd={() => void addCatalogCards()} onClose={() => setShowCatalog(false)} />}
+            {showCatalog && createPortal(<CatalogPanel catalogSource={detail.sheet.catalog_source} productType={detail.sheet.product_type} filters={catalogFilters} setFilters={setCatalogFilters} result={catalog} knownCards={catalogKnownCards} selection={catalogSelection} loading={catalogLoading} error={catalogError} busy={busy} existingSourceIds={new Set(detail.items.map((item) => item.source_kaitori_product_id == null ? item.source_prepared_card_id : String(item.source_kaitori_product_id)).filter((id): id is string => Boolean(id)))} onToggle={(id) => setCatalogSelection((current) => toggleSet(current, id))} onSelectVisible={(ids) => setCatalogSelection((current) => new Set([...current, ...ids]))} onClearSelection={() => setCatalogSelection(new Set())} onAdd={() => void addCatalogCards()} onClose={closeCatalog} />, document.body)}
             {detail.sheet.price_business_date !== tokyoBusinessDate() && <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">この表の価格基準日は {detail.sheet.price_business_date} です。「最新価格へ更新」で最新化できます。</div>}
             {detail.items.length === 0 ? <button type="button" onClick={openCatalog} className="flex min-h-72 w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed border-warm-300 bg-card-bg/50 hover:border-accent hover:bg-accent-light"><span className="text-4xl">＋</span><strong className="mt-2">商品を追加</strong><span className="mt-1 text-sm text-text-secondary">商品カタログから複数選択できます</span></button> : <>
-              <BulkToolbar locked={detail.sheet.status === 'rendering'} selected={selectedItems.size} total={detail.items.length} operation={bulkOperation} value={bulkValue} busy={busy === 'bulk'} undoCount={undoStack.length} redoCount={redoStack.length} setOperation={setBulkOperation} setValue={setBulkValue} onSelectAll={() => setSelectedItems(selectedItems.size === detail.items.length ? new Set() : new Set(detail.items.map((item) => item.id)))} onApply={() => void applyBulkPrice()} onUndo={() => void undo()} onRedo={() => void redo()} />
+              <BulkToolbar locked={detail.sheet.status === 'rendering'} selected={selectedItems.size} total={detail.items.length} operation={bulkOperation} value={bulkValue} busy={busy === 'bulk'} undoCount={undoStack.length} redoCount={redoStack.length} setOperation={setBulkOperation} setValue={setBulkValue} onSelectAll={() => setSelectedItems(selectedItems.size === detail.items.length ? new Set() : new Set(detail.items.map((item) => item.id)))} onClearSelection={() => setSelectedItems(new Set())} onApply={() => void applyBulkPrice()} onUndo={() => void undo()} onRedo={() => void redo()} />
               {!detail.preview ? <div className="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800">このタイトル・用途で利用できるレイアウトがありません。</div> : <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}><SortableContext items={detail.items.map((item) => item.id)} strategy={rectSortingStrategy}><div className="space-y-5">{pageGroups.map((page) => <section key={page.pageIndex} className="rounded-2xl border border-border-card bg-card-bg p-3 sm:p-5"><div className="mb-3 flex items-center justify-between"><div><h3 className="font-bold">ページ {page.pageIndex + 1}</h3><p className="text-[11px] text-text-secondary">{page.layout.slug} · {page.items.length}/{page.layout.total_slots}枠</p></div>{pageButton(detail, generatedPages, page.pageIndex)}</div><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{page.items.map((item) => <SortableBuybackCard key={item.id} item={item} productType={detail.sheet.product_type} selected={selectedItems.has(item.id)} disabled={detail.sheet.status === 'rendering'} onToggle={(id) => setSelectedItems((current) => toggleSet(current, id))} onValueChange={updateLocalValue} onSave={(changed) => void savePrice(changed.id)} onResetPrice={(id) => void resetPrice(id)} onDelete={(id) => void deleteItem(id)} />)}</div></section>)}</div></SortableContext></DndContext>}
             </>}
             {generatedPages.length > 0 && <GeneratedPreview detail={detail} pages={generatedPages} />}
@@ -321,25 +345,103 @@ function ActionMenu({ label, children }: { label: string; children: React.ReactN
   return <details className="relative"><summary className="cursor-pointer list-none rounded-full border border-border-card bg-white px-4 py-2 text-xs font-bold">{label} ▾</summary><div className="absolute right-0 z-40 mt-2 flex w-64 flex-col rounded-xl border border-border-card bg-white p-1.5 shadow-xl [&>button]:rounded-lg [&>button]:px-3 [&>button]:py-2.5 [&>button]:text-left [&>button]:text-xs [&>button]:font-semibold [&>button]:text-text-primary [&>button:hover]:bg-warm-100 [&>button:disabled]:opacity-40">{children}</div></details>;
 }
 
-function CatalogPanel({ catalogSource, productType, query, setQuery, result, selection, busy, existingSourceIds, onSearch, onToggle, onAdd, onClose }: {
-  catalogSource: CustomBuybackSheetRow['catalog_source']; productType: CustomBuybackProductType; query: string; setQuery: (value: string) => void; result: CatalogResponse | null; selection: Set<string>; busy: string | null; existingSourceIds: Set<string>; onSearch: () => void; onToggle: (id: string) => void; onAdd: () => void; onClose: () => void;
+function CatalogPanel({ catalogSource, productType, filters, setFilters, result, knownCards, selection, loading, error, busy, existingSourceIds, onToggle, onSelectVisible, onClearSelection, onAdd, onClose }: {
+  catalogSource: CustomBuybackSheetRow['catalog_source']; productType: CustomBuybackProductType; filters: CatalogFilters; setFilters: React.Dispatch<React.SetStateAction<CatalogFilters>>; result: CatalogResponse | null; knownCards: Map<string, CustomBuybackCatalogCard>; selection: Set<string>; loading: boolean; error: string | null; busy: string | null; existingSourceIds: Set<string>; onToggle: (id: string) => void; onSelectVisible: (ids: string[]) => void; onClearSelection: () => void; onAdd: () => void; onClose: () => void;
 }) {
-  return <section className="rounded-2xl border-2 border-accent/40 bg-accent-light p-4 sm:p-6">
-    <div className="mb-4 flex items-center justify-between"><div><h2 className="text-lg font-bold">{catalogSource === 'kaitori_checker' ? '買取チェッカー' : '商品カタログ'}から{productType.toUpperCase()}を追加</h2><p className="text-xs text-text-secondary">最高買取価格がある商品を表示します（最大100件）</p></div><button type="button" onClick={onClose} className="rounded-full p-2 text-xl">×</button></div>
-    <form onSubmit={(event) => { event.preventDefault(); onSearch(); }} className="mb-4 flex gap-2"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="商品名・型番・レアリティで検索" className="min-w-0 flex-1 rounded-xl border border-border-card bg-white px-4 py-2.5 outline-none focus:border-accent" /><button disabled={busy === 'catalog'} className="rounded-xl bg-text-primary px-5 text-sm font-bold text-white">{busy === 'catalog' ? '検索中' : '検索'}</button></form>
-    {result && !result.snapshot.isCurrent && <p className="mb-3 rounded-lg bg-amber-100 px-3 py-2 text-xs text-amber-900">価格基準日: {result.snapshot.businessDate}（最新取得分）</p>}
-    <div className="grid max-h-[28rem] gap-2 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">{result?.cards.map((card) => { const id = catalogCardId(card); const existing = existingSourceIds.has(id); return <button type="button" key={id} disabled={existing} onClick={() => onToggle(id)} className={`flex gap-2 rounded-xl border bg-white p-2 text-left ${selection.has(id) ? 'border-accent ring-2 ring-accent/20' : 'border-border-card'} disabled:opacity-40`}><div className="relative h-20 w-14 shrink-0 overflow-hidden rounded-md bg-warm-100">{(card.image_url || card.alt_image_url) && <Image loader={passthroughImageLoader} unoptimized fill sizes="56px" src={(card.image_url || card.alt_image_url)!} alt={card.card_name} className="object-contain" />}</div><div className="min-w-0 flex-1"><p className="line-clamp-2 text-xs font-bold">{card.card_name}</p><p className="mt-1 truncate text-[10px] text-text-secondary">{[card.grade, card.list_no, card.rarity].filter(Boolean).join(' · ')}</p><p className="mt-2 text-xs font-bold text-accent">最高 ¥{card.price_high?.toLocaleString()}</p><p className="truncate text-[9px] text-text-secondary">{card.shop_name ?? '店舗不明'} · {card.condition_name ?? '状態不明'}</p><span className="text-[9px] text-text-secondary">{existing ? '追加済み' : selection.has(id) ? '選択中' : 'クリックで選択'}</span></div></button>; })}</div>
-    {result && result.cards.length === 0 && <p className="py-8 text-center text-sm text-text-secondary">該当商品がありません</p>}
-    <div className="mt-4 flex items-center justify-between"><span className="text-sm font-bold">{selection.size}件選択</span><button type="button" onClick={onAdd} disabled={selection.size === 0 || busy === 'add'} className="rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-white disabled:opacity-40">{busy === 'add' ? '追加中...' : '選択した商品を追加'}</button></div>
-  </section>;
+  const [hideExisting, setHideExisting] = useState(true);
+  const [selectedOnly, setSelectedOnly] = useState(false);
+  const [preview, setPreview] = useState<CustomBuybackCatalogCard | null>(null);
+  const previewRef = useRef<CustomBuybackCatalogCard | null>(null);
+  const previewDialog = useRef<HTMLDivElement>(null);
+  const previewClose = useRef<HTMLButtonElement>(null);
+  const previewReturnFocus = useRef<HTMLButtonElement>(null);
+  const dialogRoot = useRef<HTMLDivElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const priceRangeValid = isCatalogPriceRangeValid(filters);
+  previewRef.current = preview;
+  const visibleCards = (selectedOnly ? [...knownCards.values()].filter((card) => selection.has(catalogCardId(card))) : result?.cards ?? []).filter((card) => {
+    const id = catalogCardId(card);
+    return (!hideExisting || !existingSourceIds.has(id)) && (!selectedOnly || selection.has(id));
+  });
+  const selectableVisibleIds = visibleCards.map(catalogCardId).filter((id) => !existingSourceIds.has(id) && !selection.has(id));
+  const closePreview = useCallback(() => {
+    setPreview(null);
+    queueMicrotask(() => previewReturnFocus.current?.focus());
+  }, []);
+
+  useEffect(() => { if (preview) previewClose.current?.focus(); }, [preview]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    searchInput.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { if (previewRef.current) closePreview(); else onClose(); return; }
+      if (event.key !== 'Tab') return;
+      const controls = [...((previewRef.current ? previewDialog.current : dialogRoot.current)?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled])') ?? [])];
+      const first = controls[0]; const last = controls.at(-1);
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener('keydown', onKeyDown); };
+  }, [closePreview, onClose]);
+
+  return <div ref={dialogRoot} className="fixed inset-0 z-[60] bg-black/55 p-2 sm:p-4" role="presentation">
+    <section role="dialog" aria-modal="true" aria-labelledby="catalog-title" className="mx-auto flex h-[calc(100dvh-1rem)] max-w-[1680px] flex-col overflow-hidden border border-warm-300 bg-warm-50 shadow-2xl sm:h-[calc(100dvh-2rem)] sm:rounded-2xl">
+      <header className="shrink-0 border-b border-border-card bg-warm-50 px-4 py-3 sm:px-6 sm:py-4">
+        <div className="flex items-start justify-between gap-4"><div><h2 id="catalog-title" className="text-lg font-bold sm:text-2xl">{catalogSource === 'kaitori_checker' ? '買取チェッカー' : '商品カタログ'}から{productType.toUpperCase()}を追加</h2><p className="mt-1 text-xs text-text-secondary sm:text-sm">条件を変えると自動で更新します。最高買取価格がある商品を最大100件表示します。</p></div><button type="button" onClick={onClose} aria-label="商品選択を閉じる" className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-border-card bg-white text-2xl leading-none hover:bg-warm-100 focus-visible:outline-2 focus-visible:outline-accent">×</button></div>
+        <div className="mt-4 grid gap-2 md:grid-cols-[minmax(18rem,2fr)_minmax(8rem,0.7fr)_minmax(8rem,0.7fr)_minmax(11rem,0.9fr)_auto]">
+          <label><span className="sr-only">商品名・型番・レアリティ・店舗名</span><input ref={searchInput} type="search" value={filters.q} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} placeholder="商品名・型番・レアリティ・店舗名" className="h-11 w-full rounded-lg border border-border-card bg-white px-3 text-sm outline-none focus:border-accent focus:ring-1 focus:ring-accent" /></label>
+          <label><span className="sr-only">最低価格</span><input type="number" min="0" max="100000000" inputMode="numeric" value={filters.minPrice} onChange={(event) => setFilters((current) => ({ ...current, minPrice: event.target.value }))} placeholder="最低価格" className="h-11 w-full rounded-lg border border-border-card bg-white px-3 text-sm outline-none focus:border-accent" /></label>
+          <label><span className="sr-only">最高価格</span><input type="number" min="0" max="100000000" inputMode="numeric" value={filters.maxPrice} onChange={(event) => setFilters((current) => ({ ...current, maxPrice: event.target.value }))} placeholder="最高価格" className="h-11 w-full rounded-lg border border-border-card bg-white px-3 text-sm outline-none focus:border-accent" /></label>
+          <label><span className="sr-only">並び替え</span><select value={filters.sort} onChange={(event) => setFilters((current) => ({ ...current, sort: event.target.value as CatalogFilters['sort'] }))} className="h-11 w-full rounded-lg border border-border-card bg-white px-3 text-sm outline-none focus:border-accent"><option value="price_desc">価格が高い順</option><option value="price_asc">価格が安い順</option><option value="name_asc">商品名順</option></select></label>
+          <button type="button" onClick={() => { setFilters(DEFAULT_CATALOG_FILTERS); setHideExisting(true); setSelectedOnly(false); }} className="h-11 rounded-lg border border-border-card bg-white px-4 text-sm font-bold hover:bg-warm-100">条件をリセット</button>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+          <label className="flex cursor-pointer items-center gap-2"><input type="checkbox" checked={hideExisting} onChange={(event) => setHideExisting(event.target.checked)} className="h-4 w-4 accent-accent" />未追加のみ</label>
+          <label className="flex cursor-pointer items-center gap-2"><input type="checkbox" checked={selectedOnly} onChange={(event) => setSelectedOnly(event.target.checked)} className="h-4 w-4 accent-accent" />選択中のみ</label>
+          <span aria-live="polite" className="ml-auto text-xs text-text-secondary">{loading ? '検索中…' : `${visibleCards.length}件表示${result ? ` / ${result.cards.length}件` : ''}`}</span>
+        </div>
+        {!priceRangeValid && <p role="alert" className="mt-2 text-sm font-bold text-red-700">価格は0〜100,000,000円の整数で、最低価格が最高価格以下になるよう入力してください。</p>}
+        {error && <p role="alert" className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
+        {result && !result.snapshot.isCurrent && <p className="mt-2 rounded-lg bg-amber-100 px-3 py-2 text-xs text-amber-900">価格基準日: {result.snapshot.businessDate}（最新取得分）</p>}
+        {result?.cards.length === 100 && !selectedOnly && <p className="mt-2 text-xs text-text-secondary">表示上限の100件です。検索・価格帯で絞り込むと、ほかの商品も探せます。</p>}
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-6" aria-busy={loading}>
+        {visibleCards.length > 0 && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">{visibleCards.map((card) => {
+          const id = catalogCardId(card); const existing = existingSourceIds.has(id); const selected = selection.has(id); const imageUrl = card.image_url || card.alt_image_url;
+          return <article key={id} className={`flex min-h-40 gap-3 border bg-white p-3 ${selected ? 'border-accent ring-2 ring-accent/20' : 'border-border-card'} ${existing ? 'opacity-55' : ''}`}>
+            <button type="button" disabled={!imageUrl} onClick={(event) => { previewReturnFocus.current = event.currentTarget; setPreview(card); }} aria-label={`${card.card_name}の画像を拡大`} className="relative h-36 w-24 shrink-0 overflow-hidden rounded-md bg-warm-100 disabled:cursor-default">{imageUrl ? <Image loader={passthroughImageLoader} unoptimized fill sizes="96px" src={imageUrl} alt="" className="object-contain" /> : <span className="grid h-full place-items-center px-2 text-center text-xs text-text-secondary">画像なし</span>}</button>
+            <button type="button" disabled={existing} aria-pressed={selected} onClick={() => onToggle(id)} className="min-w-0 flex-1 text-left focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed">
+              <span className="line-clamp-3 text-sm font-bold leading-5">{card.card_name}</span>
+              <span className="mt-2 block text-xs leading-5 text-text-secondary">{productType.toUpperCase()}<br />{[card.grade, card.list_no, card.rarity].filter(Boolean).join(' · ') || '型番・レアリティ不明'}</span>
+              <span className="mt-2 block text-lg font-black text-accent">¥{card.price_high?.toLocaleString()}</span>
+              <span className="mt-1 line-clamp-2 text-xs leading-5 text-text-secondary">{card.shop_name ?? '店舗不明'} · {card.condition_name ?? '状態不明'}</span>
+              <span className={`mt-2 inline-flex items-center gap-1 text-xs font-bold ${selected ? 'text-accent' : 'text-text-secondary'}`}><span aria-hidden="true">{existing ? '済' : selected ? '✓' : '□'}</span>{existing ? '追加済み' : selected ? '選択中' : '選択する'}</span>
+            </button>
+          </article>;
+        })}</div>}
+        {!loading && priceRangeValid && result && visibleCards.length === 0 && <div className="grid min-h-64 place-items-center text-center"><div><p className="font-bold">該当商品がありません</p><p className="mt-1 text-sm text-text-secondary">検索条件を変更してください。</p></div></div>}
+        {loading && !result && <div className="grid min-h-64 place-items-center text-sm text-text-secondary">商品を読み込んでいます…</div>}
+      </div>
+
+      <footer className="shrink-0 border-t border-border-card bg-white px-4 py-3 sm:px-6">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3"><strong className="mr-auto text-sm sm:text-base">{selection.size}件選択</strong><button type="button" onClick={() => onSelectVisible(selectableVisibleIds)} disabled={selectableVisibleIds.length === 0} className="rounded-lg border border-border-card px-3 py-2 text-xs font-bold hover:bg-warm-50 disabled:opacity-40">表示中をすべて選択</button><button type="button" onClick={onClearSelection} disabled={selection.size === 0} className="rounded-lg border border-border-card px-3 py-2 text-xs font-bold hover:bg-warm-50 disabled:opacity-40">選択を解除</button><button type="button" onClick={onAdd} disabled={selection.size === 0 || busy === 'add'} className="rounded-lg bg-accent px-5 py-2.5 text-sm font-bold text-white disabled:opacity-40">{busy === 'add' ? '追加中…' : `選択した${selection.size}件を追加`}</button></div>
+      </footer>
+    </section>
+    {preview && <div ref={previewDialog} className="fixed inset-0 z-[70] grid place-items-center bg-black/80 p-6" role="dialog" aria-modal="true" aria-label={`${preview.card_name}の画像プレビュー`} onClick={closePreview}><button ref={previewClose} type="button" onClick={closePreview} aria-label="画像プレビューを閉じる" className="absolute right-5 top-5 grid h-11 w-11 place-items-center rounded-full bg-white text-2xl">×</button><div className="relative h-[82dvh] w-[min(90vw,42rem)]" onClick={(event) => event.stopPropagation()}>{(preview.image_url || preview.alt_image_url) && <Image loader={passthroughImageLoader} unoptimized fill sizes="90vw" src={(preview.image_url || preview.alt_image_url)!} alt={preview.card_name} className="object-contain" />}</div></div>}
+  </div>;
 }
 
-function BulkToolbar({ locked, selected, total, operation, value, busy, undoCount, redoCount, setOperation, setValue, onSelectAll, onApply, onUndo, onRedo }: {
+function BulkToolbar({ locked, selected, total, operation, value, busy, undoCount, redoCount, setOperation, setValue, onSelectAll, onClearSelection, onApply, onUndo, onRedo }: {
   locked: boolean; selected: number; total: number; operation: 'add' | 'percent' | 'round' | 'reset'; value: number; busy: boolean; undoCount: number; redoCount: number;
-  setOperation: (value: 'add' | 'percent' | 'round' | 'reset') => void; setValue: (value: number) => void; onSelectAll: () => void; onApply: () => void; onUndo: () => void; onRedo: () => void;
+  setOperation: (value: 'add' | 'percent' | 'round' | 'reset') => void; setValue: (value: number) => void; onSelectAll: () => void; onClearSelection: () => void; onApply: () => void; onUndo: () => void; onRedo: () => void;
 }) {
   return <div className="flex flex-col gap-3 rounded-xl border border-border-card bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
-    <div className="flex items-center gap-2"><button type="button" disabled={locked} onClick={onSelectAll} className="rounded-lg border border-border-card px-3 py-2 text-xs font-bold disabled:opacity-30">{selected === total ? '全選択解除' : '全選択'}</button><span className="text-xs text-text-secondary">{selected}/{total}件</span><button type="button" onClick={onUndo} disabled={locked || !undoCount} className="rounded-lg px-2 py-2 text-xs font-bold disabled:opacity-30">↶ Undo</button><button type="button" onClick={onRedo} disabled={locked || !redoCount} className="rounded-lg px-2 py-2 text-xs font-bold disabled:opacity-30">↷ Redo</button></div>
+    <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={locked} onClick={onSelectAll} className="rounded-lg border border-border-card px-3 py-2 text-xs font-bold disabled:opacity-30">{selected === total ? '全選択解除' : '全選択'}</button><button type="button" disabled={locked || selected === 0} onClick={onClearSelection} className="rounded-lg border border-border-card px-3 py-2 text-xs font-bold disabled:opacity-30">選択を解除</button><span className="text-xs text-text-secondary">{selected}/{total}件</span><button type="button" onClick={onUndo} disabled={locked || !undoCount} className="rounded-lg px-2 py-2 text-xs font-bold disabled:opacity-30">↶ Undo</button><button type="button" onClick={onRedo} disabled={locked || !redoCount} className="rounded-lg px-2 py-2 text-xs font-bold disabled:opacity-30">↷ Redo</button></div>
     <div className="flex flex-wrap items-center gap-2"><select disabled={locked} value={operation} onChange={(event) => setOperation(event.target.value as typeof operation)} className="rounded-lg border border-border-card px-2 py-2 text-xs"><option value="add">一律 加減算</option><option value="percent">一律 ％調整</option><option value="round">指定単位で丸め</option><option value="reset">元価格に戻す</option></select>{operation !== 'reset' && <input disabled={locked} type="number" value={value} onChange={(event) => setValue(Number(event.target.value))} className="w-24 rounded-lg border border-border-card px-2 py-2 text-right text-xs" />}<button type="button" onClick={onApply} disabled={locked || selected === 0 || busy} className="rounded-lg bg-text-primary px-4 py-2 text-xs font-bold text-white disabled:opacity-40">{busy ? '更新中' : '選択へ適用'}</button></div>
   </div>;
 }
