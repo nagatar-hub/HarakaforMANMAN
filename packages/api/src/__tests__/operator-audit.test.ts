@@ -36,7 +36,7 @@ test('operator audit ignores reads and requests without a valid actor email', ()
   assert.equal(buildOperatorAuditEntry({ ...base, method: 'POST', actorEmail: undefined }), null);
 });
 
-test('all HTTP mutations require the internal bearer while reads do not', () => {
+test('HTTP mutations require the internal bearer and non-Osaka operator identity', () => {
   const token = 'a'.repeat(32);
   assert.equal(authorizeInternalMutationRequest('GET', undefined, token), 'not_required');
   assert.equal(authorizeInternalMutationRequest('POST', undefined, token), 'unauthorized');
@@ -47,6 +47,12 @@ test('all HTTP mutations require the internal bearer while reads do not', () => 
   ), 'authorized');
   assert.equal(authorizeInternalMutationRequest(
     'PATCH', `Bearer ${token}`, token, 'staff@@tomstocks.net',
+  ), 'operator_required');
+  assert.equal(authorizeInternalMutationRequest(
+    'POST', `Bearer ${token}`, token, undefined, 'manman',
+  ), 'authorized');
+  assert.equal(authorizeInternalMutationRequest(
+    'POST', `Bearer ${token}`, token, undefined, 'manman-akihabara',
   ), 'operator_required');
   assert.equal(authorizeInternalMutationRequest('PUT', undefined, undefined), 'misconfigured');
 });

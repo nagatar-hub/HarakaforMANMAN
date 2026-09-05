@@ -43,6 +43,7 @@ app.use('*', async (c, next) => {
     authorization,
     undefined,
     requestedActorEmail,
+    STORE_NAME,
   );
   if (mutationAuth === 'misconfigured') {
     return c.json({ error: 'APIの認証設定がありません' }, 503);

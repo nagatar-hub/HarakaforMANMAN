@@ -38,10 +38,11 @@ export function authorizeInternalMutationRequest(
   authorization: string | undefined,
   expectedToken = process.env.ORDER_LIST_IMPORT_API_TOKEN?.trim(),
   operatorEmail?: string,
+  storeName?: string,
 ): InternalMutationAuthResult {
   if (!MUTATION_METHODS.has(method.toUpperCase())) return 'not_required';
   const auth = authorizeInternalApiRequest(authorization, expectedToken);
-  return auth === 'authorized' && !normalizeOperatorEmail(operatorEmail)
+  return auth === 'authorized' && storeName !== 'manman' && !normalizeOperatorEmail(operatorEmail)
     ? 'operator_required'
     : auth;
 }
