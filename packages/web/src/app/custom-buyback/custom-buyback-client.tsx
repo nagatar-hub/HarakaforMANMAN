@@ -33,7 +33,7 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
-export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: string }) {
+export function CustomBuybackClient({ initialSheetId, enableTokyoFranchises = false }: { initialSheetId?: string; enableTokyoFranchises?: boolean }) {
   const [sheets, setSheets] = useState<CustomBuybackSheetRow[]>([]);
   const [detail, setDetail] = useState<SheetDetail | null>(null);
   const [selectedSheetId, setSelectedSheetId] = useState<string | null>(null);
@@ -290,7 +290,7 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
           </div>
         </aside>
         <section className="min-w-0">
-          {loading ? <div className="rounded-2xl border border-border-card bg-card-bg p-12 text-center text-text-secondary">読み込み中...</div> : !detail ? <CreateSheetPanel busy={busy === 'create'} onCreate={createSheet} /> : <div className="space-y-5">
+          {loading ? <div className="rounded-2xl border border-border-card bg-card-bg p-12 text-center text-text-secondary">読み込み中...</div> : !detail ? <CreateSheetPanel busy={busy === 'create'} onCreate={createSheet} enableTokyoFranchises={enableTokyoFranchises} /> : <div className="space-y-5">
             <SheetToolbar detail={detail} busy={busy} generatedCount={generatedPages.length} onDisplayDateChange={(value) => void updateDisplayDate(value)} onAdd={openCatalog} onClone={() => void cloneSheet()} onRefresh={() => void refreshPrices(true)} onResetRefresh={() => void refreshPrices(false)} onRender={() => void renderSheet()} onCsv={downloadCsv} onZip={() => void downloadImagesAsZip(generatedPages.map((page) => ({ image_url: page.image_url!, filename: `${safeDownloadName(detail.sheet.name)}_${String(page.page_index + 1).padStart(2, '0')}.png` })), `${safeDownloadName(detail.sheet.name)}.zip`)} onDelete={() => void deleteSheet()} />
             {showCatalog && createPortal(<CatalogPanel catalogSource={detail.sheet.catalog_source} productType={detail.sheet.product_type} filters={catalogFilters} setFilters={setCatalogFilters} result={catalog} knownCards={catalogKnownCards} selection={catalogSelection} loading={catalogLoading} error={catalogError} busy={busy} existingSourceIds={new Set(detail.items.map((item) => item.source_kaitori_product_id == null ? item.source_prepared_card_id : String(item.source_kaitori_product_id)).filter((id): id is string => Boolean(id)))} onToggle={(id) => setCatalogSelection((current) => toggleSet(current, id))} onSelectVisible={(ids) => setCatalogSelection((current) => new Set([...current, ...ids]))} onClearSelection={() => setCatalogSelection(new Set())} onAdd={() => void addCatalogCards()} onClose={closeCatalog} />, document.body)}
             {detail.sheet.price_business_date !== tokyoBusinessDate() && <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">この表の価格基準日は {detail.sheet.price_business_date} です。「最新価格へ更新」で最新化できます。</div>}
@@ -306,28 +306,33 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
   );
 }
 
-function CreateSheetPanel({ busy, onCreate }: {
+function CreateSheetPanel({ busy, onCreate, enableTokyoFranchises }: {
   busy: boolean;
   onCreate: (input: { name: string; franchise: CustomBuybackFranchise; product_type: CustomBuybackProductType; kind: 'postal' | 'store'; display_date: string }) => Promise<void>;
+  enableTokyoFranchises: boolean;
 }) {
   const [name, setName] = useState('');
   const [displayDate, setDisplayDate] = useState(tokyoBusinessDate());
   const [franchise, setFranchise] = useState<CustomBuybackFranchise>('Pokemon');
   const [productType, setProductType] = useState<CustomBuybackProductType>('psa');
   const [kind, setKind] = useState<'postal' | 'store'>('store');
+  const franchises: CustomBuybackFranchise[] = enableTokyoFranchises
+    ? ['Pokemon', 'ONE PIECE', 'YU-GI-OH!', 'WEISS SCHWARZ', 'DRAGON BALL']
+    : ['Pokemon', 'ONE PIECE', 'YU-GI-OH!'];
+  const storeOnly = franchise === 'WEISS SCHWARZ' || franchise === 'DRAGON BALL';
   return <form onSubmit={(event) => { event.preventDefault(); void onCreate({ name, franchise, product_type: productType, kind, display_date: displayDate }); }} className="rounded-2xl border border-border-card bg-card-bg p-5 sm:p-8">
     <div className="mb-7"><span className="text-xs font-bold text-accent">STEP 1</span><h2 className="mt-1 text-2xl font-bold">表の種類を選ぶ</h2><p className="mt-1 text-sm text-text-secondary">作成後にカードを検索して追加します。</p></div>
     <label className="mb-5 block"><span className="mb-2 block text-sm font-bold">表の名前</span><input required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} placeholder="例：8月3日 ポケモンPSA強化" className="w-full rounded-xl border border-border-card bg-white px-4 py-3 outline-none focus:border-accent" /></label>
     <label className="mb-5 block"><span className="mb-2 block text-sm font-bold">表に表示する日付</span><input required type="date" value={displayDate} onChange={(event) => setDisplayDate(event.target.value)} className="w-full rounded-xl border border-border-card bg-white px-4 py-3 outline-none focus:border-accent sm:max-w-xs" /><span className="mt-1.5 block text-xs text-text-secondary">画像へ印字され、カスタムギャラリーもこの日付で整理されます。作成後も変更できます。</span></label>
-    <fieldset className="mb-5"><legend className="mb-2 text-sm font-bold">カードタイトル</legend><div className="grid gap-2 sm:grid-cols-3">{(['Pokemon', 'ONE PIECE', 'YU-GI-OH!'] as const).map((value) => <Choice key={value} selected={franchise === value} onClick={() => setFranchise(value)}>{value}</Choice>)}</div></fieldset>
+    <fieldset className="mb-5"><legend className="mb-2 text-sm font-bold">カードタイトル</legend><div className="grid gap-2 sm:grid-cols-3">{franchises.map((value) => <Choice key={value} selected={franchise === value} onClick={() => { setFranchise(value); if (value === 'WEISS SCHWARZ' || value === 'DRAGON BALL') setKind('store'); }}>{value}</Choice>)}</div></fieldset>
     <fieldset className="mb-5"><legend className="mb-2 text-sm font-bold">商品タイプ</legend><div className="grid grid-cols-2 gap-2"><Choice selected={productType === 'psa'} onClick={() => setProductType('psa')}><strong>PSA</strong><small>表示価格＋募集枚数</small></Choice><Choice selected={productType === 'box'} onClick={() => setProductType('box')}><strong>BOX</strong><small>表示価格＋募集個数</small></Choice></div></fieldset>
-    <fieldset className="mb-7"><legend className="mb-2 text-sm font-bold">用途</legend><div className="grid grid-cols-2 gap-2"><Choice selected={kind === 'store'} onClick={() => setKind('store')}>店頭用</Choice><Choice selected={kind === 'postal'} onClick={() => setKind('postal')}>郵送用</Choice></div></fieldset>
+    <fieldset className="mb-7"><legend className="mb-2 text-sm font-bold">用途</legend><div className="grid grid-cols-2 gap-2"><Choice selected={kind === 'store'} onClick={() => setKind('store')}>店頭用</Choice><Choice selected={kind === 'postal'} onClick={() => setKind('postal')} disabled={storeOnly}>郵送用</Choice></div></fieldset>
     <button disabled={busy || !name.trim()} className="w-full rounded-xl bg-text-primary px-5 py-3.5 font-bold text-white disabled:opacity-40">{busy ? '作成中...' : 'この内容で作成 →'}</button>
   </form>;
 }
 
-function Choice({ selected, onClick, children }: { selected: boolean; onClick: () => void; children: React.ReactNode }) {
-  return <button type="button" onClick={onClick} className={`flex min-h-16 flex-col items-center justify-center rounded-xl border px-3 py-2 text-sm transition ${selected ? 'border-accent bg-accent-light text-accent ring-1 ring-accent' : 'border-border-card bg-white hover:border-warm-400'}`}>{children}</button>;
+function Choice({ selected, onClick, children, disabled = false }: { selected: boolean; onClick: () => void; children: React.ReactNode; disabled?: boolean }) {
+  return <button type="button" onClick={onClick} disabled={disabled} className={`flex min-h-16 flex-col items-center justify-center rounded-xl border px-3 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-40 ${selected ? 'border-accent bg-accent-light text-accent ring-1 ring-accent' : 'border-border-card bg-white hover:border-warm-400'}`}>{children}</button>;
 }
 
 function SheetToolbar({ detail, busy, generatedCount, onDisplayDateChange, onAdd, onClone, onRefresh, onResetRefresh, onRender, onCsv, onZip, onDelete }: {

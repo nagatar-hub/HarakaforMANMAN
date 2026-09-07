@@ -5,6 +5,7 @@ import {
   buildCustomBuybackCatalogOrFilter,
   buildKaitoriCheckerCatalogOrFilter,
   customBuybackRoutes,
+  isCustomBuybackFranchise,
   mapKaitoriCheckerCatalogCard,
   matchCustomBuybackRefreshCards,
   parseCustomBuybackCatalogIds,
@@ -12,6 +13,7 @@ import {
   parseCustomBuybackCreate,
   parseCustomBuybackPricePatch,
   parseCustomBuybackSheetPatch,
+  usesKaitoriChecker,
 } from '../routes/custom-buyback.js';
 
 const originalToken = process.env.ORDER_LIST_IMPORT_API_TOKEN;
@@ -45,6 +47,23 @@ test('sheet create input is normalized and constrained', () => {
   assert.equal(parseCustomBuybackCreate({
     name: 'bad', franchise: 'Pokemon', product_type: 'sealed', kind: 'store',
   }).ok, false);
+  assert.equal(parseCustomBuybackCreate({
+    name: '東京ヴァイス', franchise: 'WEISS SCHWARZ', product_type: 'psa', kind: 'store',
+  }, 'manman-akihabara').ok, true);
+  assert.equal(parseCustomBuybackCreate({
+    name: '大阪ヴァイス', franchise: 'WEISS SCHWARZ', product_type: 'psa', kind: 'store',
+  }, 'manman').ok, false);
+  assert.equal(parseCustomBuybackCreate({
+    name: '東京ドラゴン郵送', franchise: 'DRAGON BALL', product_type: 'psa', kind: 'postal',
+  }, 'manman-akihabara').ok, false);
+});
+
+test('Weiss and Dragon use the store order-list snapshot', () => {
+  assert.equal(isCustomBuybackFranchise('WEISS SCHWARZ', 'manman-akihabara'), true);
+  assert.equal(isCustomBuybackFranchise('DRAGON BALL', 'manman-akihabara'), true);
+  assert.equal(isCustomBuybackFranchise('WEISS SCHWARZ', 'manman'), false);
+  assert.equal(usesKaitoriChecker('WEISS SCHWARZ'), false);
+  assert.equal(usesKaitoriChecker('DRAGON BALL'), false);
 });
 
 test('sheet date patch accepts real calendar dates and rejects impossible dates', () => {

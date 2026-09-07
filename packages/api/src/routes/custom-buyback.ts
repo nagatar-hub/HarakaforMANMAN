@@ -26,7 +26,8 @@ import { executeCloudRunJob } from '../lib/cloud-run-jobs.js';
 import { isDefinitiveCloudRunJobRejection } from '../lib/cloud-run-errors.js';
 import { STORE_NAME } from '../lib/store-scope.js';
 
-const FRANCHISES = new Set<CustomBuybackFranchise>(['Pokemon', 'ONE PIECE', 'YU-GI-OH!']);
+const BASE_FRANCHISES = new Set<CustomBuybackFranchise>(['Pokemon', 'ONE PIECE', 'YU-GI-OH!']);
+const TOKYO_SHARED_FRANCHISES = new Set<CustomBuybackFranchise>(['WEISS SCHWARZ', 'DRAGON BALL']);
 const PRODUCT_TYPES = new Set<CustomBuybackProductType>(['psa', 'box']);
 const KINDS = new Set<CustomBuybackKind>(['postal', 'store']);
 const CATALOG_LIMIT = 100;
@@ -61,6 +62,11 @@ type CustomBuybackCatalogSort = 'price_desc' | 'price_asc' | 'name_asc';
 
 export const customBuybackRoutes = new Hono();
 
+export function isCustomBuybackFranchise(value: unknown, storeName = STORE_NAME): value is CustomBuybackFranchise {
+  return BASE_FRANCHISES.has(value as CustomBuybackFranchise)
+    || (storeName === 'manman-akihabara' && TOKYO_SHARED_FRANCHISES.has(value as CustomBuybackFranchise));
+}
+
 function isIsoCalendarDate(value: unknown): value is string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split('-').map(Number);
@@ -79,7 +85,7 @@ customBuybackRoutes.use('*', async (c, next) => {
   await next();
 });
 
-export function parseCustomBuybackCreate(body: unknown): ParseResult<{
+export function parseCustomBuybackCreate(body: unknown, storeName = STORE_NAME): ParseResult<{
   name: string;
   franchise: CustomBuybackFranchise;
   productType: CustomBuybackProductType;
@@ -96,9 +102,12 @@ export function parseCustomBuybackCreate(body: unknown): ParseResult<{
   const kind = input.kind;
   const displayDate = input.display_date ?? tokyoBusinessDate();
   if (!name || name.length > 120) return { ok: false, error: '表名は1〜120文字で入力してください' };
-  if (!FRANCHISES.has(franchise as CustomBuybackFranchise)) return { ok: false, error: 'カードタイトルが正しくありません' };
+  if (!isCustomBuybackFranchise(franchise, storeName)) return { ok: false, error: 'カードタイトルが正しくありません' };
   if (!PRODUCT_TYPES.has(productType as CustomBuybackProductType)) return { ok: false, error: 'PSAまたはBOXを選択してください' };
   if (!KINDS.has(kind as CustomBuybackKind)) return { ok: false, error: '店頭用または郵送用を選択してください' };
+  if (storeName === 'manman-akihabara' && TOKYO_SHARED_FRANCHISES.has(franchise as CustomBuybackFranchise) && kind !== 'store') {
+    return { ok: false, error: 'ヴァイスとドラゴンボールは店頭用のみ対応しています' };
+  }
   if (!isIsoCalendarDate(displayDate)) return { ok: false, error: '表の日付を正しく入力してください' };
   return {
     ok: true,
@@ -339,8 +348,8 @@ async function latestKaitoriCheckerSnapshot(
   };
 }
 
-function usesKaitoriChecker(franchise: CustomBuybackFranchise): boolean {
-  return franchise !== 'YU-GI-OH!';
+export function usesKaitoriChecker(franchise: CustomBuybackFranchise): boolean {
+  return franchise === 'Pokemon' || franchise === 'ONE PIECE';
 }
 
 function mapPreparedCatalogCard(row: PreparedCatalogRow): CustomBuybackCatalogCard {
@@ -454,7 +463,9 @@ customBuybackRoutes.get('/custom-buyback/catalog', async (c) => {
   const franchise = c.req.query('franchise') as CustomBuybackFranchise | undefined;
   const productType = c.req.query('product_type') as CustomBuybackProductType | undefined;
   const queryText = (c.req.query('q') ?? '').normalize('NFKC').trim().toLocaleLowerCase('ja-JP');
-  if (!franchise || !FRANCHISES.has(franchise)) return c.json({ error: 'カードタイトルが正しくありません' }, 400);
+  if (!isCustomBuybackFranchise(franchise)) {
+    return c.json({ error: 'カードタイトルが正しくありません' }, 400);
+  }
   if (!productType || !PRODUCT_TYPES.has(productType)) return c.json({ error: 'PSAまたはBOXを選択してください' }, 400);
   const catalogQueryInput = parseCustomBuybackCatalogQuery({
     minPrice: c.req.query('min_price'),

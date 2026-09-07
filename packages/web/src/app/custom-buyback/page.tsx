@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { CustomBuybackClient } from './custom-buyback-client';
+import { STORE_NAME } from '@/lib/store';
 
 export const metadata: Metadata = {
   title: 'カスタム買取表 | Haraka',
@@ -12,5 +13,5 @@ export default async function CustomBuybackPage({
   searchParams: Promise<{ sheet?: string }>;
 }) {
   const { sheet } = await searchParams;
-  return <CustomBuybackClient initialSheetId={sheet} />;
+  return <CustomBuybackClient initialSheetId={sheet} enableTokyoFranchises={STORE_NAME === 'manman-akihabara'} />;
 }
