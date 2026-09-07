@@ -4,7 +4,7 @@ export const CUSTOM_BUYBACK_MAX_ITEMS = 400;
 
 export type CustomBuybackCatalogCard = {
   id: string;
-  source: 'prepared_card' | 'kaitori_checker';
+  source: 'prepared_card' | 'kaitori_checker' | 'shinsoku';
   source_product_id: number | null;
   db_card_id: string | null;
   excel_product_id: string | null;
@@ -20,7 +20,7 @@ export type CustomBuybackCatalogCard = {
   image_status: 'unchecked' | 'ok' | 'fallback' | 'dead';
   price_high: number | null;
   price_low: number | null;
-  price_source: 'order_list' | 'kecak' | 'spectre' | 'manual' | 'kaitori_checker';
+  price_source: 'order_list' | 'kecak' | 'spectre' | 'manual' | 'kaitori_checker' | 'shinsoku';
   price_source_date: string | null;
   condition_name: string | null;
   shop_name: string | null;

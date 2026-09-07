@@ -33,6 +33,16 @@ test('download names exclude Windows-invalid characters', () => {
   expect(safeDownloadName('8/3: PSA*')).toBe('8_3_ PSA_');
 });
 
+test('Shinsoku CSV provenance is added only for the Tokyo source', () => {
+  const existing = customBuybackCsv([item('a', 0)]);
+  expect(existing).toContain('"最高価格店舗"');
+  expect(existing).not.toContain('Shinsoku商品ID');
+  const tokyo = customBuybackCsv([{ ...item('a', 0), price_source: 'shinsoku', source_shinsoku_id: 'IAP123' }]);
+  expect(tokyo).toContain('"価格取得元"');
+  expect(tokyo).toContain('"Shinsoku商品ID"');
+  expect(tokyo).toContain('"IAP123"');
+});
+
 test('catalog filters map to API parameters and reject an inverted price range', () => {
   expect(catalogSearchParams({ q: 'リザードン', minPrice: '1000', maxPrice: '5000', sort: 'price_desc' }).toString())
     .toBe('q=%E3%83%AA%E3%82%B6%E3%83%BC%E3%83%89%E3%83%B3&sort=price_desc&min_price=1000&max_price=5000');

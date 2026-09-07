@@ -41,11 +41,11 @@ export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'excl
 export type OrderListMatchMethod = 'existing_mapping' | 'exact_image' | 'exact_identity' | 'manual';
 export type ExcelProductMappingStatus = 'active' | 'disabled';
 export type PriceSource = 'order_list' | 'kecak' | 'spectre' | 'manual';
-export type CustomBuybackPriceSource = PriceSource | 'kaitori_checker';
+export type CustomBuybackPriceSource = PriceSource | 'kaitori_checker' | 'shinsoku';
 export type CustomBuybackProductType = 'psa' | 'box';
 export type CustomBuybackKind = 'postal' | 'store';
 export type CustomBuybackSheetStatus = 'draft' | 'rendering' | 'ready' | 'failed';
-export type CustomBuybackCatalogSource = 'prepared_card' | 'kaitori_checker';
+export type CustomBuybackCatalogSource = 'prepared_card' | 'kaitori_checker' | 'shinsoku';
 export type KaitoriCheckerSyncTrigger = 'scheduler' | 'manual';
 export type KaitoriCheckerSyncStatus = 'queued' | 'running' | 'applied' | 'failed';
 export type OperatorAuditMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -231,6 +231,7 @@ export type CustomBuybackSheetRow = {
   price_snapshot_run_id: string | null;
   kaitori_checker_run_id: string | null;
   kaitori_checker_source_store: string | null;
+  tokyo_snapshot_id?: string | null;
   price_business_date: string;
   display_date: string;
   status: CustomBuybackSheetStatus;
@@ -257,6 +258,7 @@ export type CustomBuybackItemRow = {
   sheet_id: string;
   source_prepared_card_id: string | null;
   source_kaitori_product_id: number | null;
+  source_shinsoku_id?: string | null;
   source_kaitori_condition_id: number | null;
   source_kaitori_shop_id: number | null;
   source_kaitori_edition_id: number | null;
@@ -561,9 +563,28 @@ export type KaitoriCheckerCustomBuybackCatalogRow = {
   image_url: string | null;
 };
 
+export type TokyoBuybackSnapshotRow = {
+  id: string; store: string; order_list_import_id: string; checker_run_id: string;
+  checker_source_store: string; fetched_at: string; business_date: string;
+  settings: Record<string, unknown>; report: Record<string, unknown>;
+};
+export type TokyoBuybackProductRow = {
+  snapshot_id: string; id: string; franchise: CustomBuybackFranchise;
+  product_type: CustomBuybackProductType; name: string; model_number: string | null;
+  image_url: string | null; source_price: number; price_high: number; origins: unknown;
+};
+
 export type Database = {
   public: {
     Tables: {
+      tokyo_buyback_snapshot: {
+        Row: TokyoBuybackSnapshotRow; Insert: TokyoBuybackSnapshotRow;
+        Update: Partial<TokyoBuybackSnapshotRow>; Relationships: [];
+      };
+      tokyo_buyback_product: {
+        Row: TokyoBuybackProductRow; Insert: TokyoBuybackProductRow;
+        Update: Partial<TokyoBuybackProductRow>; Relationships: [];
+      };
       run: {
         Row: RunRow;
         Insert: Partial<RunRow> & Pick<RunRow, 'triggered_by'>;
@@ -815,6 +836,16 @@ export type Database = {
       };
     };
     Functions: {
+      publish_tokyo_buyback_snapshot: {
+        Args: { p_snapshot: Record<string, unknown>; p_products: Record<string, unknown>[] };
+        Returns: string;
+      };
+      add_custom_buyback_shinsoku_items: {
+        Args: { p_sheet_id: string; p_store: string; p_product_ids: string[] }; Returns: undefined;
+      };
+      refresh_custom_buyback_shinsoku_prices: {
+        Args: { p_sheet_id: string; p_store: string; p_snapshot_id: string; p_preserve_overrides: boolean }; Returns: undefined;
+      };
       reorder_custom_buyback_items: {
         Args: { p_sheet_id: string; p_store: string; p_item_ids: string[] };
         Returns: undefined;

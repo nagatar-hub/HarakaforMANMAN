@@ -5,6 +5,7 @@ import { runRegeneratePage } from './jobs/regenerate-page.js';
 import { runWatchdog } from './jobs/watchdog.js';
 import { runPublishBuybackSheet } from './jobs/publish-buyback-sheet.js';
 import { runRenderCustomBuyback } from './jobs/render-custom-buyback.js';
+import { runTokyoBuybackSync } from './jobs/tokyo-buyback-sync.js';
 import { sendDiscordNotification, COLOR } from './lib/discord.js';
 
 async function main() {
@@ -13,6 +14,9 @@ async function main() {
 
   try {
     switch (jobName) {
+      case 'tokyo-buyback-sync':
+        await runTokyoBuybackSync({ dryRun: process.env.DRY_RUN === 'true' });
+        break;
       case 'sync':
         await runSync();
         break;

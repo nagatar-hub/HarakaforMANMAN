@@ -35,6 +35,8 @@ export type {
   CustomBuybackSheetRow,
   CustomBuybackItemRow,
   CustomBuybackPageRow,
+  TokyoBuybackSnapshotRow,
+  TokyoBuybackProductRow,
   KaitoriCheckerSyncRunRow,
   KaitoriCheckerCustomBuybackCatalogRow,
   PostPlanStatus,

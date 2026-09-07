@@ -28,7 +28,7 @@ export function customItemToPreparedCard(
   item: CustomBuybackItemRow,
   sheet: CustomBuybackSheetRow,
 ): PreparedCardRow {
-  const sourceRunId = sheet.price_snapshot_run_id ?? sheet.kaitori_checker_run_id;
+  const sourceRunId = sheet.tokyo_snapshot_id ?? sheet.price_snapshot_run_id ?? sheet.kaitori_checker_run_id;
   if (!sourceRunId) throw new Error('カスタム買取表の価格スナップショットがありません');
   return {
     id: item.id,
@@ -50,7 +50,7 @@ export function customItemToPreparedCard(
     price_low: null,
     image_status: item.image_status,
     source: 'manual',
-    price_source: item.price_source === 'kaitori_checker' ? 'manual' : item.price_source,
+    price_source: item.price_source === 'kaitori_checker' || item.price_source === 'shinsoku' ? 'manual' : item.price_source,
     price_source_date: item.price_source_date,
     created_at: item.created_at,
   };

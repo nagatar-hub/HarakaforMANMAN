@@ -7,6 +7,7 @@ import {
   customBuybackRoutes,
   isCustomBuybackFranchise,
   mapKaitoriCheckerCatalogCard,
+  mapTokyoCatalogCard,
   matchCustomBuybackRefreshCards,
   parseCustomBuybackCatalogIds,
   parseCustomBuybackCatalogQuery,
@@ -17,6 +18,29 @@ import {
 } from '../routes/custom-buyback.js';
 
 const originalToken = process.env.ORDER_LIST_IMPORT_API_TOKEN;
+
+test('Tokyo catalog carries only the already discounted Shinsoku price and stable item ID', () => {
+  const psa = mapTokyoCatalogCard({ snapshot_id: 'snapshot', id: 'shinsoku-123', franchise: 'Pokemon',
+    product_type: 'psa', name: 'カイ', model_number: '236/172', image_url: null,
+    source_price: 10000, price_high: 9700, origins: ['kecak','bank'] }, '2026-09-07');
+  assert.equal(psa.price_high, 9700);
+  assert.equal(psa.price_low, null);
+  assert.equal(psa.price_source, 'shinsoku');
+  assert.equal(psa.source, 'shinsoku');
+  assert.equal(psa.id, 'shinsoku-123');
+  assert.equal(psa.source_product_id, null);
+  assert.equal(psa.list_no, '236/172');
+  assert.equal(psa.grade, 'PSA10');
+  assert.equal(psa.price_source_date, '2026-09-07');
+  const box = mapTokyoCatalogCard({ snapshot_id: 'snapshot', id: 'box-123', franchise: 'Pokemon',
+    product_type: 'box', name: 'BOX', model_number: null, image_url: null,
+    source_price: 10000, price_high: 9600, origins: ['aviril'] }, '2026-09-07');
+  assert.equal(box.tag, 'BOX');
+  assert.equal(box.price_high, 9600);
+  assert.equal(parseCustomBuybackCatalogIds({ prepared_card_ids: ['box-123'] }, 'shinsoku').ok, false);
+  assert.equal(parseCustomBuybackCatalogIds({ catalog_ids: ['box-123', 'box-123'] }, 'shinsoku').ok, false);
+  assert.deepEqual(parseCustomBuybackCatalogIds({ catalog_ids: ['box-123'] }, 'shinsoku'), { ok: true, value: ['box-123'] });
+});
 
 afterEach(() => {
   if (originalToken === undefined) delete process.env.ORDER_LIST_IMPORT_API_TOKEN;
