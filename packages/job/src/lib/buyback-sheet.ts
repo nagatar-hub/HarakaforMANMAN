@@ -346,7 +346,9 @@ export async function publishManmanBuybackSheet(params: {
     }
     orderedCardIds = storedCards.map(card => card.id);
   }
-  const cards = applyCurrentShinsokuBoxPrices(storedCards, boxPrices, pricingSettings);
+  const cards = applyCurrentShinsokuBoxPrices(
+    storedCards, boxPrices, pricingSettings, STORE_NAME === 'manman-akihabara',
+  );
   // A valid source may exclude every BOX. Clear the sheet only when this is
   // proven, never merely because generation has not produced pages yet.
   if (!hasStorePages && (!cards.length || cards.some(card => !isBoxRow(card) || (card.price_high ?? 0) > 0))) {

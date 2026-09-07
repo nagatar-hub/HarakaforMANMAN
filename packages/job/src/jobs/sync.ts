@@ -364,6 +364,7 @@ export async function runSync(): Promise<void> {
     const boxPriceResult = applyShinsokuBoxPriceOverrides(
       buildOrderListRawImports(orderListItems, run.id),
       boxPriceMap,
+      STORE_NAME === 'manman-akihabara',
     );
     const rawImportInserts = boxPriceResult.rows;
     if (boxPriceResult.missingNames.length > 0) {

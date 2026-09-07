@@ -194,8 +194,10 @@ async function _runRegeneratePage(
   const accessToken = await getAccessToken();
   const pricingSettings = await loadStorePricingSettings(supabase, STORE_NAME);
   const boxPrices = await loadShinsokuBoxPriceMap(accessToken);
-  // Selection IDs remain available for source recovery; missing BOX prices never render.
-  const orderedCardsWithCurrentPrices = applyCurrentShinsokuBoxPrices(orderedCards, boxPrices, pricingSettings)
+  // Selection IDs remain available for source recovery; Tokyo Weiss/Dragon keep order-list prices.
+  const orderedCardsWithCurrentPrices = applyCurrentShinsokuBoxPrices(
+    orderedCards, boxPrices, pricingSettings, STORE_NAME === 'manman-akihabara',
+  )
     .filter(card => !isBoxRow(card) || (card.price_high ?? 0) > 0);
 
   console.log(`[regenerate-page] カード数: ${orderedCardsWithCurrentPrices.length}`);

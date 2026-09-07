@@ -171,7 +171,9 @@ export async function runGenerate() {
       const { data: cards, error } = await supabase.from('prepared_card').select('*')
         .eq('run_id', run.id).eq('franchise', franchise).returns<PreparedCardRow[]>();
       if (error) throw new Error(`prepared_card 取得失敗: ${error.message}`);
-      pricedCardsByFranchise.set(franchise, applyCurrentShinsokuBoxPrices(cards ?? [], boxPrices, pricingSettings));
+      pricedCardsByFranchise.set(franchise, applyCurrentShinsokuBoxPrices(
+        cards ?? [], boxPrices, pricingSettings, STORE_NAME === 'manman-akihabara',
+      ));
     }
 
     // ---- 2. Storage クリーンアップ ----

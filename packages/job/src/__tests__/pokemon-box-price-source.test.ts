@@ -228,6 +228,26 @@ describe('applyShinsokuBoxPriceOverrides', () => {
     expect(result.missingNames).toEqual(['未登録']);
   });
 
+  it.each(['WEISS SCHWARZ', 'DRAGON BALL'] as const)(
+    '東京満満の%s BOXはオーダーリスト価格を保持する',
+    (franchise) => {
+      const row = makeRawImport({
+        franchise,
+        card_name: '【BOX】未登録BOX',
+        grade: 'BOX',
+        kecak_price: null,
+        source_price: 99999,
+        price_source: 'order_list',
+      });
+      const result = applyShinsokuBoxPriceOverrides([row], new Map(), true);
+      expect(result).toEqual({ rows: [row], missingNames: [] });
+
+      const settings = normalizeStorePricingSettings({});
+      const prepared = [{ franchise, card_name: row.card_name, grade: 'BOX', price_high: 93000, price_low: 87000 }];
+      expect(applyCurrentShinsokuBoxPrices(prepared, new Map(), settings, true)).toEqual(prepared);
+    },
+  );
+
   it('オーダーリストの非BOXは変更せず、別商材のBOXも生S価格を使用する', () => {
     const rows = [
       makeRawImport({ card_name: 'リザードン', kecak_price: null, source_price: 50000, price_source: 'order_list' }),
