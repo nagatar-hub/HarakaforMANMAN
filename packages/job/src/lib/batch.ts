@@ -23,8 +23,8 @@ export async function batchInsert<T extends Record<string, unknown>>(
 ): Promise<void> {
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
-    const dynamicFrom = supabase.from as unknown as (name: string) => DynamicTable;
-    const { error } = await dynamicFrom(table).insert(batch);
+    const dynamicClient = supabase as unknown as { from(name: string): DynamicTable };
+    const { error } = await dynamicClient.from(table).insert(batch);
     if (error) throw new Error(`${table} insert failed (batch ${Math.floor(i / BATCH_SIZE) + 1}): ${error.message}`);
   }
 }
@@ -42,8 +42,8 @@ export async function batchUpsert<T extends Record<string, unknown>>(
 ): Promise<void> {
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
-    const dynamicFrom = supabase.from as unknown as (name: string) => DynamicTable;
-    const { error } = await dynamicFrom(table).upsert(batch, { onConflict });
+    const dynamicClient = supabase as unknown as { from(name: string): DynamicTable };
+    const { error } = await dynamicClient.from(table).upsert(batch, { onConflict });
     if (error) throw new Error(`${table} upsert failed (batch ${Math.floor(i / BATCH_SIZE) + 1}): ${error.message}`);
   }
 }
