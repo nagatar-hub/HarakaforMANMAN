@@ -17,6 +17,7 @@ jest.mock('sharp', () => {
 });
 
 import { composePage } from '../lib/image-composer';
+import { customBuybackDemandByCardId } from '../jobs/render-custom-buyback';
 
 function makeCard(overrides: Partial<PreparedCardRow> = {}): PreparedCardRow {
   return {
@@ -68,6 +69,26 @@ const assetProfile = {
 describe('composePage', () => {
   beforeEach(() => {
     mockCompositeCalls.length = 0;
+  });
+
+  it('Tokyo Shinsoku one-price rows render the price without overlapping demand; other stores retain demand', async () => {
+    for (const [store, catalog_source, expectDemand] of [
+      ['manman-akihabara', 'shinsoku', false],
+      ['manman', 'kaitori_checker', true],
+      ['oripark', 'kaitori_checker', true],
+      ['manman-akihabara', 'prepared_card', true],
+    ] as const) {
+      await composePage({
+        templateBuffer: Buffer.from('template'), cardBackBuffer: Buffer.from('back'), cards: [makeCard()],
+        layout: { ...layout, rows: [{ cardY: 0, priceHighY: 140, priceLowY: 140 }] }, assetProfile,
+        cardImageBuffers: new Map([['card-1', Buffer.from('card-image')]]), dateText: '09/07', skipPriceLow: true,
+        demandByCardId: customBuybackDemandByCardId({ store, catalog_source }, [{ id: 'card-1', demand: 1 }]),
+      });
+      const composites = mockCompositeCalls.at(-1) as Array<{ input: Buffer }>;
+      const text = composites.map(layer => layer.input.toString()).join('\n');
+      expect(text).toContain('28,500');
+      expect(text.includes('1枚募集！')).toBe(expectDemand);
+    }
   });
 
   it('1価格テンプレートでも商材別減額率を反映した price_high を表示する', async () => {

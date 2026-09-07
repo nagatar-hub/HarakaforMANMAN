@@ -60,6 +60,15 @@ export function customBuybackDisplayDateText(displayDate: string): string {
   return displayDate.slice(5).replace('-', '/');
 }
 
+export function customBuybackDemandByCardId(
+  sheet: Pick<CustomBuybackSheetRow, 'store' | 'catalog_source'>,
+  items: Pick<CustomBuybackItemRow, 'id' | 'demand'>[],
+): Map<string, number> | undefined {
+  // Tokyo's one-price template has no separate demand row (lowY equals highY).
+  if (sheet.store === 'manman-akihabara' && sheet.catalog_source === 'shinsoku') return undefined;
+  return new Map(items.map(item => [item.id, item.demand]));
+}
+
 export async function runRenderCustomBuyback(): Promise<void> {
   const sheetId = process.env.CUSTOM_BUYBACK_SHEET_ID?.trim();
   const revision = Number(process.env.CUSTOM_BUYBACK_REVISION);
@@ -270,7 +279,7 @@ async function renderOnePage(params: RenderOnePageParams): Promise<void> {
       cardImageBuffers,
       dateText,
       skipPriceLow: true,
-      demandByCardId: new Map(items.map((item) => [item.id, item.demand])),
+      demandByCardId: customBuybackDemandByCardId(sheet, items),
       layoutAdjust: layout.layout_config.layoutAdjust,
       rowPriceAdjust: layout.layout_config.rowPriceAdjust,
       rowCardAdjust: layout.layout_config.rowCardAdjust,
