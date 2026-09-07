@@ -109,6 +109,15 @@ function makeFixedBoxPlans(cards: PreparedCardRow[], totalSlots: number): PagePl
   return plans;
 }
 
+export function planTokyoGalleryPages(cards: PreparedCardRow[], layouts: LayoutTemplateRow[]): PagePlan[] {
+  return (['PSA10', 'BOX'] as const).flatMap(type => {
+    const group = cards.filter(card => card.tag === type);
+    const candidates = layouts.filter(layout => layout.is_active && (layout.slug.startsWith('box_') === (type === 'BOX')));
+    if (group.length && !candidates.length) throw new Error(`東京 ${type} レイアウトがありません`);
+    return planPages(group, [], candidates).map((plan, index) => ({ ...plan, label: index ? `${type}-${index + 1}` : type }));
+  });
+}
+
 export async function runGenerate() {
   const supabase = await createSupabaseClientFromSecrets();
   const t0 = Date.now();
@@ -138,6 +147,7 @@ export async function runGenerate() {
     );
   }
   console.log(`[generate] Run claim参加: ${run.id}`);
+  const tokyoSnapshot = STORE_NAME === 'manman-akihabara' && !!run.tokyo_snapshot_id;
   const generationStartedAt = new Date();
   // Storage は従来どおり生成日のJSTパスを維持し、画像表示日だけExcel業務日を使う。
   const storageDate = getJstDateParts(generationStartedAt);
@@ -163,23 +173,27 @@ export async function runGenerate() {
     });
 
     // 価格取得・照合が失敗した場合は、既存画像やページを変更しない。
-    const accessToken = await getAccessToken();
-    const pricingSettings = await loadStorePricingSettings(supabase, STORE_NAME);
-    const boxPrices = await loadShinsokuBoxPriceMap(accessToken);
+    const accessToken = tokyoSnapshot ? '' : await getAccessToken();
+    const pricingSettings = tokyoSnapshot ? undefined : await loadStorePricingSettings(supabase, STORE_NAME);
+    const boxPrices = tokyoSnapshot ? new Map() : await loadShinsokuBoxPriceMap(accessToken);
     const pricedCardsByFranchise = new Map<Franchise, PreparedCardRow[]>();
     for (const franchise of FRANCHISES) {
       const { data: cards, error } = await supabase.from('prepared_card').select('*')
         .eq('run_id', run.id).eq('franchise', franchise).returns<PreparedCardRow[]>();
       if (error) throw new Error(`prepared_card 取得失敗: ${error.message}`);
-      pricedCardsByFranchise.set(franchise, applyCurrentShinsokuBoxPrices(
-        cards ?? [], boxPrices, pricingSettings, STORE_NAME === 'manman-akihabara',
+      if (tokyoSnapshot && (cards ?? []).some(card => card.price_source !== 'shinsoku' || !card.source_shinsoku_id)) {
+        throw new Error('東京通常RunにShinsoku以外の価格が含まれています');
+      }
+      pricedCardsByFranchise.set(franchise, tokyoSnapshot ? (cards ?? []) : applyCurrentShinsokuBoxPrices(
+        cards ?? [], boxPrices, pricingSettings!, STORE_NAME === 'manman-akihabara',
       ));
     }
 
     // ---- 2. Storage クリーンアップ ----
     await updateProgress(supabase, run.id, 0, 100, 'クリーンアップ中...');
     console.log('[generate] Storage クリーンアップ中...');
-    for (const folder of FRANCHISES.map((franchise) => franchise.replace(/[^a-zA-Z0-9._-]/g, ''))) {
+    // Tokyo keeps previous normal-gallery images recoverable; new files are versioned.
+    for (const folder of (tokyoSnapshot ? [] : FRANCHISES).map((franchise) => franchise.replace(/[^a-zA-Z0-9._-]/g, ''))) {
       const prefix = `generated/${STORE_NAME}/${datePath}/${folder}`;
       const { data: files } = await supabase.storage.from('haraka-images').list(prefix);
       if (files && files.length > 0) {
@@ -192,7 +206,7 @@ export async function runGenerate() {
     // ---- 2.5. ページプランを再生成（最新の prepared_card + 価格フィルター適用） ----
     await updateProgress(supabase, run.id, 5, 100, 'ページプラン再生成中...');
     console.log('[generate] ページプラン再生成...');
-    const psa10DiscountRates = pricingSettings.psa10_discount_rates;
+    const psa10DiscountRates: Partial<Record<Franchise, number>> = pricingSettings?.psa10_discount_rates ?? {};
     const psaRateSummary = FRANCHISES
       .filter(franchise => typeof psa10DiscountRates[franchise] === 'number')
       .map(franchise => `${franchise}=${((psa10DiscountRates[franchise] ?? 0) * 100).toFixed(0)}%`)
@@ -250,10 +264,10 @@ export async function runGenerate() {
       const psaCards = validCards.filter(c => !isBoxCard(c));
       const boxCards = validCards.filter(isBoxCard);
 
-      const psaPlans = planPages(psaCards, rules ?? [], layouts);
-      const boxPlans = makeFixedBoxPlans(boxCards, profile.total_slots);
-      const pagePlans = [...psaPlans, ...boxPlans];
-      console.log(`[generate]   ${franchise}: PSA ${psaCards.length}枚/${psaPlans.length}ページ, BOX ${boxCards.length}枚/${boxPlans.length}ページ`);
+      const psaPlans = tokyoSnapshot ? [] : planPages(psaCards, rules ?? [], layouts);
+      const boxPlans = tokyoSnapshot ? [] : makeFixedBoxPlans(boxCards, profile.total_slots);
+      const pagePlans = tokyoSnapshot ? planTokyoGalleryPages(validCards, layouts) : [...psaPlans, ...boxPlans];
+      console.log(`[generate]   ${franchise}: PSA ${psaCards.length}枚, BOX ${boxCards.length}枚 / ${pagePlans.length}ページ`);
 
       if (pagePlans.length === 0) continue;
 
@@ -276,7 +290,7 @@ export async function runGenerate() {
     // ---- 3. OAuth access token 取得 ----
     console.log('[generate] Access token 取得完了');
 
-    const harakaDbSpreadsheetId = await getOptionalEnvOrSecret('HARAKA_DB_SPREADSHEET_ID');
+    const harakaDbSpreadsheetId = tokyoSnapshot ? null : await getOptionalEnvOrSecret('HARAKA_DB_SPREADSHEET_ID');
     if (!harakaDbSpreadsheetId) {
       console.log('[generate] HARAKA_DB_SPREADSHEET_ID 未設定: レアリティアイコン取得をスキップ');
     }
@@ -361,7 +375,7 @@ export async function runGenerate() {
         cardBackCache.set(layoutTemplate.id, cardBack);
       }));
 
-      const needsBoxAssets = generatedPages.some(p => isBoxLabel(p.page_label));
+      const needsBoxAssets = !tokyoSnapshot && generatedPages.some(p => isBoxLabel(p.page_label));
       let boxTemplateBuffer: Buffer | null = null;
       let boxCardBackBuffer: Buffer | null = null;
       if (needsBoxAssets) {
@@ -461,7 +475,8 @@ export async function runGenerate() {
           ? layoutById.get(generatedPage.layout_template_id)
           : null;
         const isBoxPage = isBoxLabel(label);
-        if (!layoutTemplate && !isBoxPage) {
+        const usesLegacyBoxAssets = isBoxPage && !tokyoSnapshot;
+        if (!layoutTemplate && !usesLegacyBoxAssets) {
           const errMsg = `layout_template が未設定: page_id=${generatedPage.id}`;
           console.error(`[generate]     ${errMsg}`);
           await supabase.from('generated_page').update({
@@ -471,11 +486,11 @@ export async function runGenerate() {
           return;
         }
 
-        const layout = isBoxPage
+        const layout = usesLegacyBoxAssets
           ? makeBoxLayout(assetProfile.layout_config as LayoutConfig)
           : layoutTemplate!.layout_config;
-        const currentTemplate = isBoxPage ? boxTemplateBuffer : templateCache.get(layoutTemplate!.id);
-        const currentCardBack = isBoxPage ? boxCardBackBuffer : cardBackCache.get(layoutTemplate!.id);
+        const currentTemplate = usesLegacyBoxAssets ? boxTemplateBuffer : templateCache.get(layoutTemplate!.id);
+        const currentCardBack = usesLegacyBoxAssets ? boxCardBackBuffer : cardBackCache.get(layoutTemplate!.id);
         if (!currentTemplate || !currentCardBack) {
           const errMsg = `テンプレートキャッシュが未設定: ${isBoxPage ? 'BOX' : layoutTemplate!.slug}`;
           console.error(`[generate]     ${errMsg}`);
@@ -549,15 +564,15 @@ export async function runGenerate() {
             cards: pageCards,
             layout,
             assetProfile: assetProfile,
-            gridCols: isBoxPage ? assetProfile.grid_cols : layoutTemplate!.grid_cols,
+            gridCols: usesLegacyBoxAssets ? assetProfile.grid_cols : layoutTemplate!.grid_cols,
             rarityIconBuffers,
             cardImageBuffers,
             dateText,
-            skipPriceLow: isBoxPage ? false : layoutTemplate!.skip_price_low,
+            skipPriceLow: tokyoSnapshot ? true : isBoxPage ? false : layoutTemplate!.skip_price_low,
             layoutAdjust: layout.layoutAdjust,
             rowPriceAdjust: layout.rowPriceAdjust,
             rowCardAdjust: layout.rowCardAdjust,
-            totalSlots: isBoxPage ? assetProfile.total_slots : layoutTemplate!.total_slots,
+            totalSlots: usesLegacyBoxAssets ? assetProfile.total_slots : layoutTemplate!.total_slots,
           });
           const composeMs = Date.now() - tCompose;
 
@@ -623,6 +638,17 @@ export async function runGenerate() {
       console.log(`[generate]   ${franchise} 完了: ${Date.now() - tFranchise}ms`);
     }
 
+    if (tokyoSnapshot) {
+      const { data: finalPages, error } = await supabase.from('generated_page').select('status,card_ids')
+        .eq('run_id', run.id);
+      const expectedIds = [...pricedCardsByFranchise.values()].flat().map(card => card.id);
+      const actualIds = (finalPages ?? []).flatMap(page => page.card_ids);
+      if (error || !finalPages?.length || finalPages.some(page => page.status !== 'generated')
+        || actualIds.length !== expectedIds.length || new Set(actualIds).size !== expectedIds.length
+        || expectedIds.some(id => !actualIds.includes(id))) {
+        throw new Error('東京通常ギャラリーの全商品・画像生成を確認できません');
+      }
+    }
     // ---- 5. Run 完了更新（claim token一致時だけ） ----
     const completedAt = new Date().toISOString();
     const { data: completedRun, error: completionError } = await supabase
@@ -663,7 +689,7 @@ export async function runGenerate() {
 
     let sheetPublishMessage = '未実行';
     let sheetPublishFailed = false;
-    if (isBuybackSheetPublishDisabled()) {
+    if (tokyoSnapshot || isBuybackSheetPublishDisabled()) {
       sheetPublishMessage = '明示的にスキップ';
       console.log('[generate] Google Sheet更新を明示的にスキップ');
     } else try {

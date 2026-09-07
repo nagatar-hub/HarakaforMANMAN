@@ -5,6 +5,7 @@
  */
 
 import { planPages } from '../lib/page-planner';
+import { planTokyoGalleryPages } from '../jobs/generate';
 import type {
   PreparedCardRow,
   RuleRow,
@@ -92,6 +93,20 @@ function makeLayout(slots: number, overrides: Partial<LayoutTemplateRow> = {}): 
 }
 
 const LAYOUTS = [1, 2, 4, 6, 9, 15, 20, 40].map(n => makeLayout(n));
+
+describe('Tokyo normal gallery', () => {
+  it('places every PSA and BOX once with their own stored layout and unchanged price', () => {
+    const cards = Array.from({ length: 471 }, (_, n) => makeCard({ id: `tokyo-${n}`,
+      tag: n < 416 ? 'PSA10' : 'BOX', price_high: 9700, price_low: 9700 }));
+    const layouts = [makeLayout(24, { id: 'psa', slug: 'store_40' }), makeLayout(30, { id: 'box', slug: 'box_30' })];
+    const plans = planTokyoGalleryPages(cards, layouts);
+    expect(plans.flatMap(p => p.cardIds).sort()).toEqual(cards.map(c => c.id).sort());
+    expect(plans.filter(p => p.label.startsWith('PSA10')).every(p => p.layoutTemplateId === 'psa')).toBe(true);
+    expect(plans.filter(p => p.label.startsWith('BOX')).every(p => p.layoutTemplateId === 'box')).toBe(true);
+    expect(cards.every(c => c.price_high === 9700)).toBe(true);
+    expect(() => planTokyoGalleryPages(cards, layouts.slice(0, 1))).toThrow('BOX');
+  });
+});
 
 // ---------------------------------------------------------------------------
 

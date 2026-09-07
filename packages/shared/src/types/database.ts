@@ -40,7 +40,7 @@ export type OrderListImportStatus = 'parsed' | 'confirmed' | 'processing' | 'app
 export type OrderListMatchStatus = 'matched' | 'ambiguous' | 'unmatched' | 'excluded' | 'invalid';
 export type OrderListMatchMethod = 'existing_mapping' | 'exact_image' | 'exact_identity' | 'manual';
 export type ExcelProductMappingStatus = 'active' | 'disabled';
-export type PriceSource = 'order_list' | 'kecak' | 'spectre' | 'manual';
+export type PriceSource = 'order_list' | 'kecak' | 'spectre' | 'manual' | 'shinsoku';
 export type CustomBuybackPriceSource = PriceSource | 'kaitori_checker' | 'shinsoku';
 export type CustomBuybackProductType = 'psa' | 'box';
 export type CustomBuybackKind = 'postal' | 'store';
@@ -80,6 +80,7 @@ export type RunRow = {
   triggered_by: string;
   status: RunStatus;
   order_list_import_id: string | null;
+  tokyo_snapshot_id?: string | null;
   order_list_sync_request_id: string | null;
   order_list_sync_request_fingerprint: string | null;
   total_imported: number;
@@ -171,7 +172,7 @@ export type LayoutTemplateRow = {
 };
 
 export type ImageStatus = 'unchecked' | 'ok' | 'fallback' | 'dead';
-export type CardSource = 'order_list' | 'kecak' | 'spectre' | 'manual';
+export type CardSource = 'order_list' | 'kecak' | 'spectre' | 'manual' | 'shinsoku';
 
 export type RawImportRow = {
   id: string;
@@ -196,6 +197,7 @@ export type RawImportRow = {
 export type PreparedCardRow = {
   id: string;
   run_id: string;
+  source_shinsoku_id?: string | null;
   raw_import_id: string | null;
   order_list_item_id: string | null;
   excel_product_id: string | null;
@@ -837,7 +839,7 @@ export type Database = {
     };
     Functions: {
       publish_tokyo_buyback_snapshot: {
-        Args: { p_snapshot: Record<string, unknown>; p_products: Record<string, unknown>[] };
+        Args: { p_snapshot: Record<string, unknown>; p_products: Record<string, unknown>[]; p_run_id?: string };
         Returns: string;
       };
       add_custom_buyback_shinsoku_items: {

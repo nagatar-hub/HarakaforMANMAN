@@ -61,13 +61,25 @@ async function allRows<T>(db: SupabaseClient, table: string, filters: Record<str
   }
 }
 
-export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Date()) {
+export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Date(), claim?: { claimedImportId: string; runId: string }) {
   const { data: order, error: orderError } = await db.from('order_list_import').select('*')
     .eq('store', TOKYO_BUYBACK_STORE).order('business_date', { ascending: false })
     .order('created_at', { ascending: false }).limit(1).maybeSingle();
   if (orderError) throw new Error(orderError.message);
-  if (!order || order.status !== 'applied' || !order.structural_valid || !order.persistence_complete) {
+  if (!order || !order.structural_valid || !order.persistence_complete
+    || (claim ? order.id !== claim.claimedImportId || order.status !== 'processing' : order.status !== 'applied')) {
     throw new Error('東京満満の最新オーダーリストを反映してから価格を取得してください');
+  }
+  if (claim) {
+    const { data: run, error } = await db.from('run').select('id,order_list_sync_request_id,order_list_sync_request_fingerprint')
+      .eq('id', claim.runId).eq('store', TOKYO_BUYBACK_STORE).eq('order_list_import_id', order.id)
+      .eq('status', 'running').maybeSingle();
+    const heartbeatAge = now.getTime() - Date.parse(order.heartbeat_at);
+    if (error || !run || run.order_list_sync_request_id !== order.order_list_sync_request_id
+      || run.order_list_sync_request_fingerprint !== order.order_list_sync_request_fingerprint
+      || !Number.isFinite(heartbeatAge) || heartbeatAge < -60_000 || heartbeatAge > 5 * 60_000) {
+      throw new Error('東京満満の同期リースを所有するRunが必要です');
+    }
   }
   const { data: checker, error: checkerError } = await db.from('kaitori_checker_sync_run').select('*')
     .eq('store', CHECKER_STORE).order('created_at', { ascending: false }).limit(1).maybeSingle();
