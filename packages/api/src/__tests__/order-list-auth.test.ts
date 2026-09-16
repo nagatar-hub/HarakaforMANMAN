@@ -59,6 +59,35 @@ test('認証済みでも16MBを越えるupload bodyは解析前に拒否する',
   assert.equal(response.status, 413);
 });
 
+test('実行履歴CSVはRunに紐づくオーダーリスト取込内容を出力する', async () => {
+  const token = 'a'.repeat(32);
+  process.env.ORDER_LIST_IMPORT_API_TOKEN = token;
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
+  const requests: string[] = [];
+  let itemPage = 0;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    requests.push(url);
+    const target = { franchise: 'Pokemon', excel_product_id: 'item-1', card_name: 'サンダース', grade: 'PSA10', list_no: '193/184', rarity: 'CHR', source_price: 10098, demand: 3, image_url: 'https://example.com/card.png' };
+    const body = url.includes('/rest/v1/run?')
+      ? { id: 'run-1', order_list_import_id: 'import-1' }
+      : itemPage++ === 0 ? Array.from({ length: 1000 }, () => target) : [];
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+
+  const response = await orderListImportRoutes.request('/order-list/runs/run-1/csv', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /サンダース.*"10098","3"/);
+  assert.equal(requests.some((url) => url.includes('/rest/v1/run?') && url.includes('store=eq.manman')), true);
+  assert.equal(requests.filter((url) => url.includes('/rest/v1/order_list_item?')).length, 2);
+  assert.equal(requests.some((url) => url.includes('/rest/v1/order_list_item?') && url.includes('import_id=eq.import-1')), true);
+  assert.equal(requests.some((url) => url.includes('/rest/v1/raw_import?')), false);
+});
+
 test('staged mapping PATCH is available only after the import is applied', () => {
   assert.equal(canEditOrderListMappings('applied'), true);
   assert.equal(canEditOrderListMappings('parsed'), false);

@@ -3,6 +3,8 @@ import { fork } from 'child_process';
 import path from 'path';
 import type { Database } from '@haraka/shared';
 import { createSupabaseClient } from '../lib/supabase.js';
+import { loadTokyoGalleryPricing } from '../lib/gallery-pricing.js';
+import { authorizeInternalApiRequest } from '../lib/internal-api-auth.js';
 import {
   summarizeGalleryDates,
   utcRangeForJstDate,
@@ -198,6 +200,8 @@ galleryRoutes.get('/gallery/images', async (c) => {
 /** ページ詳細: generated_page + 紐づくカードデータ取得 */
 galleryRoutes.get('/gallery/pages/:pageId', async (c) => {
   const pageId = c.req.param('pageId');
+  const includePricing = STORE_NAME === 'manman-akihabara'
+    && authorizeInternalApiRequest(c.req.header('authorization')) === 'authorized';
   const supabase = createSupabaseClient();
   const ownership = await findPageRunInStore(supabase, pageId);
   if (ownership.error) return c.json({ error: ownership.error }, 500);
@@ -221,10 +225,10 @@ galleryRoutes.get('/gallery/pages/:pageId', async (c) => {
     return c.json({ error: 'Page contains cards outside this store' }, 409);
   }
 
-  const { data: cards, error: cardErr } = await supabase
-    .from('prepared_card')
-    .select('id, franchise, card_name, grade, list_no, image_url, alt_image_url, rarity, tag, price_high, price_low, image_status')
-    .in('id', cardOwnership.cardIds);
+  const cardQuery = includePricing
+    ? supabase.from('prepared_card').select('id, franchise, card_name, grade, list_no, image_url, alt_image_url, rarity, tag, price_high, price_low, image_status, run_id, source_shinsoku_id')
+    : supabase.from('prepared_card').select('id, franchise, card_name, grade, list_no, image_url, alt_image_url, rarity, tag, price_high, price_low, image_status');
+  const { data: cards, error: cardErr } = await cardQuery.in('id', cardOwnership.cardIds);
 
   if (cardErr) return c.json({ error: cardErr.message }, 500);
 
@@ -232,6 +236,17 @@ galleryRoutes.get('/gallery/pages/:pageId', async (c) => {
   const cardMap = new Map((cards || []).map(c => [c.id, c]));
   const orderedCards = cardIds.map(id => cardMap.get(id)).filter(Boolean);
 
+  if (includePricing) {
+    try {
+      const pricing = await loadTokyoGalleryPricing(supabase, orderedCards as unknown as Parameters<typeof loadTokyoGalleryPricing>[1]);
+      return c.json({ page, cards: orderedCards.map(card => {
+        const { run_id, source_shinsoku_id, ...publicCard } = card as unknown as Record<string, unknown>;
+        return { ...publicCard, pricing: pricing.get(publicCard.id as string) };
+      }) });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : '掲載価格の読込に失敗しました' }, 500);
+    }
+  }
   return c.json({ page, cards: orderedCards });
 });
 
