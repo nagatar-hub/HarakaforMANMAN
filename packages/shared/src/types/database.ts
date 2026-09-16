@@ -64,6 +64,7 @@ export type OperatorAuditLogRow = {
 export type StoreConfigRow = {
   store: string;
   settings: {
+    box_price_low_enabled?: boolean;
     box_discount_rates?: Partial<Record<Franchise, {
       shrink?: number;
       no_shrink?: number;
@@ -576,9 +577,20 @@ export type TokyoBuybackProductRow = {
   image_url: string | null; source_price: number; price_high: number; origins: unknown;
 };
 
+export type TokyoCardImageMappingRow = {
+  source_shinsoku_id: string; franchise: CustomBuybackFranchise; product_type: CustomBuybackProductType; name: string; model_number: string | null;
+  provider: 'tcgmp' | 'haraka' | 'onphalos' | 'cardrush'; provider_product_id: string;
+  tcgmp_product_id: string | null; tcgmp_sku: string | null; image_url: string; sha256: string;
+  verified_at: string; evidence: Record<string, unknown>;
+};
+
 export type Database = {
   public: {
     Tables: {
+      tokyo_card_image_mapping: {
+        Row: TokyoCardImageMappingRow; Insert: TokyoCardImageMappingRow;
+        Update: Partial<TokyoCardImageMappingRow>; Relationships: [];
+      };
       tokyo_buyback_snapshot: {
         Row: TokyoBuybackSnapshotRow; Insert: TokyoBuybackSnapshotRow;
         Update: Partial<TokyoBuybackSnapshotRow>; Relationships: [];
