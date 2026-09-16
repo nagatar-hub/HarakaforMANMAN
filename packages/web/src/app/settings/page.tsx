@@ -19,6 +19,7 @@ type BoxRates = Record<Franchise, BoxConditionRates>;
 interface StoreConfig {
   store: string;
   settings: {
+    box_price_low_enabled?: boolean;
     box_discount_rates?: Partial<Record<Franchise, Partial<BoxConditionRates>>>;
     psa10_discount_rates?: Partial<Record<Franchise, number>>;
   };
@@ -69,6 +70,7 @@ function normalizeBoxRates(savedBoxRates: StoreConfig['settings']['box_discount_
 
 export default function SettingsPage() {
   const [config, setConfig] = useState<StoreConfig | null>(null);
+  const [boxPriceLowEnabled, setBoxPriceLowEnabled] = useState(false);
   const [boxRates, setBoxRates] = useState<BoxRates>(DEFAULT_BOX_RATES);
   const [psa10Rates, setPsa10Rates] = useState<Psa10Rates>(DEFAULT_PSA10_RATES);
   const [psaPreviewBasePrice, setPsaPreviewBasePrice] = useState('30000');
@@ -82,6 +84,7 @@ export default function SettingsPage() {
         const savedPsa10Rates = data.settings.psa10_discount_rates ?? {};
         const savedBoxRates = data.settings.box_discount_rates ?? {};
         setConfig(data);
+        setBoxPriceLowEnabled(data.settings.box_price_low_enabled === true);
         setBoxRates(normalizeBoxRates(savedBoxRates));
         setPsa10Rates(Object.fromEntries(FRANCHISES.map((franchise) => [
           franchise,
@@ -117,6 +120,7 @@ export default function SettingsPage() {
         method: 'PATCH',
         body: JSON.stringify({
           settings: {
+            ...(config?.store === 'manman-akihabara' ? { box_price_low_enabled: boxPriceLowEnabled } : {}),
             box_discount_rates: Object.fromEntries(FRANCHISES.map((franchise) => [franchise, {
               shrink: boxRates[franchise].shrink / 100,
               ...(CONFIGURABLE_PRICING_FRANCHISES.some(item => item === franchise)
@@ -179,6 +183,21 @@ export default function SettingsPage() {
             <h2 className="text-lg font-bold text-text-primary mb-6">BOX 割引率</h2>
             <p className="text-sm text-text-secondary mb-6">シュリンク有りはシンソクのS価格に割引率を1回だけ適用し、1,000円未満を切り捨てます。</p>
 
+            {config?.store === 'manman-akihabara' && (
+              <label className="mb-8 flex items-start gap-3 rounded-xl border border-border-card px-5 py-4">
+                <input
+                  type="checkbox"
+                  checked={boxPriceLowEnabled}
+                  onChange={(event) => setBoxPriceLowEnabled(event.target.checked)}
+                  className="mt-1 h-4 w-4 accent-text-primary"
+                />
+                <span>
+                  <span className="block text-sm font-bold text-text-primary">BOXの下限価格を表示</span>
+                  <span className="mt-1 block text-xs text-text-secondary">OFFの場合、シュリンク無し価格は「-」で表示します。</span>
+                </span>
+              </label>
+            )}
+
             <div className="space-y-8">
               {BOX_FRANCHISE_OPTIONS.map(({ key: franchise, label: franchiseLabel }) => {
                 const previewBoxShrink = calculateBoxPriceHigh(previewBoxHigh, boxRates[franchise].shrink / 100);
@@ -235,7 +254,11 @@ export default function SettingsPage() {
                       </div>
                       <div className="flex justify-between items-baseline mt-2">
                         <span className="text-text-secondary">シュリンク無し</span>
-                        <span className="text-xl font-bold text-text-primary">¥{previewBoxNoShrink.toLocaleString()}</span>
+                        <span className="text-xl font-bold text-text-primary">
+                          {config?.store === 'manman-akihabara' && !boxPriceLowEnabled
+                            ? '-'
+                            : `¥${previewBoxNoShrink.toLocaleString()}`}
+                        </span>
                       </div>
                       <p className="text-xs text-text-secondary mt-1">
                         シュリンク有りは1,000円単位。シュリンク無しの既存計算は変更しません。

@@ -19,6 +19,8 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { formatGalleryCardList } from '@/lib/gallery-card-list';
+import { GalleryCardPricing } from '@/components/gallery-card-pricing';
+import type { ComponentProps } from 'react';
 
 type CardDetail = {
   id: string;
@@ -33,6 +35,7 @@ type CardDetail = {
   price_high: number | null;
   price_low: number | null;
   image_status: string | null;
+  pricing?: ComponentProps<typeof GalleryCardPricing>['pricing'];
 };
 
 type PageDetail = {
@@ -119,7 +122,7 @@ function CardEditPopup({
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="bg-page-bg rounded-2xl border border-border-card shadow-2xl w-full max-w-md overflow-hidden"
+        className={`bg-page-bg rounded-2xl border border-border-card shadow-2xl w-full max-w-md ${card.pricing ? 'max-h-[calc(100dvh-2rem)] overflow-y-auto' : 'overflow-hidden'}`}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border-card bg-warm-50">
@@ -167,6 +170,7 @@ function CardEditPopup({
             </div>
           </div>
 
+          <GalleryCardPricing pricing={card.pricing} />
           {/* Error */}
           {error && (
             <div className="px-3 py-2 rounded-lg text-sm bg-red-50 text-red-700 border border-red-200">
@@ -591,6 +595,7 @@ function SortableRow({
         <span className="text-text-primary font-medium">{card.card_name}</span>
         <br />
         <span className="text-xs text-text-secondary">{card.grade || ''} {card.list_no || ''}</span>
+        <GalleryCardPricing pricing={card.pricing} />
       </td>
       <td className="py-2 pr-2 cursor-pointer" onClick={onClick}>
         <span className="text-xs px-2 py-0.5 rounded-full bg-warm-100 text-text-secondary">
@@ -689,6 +694,7 @@ function SortableCard({
           <span className="text-xs text-text-primary">{formatPrice(card.price_high)}</span>
           <ImageStatusBadge card={card} />
         </div>
+        <GalleryCardPricing pricing={card.pricing} />
       </div>
 
       {/* Delete */}

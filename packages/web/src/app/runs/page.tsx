@@ -868,15 +868,6 @@ export default function RunsPage() {
                       {downloadingCsvRunId === run.id ? 'CSV取得中...' : 'オーダーリストCSV'}
                     </button>
                   )}
-                  {run.import_done_at && (
-                    <a
-                      href={`${API_URL}/api/runs/${run.id}/kecak-csv`}
-                      className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-full border border-border-card text-text-primary hover:bg-warm-100 transition-colors"
-                      download
-                    >
-                      KECAK CSV
-                    </a>
-                  )}
                 </div>
               )}
 
