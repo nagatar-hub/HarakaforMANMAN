@@ -62,16 +62,34 @@ test('verified mappings change only their exact products and preserve snapshot v
   expect(JSON.stringify(snapshot)).toBe(priorSnapshot);
 });
 
-test('KECAK fallback reuses the import-confirmed DB image instead of rematching a PSA number', () => {
-  const image = 'https://www.pokemon-card.com/assets/images/confirmed.png';
-  const product = { ...snapshot.products[0], id: 'kecak:excel-1', franchise: 'DRAGON BALL', name: 'エナジーマーカー',
-    model_number: 'E-115', origins: [{ source: 'kecak', id: 'excel-1', dbCardId: 'confirmed' }] };
+test('public Shinsoku ID reuses the import-confirmed KECAK DB image', () => {
+  const image = 'https://fexadnveyuqduiujewrc.supabase.co/storage/v1/object/public/cards/uta.png';
+  const product = { ...snapshot.products[0], id: 'IAO2400002102', franchise: 'ONE PIECE', name: 'ウタ(フラッグシップ)',
+    model_number: 'OP09-002', origins: [{ source: 'kecak', id: 'excel-1', dbCardId: 'confirmed' }] };
   const cards = [
-    { id: 'confirmed', store: 'manman-akihabara', franchise: 'DRAGON BALL', card_name: '別表記A', grade: 'PSA10', list_no: '別番号', image_url: image, alt_image_url: null, tag: 'エナジーマーカー/パラレル' },
-    { id: 'ambiguous', store: 'manman-akihabara', franchise: 'DRAGON BALL', card_name: 'エナジーマーカー', grade: 'PSA10', list_no: 'E-115', image_url: 'https://www.pokemon-card.com/assets/images/other.png', alt_image_url: null },
+    { id: 'confirmed', store: 'manman-akihabara', franchise: 'ONE PIECE', card_name: 'ウタ', grade: 'PSA10', list_no: 'OP09-002', image_url: image, alt_image_url: null, tag: 'フラシ' },
   ] as any;
   expect(buildTokyoPreparedCards('run', { ...snapshot, products: [product] } as any, [], cards)[0])
-    .toMatchObject({ image_url: image, db_card_id: 'confirmed', tag: 'エナジーマーカー/パラレル' });
+    .toMatchObject({ image_url: image, db_card_id: 'confirmed', tag: 'フラシ' });
+  expect(buildTokyoPreparedCards('run', { ...snapshot, products: [{ ...product, origins: [
+    ...product.origins, { source: 'kecak', id: 'excel-2', dbCardId: 'different' },
+  ] }] } as any, [], cards)[0]).toMatchObject({ image_url: null, db_card_id: null });
+});
+
+test('confirmed KECAK card keeps the safe DB primary as fallback for a Cardrush alternate', () => {
+  const primary = 'https://fexadnveyuqduiujewrc.supabase.co/storage/v1/object/public/cards/rayquaza.png';
+  const cardrush = 'https://www.cardrush-pokemon.jp/data/cardrushpokemon/product/rayquaza.jpg';
+  const official = 'https://www.pokemon-card.com/assets/images/card_images/large/SV/rayquaza.jpg';
+  const product = { ...snapshot.products[0], id: 'IAP2400000010', name: 'レックウザVMAX', model_number: '252/184',
+    origins: [{ source: 'kecak', id: 'excel-rayquaza', dbCardId: 'confirmed' }] };
+  const cards = [{ id: 'confirmed', store: 'manman-akihabara', franchise: 'Pokemon', card_name: 'レックウザVMAX',
+    grade: 'PSA10', list_no: '252/184', image_url: primary, alt_image_url: cardrush, image_status: null }] as any;
+  const prepare = (image_url: string, alt_image_url: string) => buildTokyoPreparedCards(
+    'run', { ...snapshot, products: [product] } as any, [], [{ ...cards[0], image_url, alt_image_url }],
+  )[0];
+  expect(prepare(primary, cardrush)).toMatchObject({ image_url: cardrush, alt_image_url: primary, db_card_id: 'confirmed' });
+  expect(prepare(primary, official)).toMatchObject({ image_url: official, alt_image_url: null });
+  expect(prepare(official, cardrush)).toMatchObject({ image_url: cardrush, alt_image_url: null });
 });
 
 test.each(['DRAGON BALL', 'WEISS SCHWARZ'])('direct Shinsoku %s PSA keeps its first-party image', franchise => {

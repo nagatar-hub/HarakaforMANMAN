@@ -35,6 +35,7 @@ import { isBoxRow } from '../lib/box-row.js';
 import {
   formatGenerationDate,
   getJstDateParts,
+  parseBusinessDate,
   resolveGenerationDisplayDate,
 } from '../lib/generation-date.js';
 import type {
@@ -201,22 +202,29 @@ export async function runGenerate() {
   const generationVersion = Date.now();
 
   try {
-    const displayDate = await resolveGenerationDisplayDate({
-      orderListImportId: run.order_list_import_id,
-      now: generationStartedAt,
-      loadBusinessDate: async (importId) => {
-        const { data, error } = await supabase
-          .from('order_list_import')
-          .select('business_date')
-          .eq('id', importId)
-          .eq('store', STORE_NAME)
-          .maybeSingle<{ business_date: string }>();
-        if (error) {
-          throw new Error(`オーダーリスト業務日取得失敗: ${error.message}`);
-        }
-        return data?.business_date ?? null;
-      },
-    });
+    const displayDate = tokyoSnapshot
+      ? await (async () => {
+        const { data, error } = await supabase.from('tokyo_buyback_snapshot').select('business_date')
+          .eq('id', run.tokyo_snapshot_id!).eq('store', STORE_NAME).maybeSingle<{ business_date: string }>();
+        if (error || !data) throw new Error(`東京価格日取得失敗: ${error?.message ?? run.tokyo_snapshot_id}`);
+        return parseBusinessDate(data.business_date);
+      })()
+      : await resolveGenerationDisplayDate({
+        orderListImportId: run.order_list_import_id,
+        now: generationStartedAt,
+        loadBusinessDate: async (importId) => {
+          const { data, error } = await supabase
+            .from('order_list_import')
+            .select('business_date')
+            .eq('id', importId)
+            .eq('store', STORE_NAME)
+            .maybeSingle<{ business_date: string }>();
+          if (error) {
+            throw new Error(`オーダーリスト業務日取得失敗: ${error.message}`);
+          }
+          return data?.business_date ?? null;
+        },
+      });
     const pelekaConfig = tokyoSnapshot ? {
       endpoint: await getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_URL'),
       token: await getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_TOKEN'),

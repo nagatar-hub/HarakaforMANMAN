@@ -93,13 +93,21 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
       throw new Error('Invalid Tokyo BOX no-shrink rate');
     }
     const harakaImage = findHarakaImage(product, dbRows);
-    const importedOrigin = product.id.startsWith('kecak:') && Array.isArray(product.origins)
-      ? product.origins.find(origin => origin.source === 'kecak' && 'dbCardId' in origin) as ({ dbCardId?: unknown }) | undefined
-      : undefined;
-    const importedDbCardId = typeof importedOrigin?.dbCardId === 'string' ? importedOrigin.dbCardId : undefined;
+    const importedDbCardIds = !box && Array.isArray(product.origins)
+      ? [...new Set(product.origins.flatMap(origin => origin.source === 'kecak' && 'dbCardId' in origin
+        && typeof origin.dbCardId === 'string' ? [origin.dbCardId] : []))]
+      : [];
+    const importedDbCardId = importedDbCardIds.length === 1 ? importedDbCardIds[0] : undefined;
     const importedDbCard = importedDbCardId ? dbRows.find(row => row.id === importedDbCardId
       && row.store === 'manman-akihabara' && row.franchise === product.franchise) : undefined;
     const importedImage = importedDbCard ? harakaImageUrl(importedDbCard) : null;
+    const importedPrimaryImage = importedDbCard && importedImage === importedDbCard.alt_image_url
+      ? harakaImageUrl({ ...importedDbCard, alt_image_url: null }) : null;
+    const importedFallbackImage = importedImage && importedPrimaryImage
+      && new URL(importedImage).hostname === 'www.cardrush-pokemon.jp'
+      && new URL(importedPrimaryImage).hostname === 'fexadnveyuqduiujewrc.supabase.co'
+      && new URL(importedPrimaryImage).pathname.startsWith('/storage/v1/object/public/cards/')
+      ? importedPrimaryImage : null;
     const directShinsokuImage = !box && ['DRAGON BALL', 'WEISS SCHWARZ'].includes(product.franchise)
       && Array.isArray(product.origins) && product.origins.some(origin => origin.source === 'shinsoku')
       ? product.image_url : null;
@@ -143,7 +151,8 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
     return {
       run_id: runId, raw_import_id: null, source_shinsoku_id: product.id,
       franchise: product.franchise, card_name: product.name, grade: box ? '未開封BOX' : 'PSA10',
-      list_no: product.model_number, image_url: verifiedImage ?? importedImage ?? harakaImage.imageUrl ?? directShinsokuImage ?? (box ? product.image_url : null), alt_image_url: null,
+      list_no: product.model_number, image_url: verifiedImage ?? importedImage ?? harakaImage.imageUrl ?? directShinsokuImage ?? (box ? product.image_url : null),
+      alt_image_url: !verifiedImage && importedImage ? importedFallbackImage : null,
       db_card_id: dbCardId,
       rarity: null, rarity_icon_url: null, tag,
       price_high: product.price_high,

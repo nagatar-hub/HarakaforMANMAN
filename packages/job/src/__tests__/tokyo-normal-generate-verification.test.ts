@@ -165,7 +165,8 @@ test.each([
   const tables: Record<string, any[]> = { run: [{ id: runId, store, status: 'running', generate_claim_token: token,
     started_at: '2026-09-07T01:23:45.000Z',
     plan_done_at: '2026-09-07T00:00:00Z', generate_done_at: null, tokyo_snapshot_id: tokyo ? 'snapshot' : null, order_list_import_id: 'import' }],
-    order_list_import: [{ id: 'import', store, business_date: '2026-09-07' }],
+    order_list_import: [{ id: 'import', store, business_date: tokyo ? '2026-09-06' : '2026-09-07' }],
+    tokyo_buyback_snapshot: tokyo ? [{ id: 'snapshot', store, business_date: '2026-09-07' }] : [],
     prepared_card: prepared, generated_page: [], layout_template: layouts, rule: rules,
     asset_profile: FRANCHISES.map(franchise => ({ franchise, store, total_slots: 30, grid_cols: 6,
       template_box_storage_path: 'legacy-template', card_back_box_storage_path: 'legacy-back',
@@ -201,11 +202,12 @@ test.each([
       ]) }),
     );
     if (tokyo) expect(require('../lib/peleka-catalog').buildTokyoPelekaCatalog).toHaveBeenCalledWith(
-      expect.objectContaining({ generatedAt: '2026-09-07T01:23:45.000Z' }),
+      expect.objectContaining({ businessDate: '2026-09-07', generatedAt: '2026-09-07T01:23:45.000Z' }),
     );
     expect(boundary.bucket.remove).not.toHaveBeenCalled();
     for (const [index, [params]] of composePage.mock.calls.entries()) {
       const card = params.cards[0];
+      expect(params.dateText).toBe('09/07');
       expect(params.skipPriceLow).toBe(card.tag !== 'BOX');
       expect(params.priceLowText).toBe(tokyo && card.tag === 'BOX' && !boxPriceLowEnabled ? '-' : undefined);
       expect(card.price_high).toBe(products.find(product => product.id === card.source_shinsoku_id)!.price_high);
