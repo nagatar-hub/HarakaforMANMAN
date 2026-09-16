@@ -4,7 +4,7 @@ import {
   calculateBoxPriceHigh, calculateBuyPriceHigh, isBuiltInOrderListExclusion,
   normalizeStorePricingSettings, tokyoBusinessDate,
   fetchShinsokuPostalProducts, matchShinsokuPostalProducts,
-  type PostalCandidate, type StorePricingSettings, type Franchise,
+  type PostalCandidate, type ShinsokuPostalProduct, type StorePricingSettings, type Franchise,
 } from '@haraka/shared';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { isBoxRow } from '../lib/box-row.js';
@@ -12,21 +12,27 @@ import { isBoxRow } from '../lib/box-row.js';
 export const TOKYO_BUYBACK_STORE = 'manman-akihabara';
 const CHECKER_STORE = 'oripark';
 const PAGE_SIZE = 500;
+const KECAK_FRANCHISES = ['Pokemon', 'ONE PIECE', 'DRAGON BALL', 'WEISS SCHWARZ'];
 
 type OrderRow = { id: string; excel_product_id: string; franchise: string; card_name: string;
-  list_no: string | null; grade: string | null; match_status: string };
+  list_no: string | null; grade: string | null; match_status: string; source_price: number | null;
+  demand?: number | null; db_card_id?: string | null };
 type CheckerProduct = { source_product_id: number; category: string; name: string;
-  full_name: string | null; model_number: string | null };
-type CheckerOffer = { source_product_id: number; shop_id: number; condition_id: number; edition_id: number; edition_name?: string | null };
+  full_name: string | null; model_number: string | null; image_url?: string | null };
+type CheckerOffer = { source_product_id: number; shop_id: number; condition_id: number; edition_id: number;
+  edition_name?: string | null; buy_price?: number };
+type TokyoCandidate = PostalCandidate & { sourceProductId?: number; conditionId?: number; sourcePrice?: number | null; dbCardId?: string | null };
 
-export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[]): PostalCandidate[] {
-  const candidates: PostalCandidate[] = [];
+export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[]): TokyoCandidate[] {
+  const candidates: TokyoCandidate[] = [];
   for (const row of orderRows) {
+    if (!KECAK_FRANCHISES.includes(row.franchise)) continue;
     if (['excluded', 'invalid'].includes(row.match_status) || isBuiltInOrderListExclusion(row.card_name)) continue;
     const grade = (row.grade ?? '').normalize('NFKC').replace(/\s/g, '').toUpperCase();
     const productType = isBoxRow(row) ? 'BOX' : grade === 'PSA10' ? 'PSA10' : null;
     if (productType) candidates.push({ source: 'kecak', id: row.excel_product_id,
-      franchise: row.franchise, name: row.card_name, modelNumber: row.list_no, productType });
+      franchise: row.franchise, name: row.card_name, modelNumber: row.list_no, productType,
+      dbCardId: row.db_card_id });
   }
   const productById = new Map(products.map(product => [product.source_product_id, product]));
   const seen = new Set<string>();
@@ -43,9 +49,28 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
     if (seen.has(key)) continue;
     seen.add(key);
     candidates.push({ source, id, franchise, name: offer.edition_id ? `${product.name} [${offer.edition_name || `edition:${offer.edition_id}`}]` : product.name,
-      modelNumber: product.model_number, productType: offer.condition_id === 1 ? 'PSA10' : 'BOX' });
+      modelNumber: product.model_number, productType: offer.condition_id === 1 ? 'PSA10' : 'BOX',
+      sourceProductId: offer.source_product_id, conditionId: offer.condition_id, sourcePrice: offer.buy_price });
   }
   return candidates;
+}
+
+export function tokyoMatchPostalProducts(candidates: TokyoCandidate[], products: ShinsokuPostalProduct[]) {
+  const validPrice = (price: number | null | undefined): price is number => Number.isSafeInteger(price) && price! > 0 && price! <= 100_000_000;
+  const result = matchShinsokuPostalProducts(
+    candidates,
+    products.map(product => ({ ...product, price: validPrice(product.price) ? product.price : null })),
+  );
+  // Preserve official images for matched DB/Weiss rows; this evidence never creates a lineup row.
+  for (const { product, sources } of result.matched) {
+    if (['DRAGON BALL', 'WEISS SCHWARZ'].includes(product.franchise)) sources.push({
+      source: 'shinsoku', id: product.id, franchise: product.franchise, name: product.name,
+      modelNumber: product.modelNumber, productType: product.productType,
+    });
+  }
+  const priceSources = Object.fromEntries(result.matched.map(({ product }) => [product.id,
+    { source: 'shinsoku' as const, source_id: product.id, price: product.price! }]));
+  return { ...result, priceSources };
 }
 
 async function allRows<T>(db: SupabaseClient, table: string, filters: Record<string, string>, order: string, select = '*'): Promise<T[]> {
@@ -82,7 +107,7 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     }
   }
   const { data: checker, error: checkerError } = await db.from('kaitori_checker_sync_run').select('*')
-    .eq('store', CHECKER_STORE).order('created_at', { ascending: false }).limit(1).maybeSingle();
+    .eq('store', CHECKER_STORE).eq('status', 'applied').order('created_at', { ascending: false }).limit(1).maybeSingle();
   if (checkerError) throw new Error(checkerError.message);
   if (!checker || checker.status !== 'applied' || !checker.completed_at) {
     throw new Error('買取チェッカーの最新取得が完了していません');
@@ -106,30 +131,34 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   const candidates = tokyoProductCandidates(orderRows, products, offers);
   const sourceCounts = Object.fromEntries(['kecak', 'toreca_bank', 'avirile'].map(source => [source, candidates.filter(row => row.source === source).length]));
   if (Object.values(sourceCounts).some(count => count === 0)) throw new Error('3つの商品一覧のいずれかが空です');
-  const sourceProducts = await fetchShinsokuPostalProducts({ candidates });
-  const result = matchShinsokuPostalProducts(candidates, sourceProducts);
-  const pricedRows = result.matched.map(({ product, sources }) => ({
-    id: product.id, franchise: product.franchise, product_type: product.productType === 'BOX' ? 'box' : 'psa',
-    name: product.name, model_number: product.modelNumber, image_url: product.imageUrl,
-    source_price: product.price!, price_high: tokyoDisplayPrice(product.price!, product.franchise as Franchise, product.productType, settings),
-    origins: sources,
-  }));
+  // Pull the public catalog first; Tokyo order-list names and model numbers never leave Haraka.
+  const sourceProducts = await fetchShinsokuPostalProducts();
+  // KECAK/checker rows define the lineup; only matched Shinsoku postal prices are published.
+  const result = tokyoMatchPostalProducts(candidates, sourceProducts);
+  const pricedRows = result.matched.map(({ product, sources }) => {
+    const sourcePrice = product.price;
+    return { id: product.id, franchise: product.franchise, product_type: product.productType === 'BOX' ? 'box' : 'psa',
+      name: product.name, model_number: product.modelNumber, image_url: product.imageUrl,
+      source_price: sourcePrice ?? 0,
+      price_high: tokyoDisplayPrice(sourcePrice ?? 0, product.franchise as Franchise, product.productType, settings), origins: sources };
+  });
   const rows = pricedRows.filter(row => row.price_high > 0);
   const unmatched = [...result.unmatched, ...pricedRows.filter(row => row.price_high <= 0)
     .flatMap(row => row.origins.map(candidate => ({ candidate, reason: 'zero_after_discount' as const })))];
-  if (!rows.length) throw new Error('Shinsoku郵送価格に一致する掲載商品がありません');
+  if (!rows.length) throw new Error('シンソク郵送買取価格に一致する掲載商品がありません');
   const fetchedAt = now.toISOString();
   return { snapshot: { id: randomUUID(), store: TOKYO_BUYBACK_STORE, order_list_import_id: order.id,
     checker_run_id: checker.id, checker_source_store: CHECKER_STORE, fetched_at: fetchedAt,
     business_date: tokyoBusinessDate(new Date(fetchedAt)), settings,
     report: { source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
       checker_completed_at: checker.completed_at, source_counts: sourceCounts, shinsoku_count: sourceProducts.length,
+      price_sources: Object.fromEntries(rows.map(row => [row.id, result.priceSources[row.id]])),
       matched_count: rows.length, unmatched_count: unmatched.length, unmatched } }, products: rows };
 }
 
 export function tokyoDisplayPrice(price: number, franchise: Franchise, type: 'PSA10' | 'BOX', settings: StorePricingSettings): number {
   return type === 'BOX' ? calculateBoxPriceHigh(price, settings.box_discount_rates[franchise].shrink)
-    : calculateBuyPriceHigh(price, settings.psa10_discount_rates[franchise]);
+    : Math.floor(calculateBuyPriceHigh(price, settings.psa10_discount_rates[franchise]) / 1_000) * 1_000;
 }
 
 export async function runTokyoBuybackSync(options: { dryRun?: boolean } = {}) {

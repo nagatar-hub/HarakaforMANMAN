@@ -54,6 +54,11 @@ function matchesRule(tag: string | null, rule: RuleRow): boolean {
     case 'exact':
       return tag === rule.tag_pattern;
     case 'contains':
+      // Tokyo tag groups keep the raw tag keys used by the tag-management UI.
+      // Match the selected tag branch, not substrings such as AR inside VSTAR.
+      if (rule.store === 'manman-akihabara' && rule.behavior === 'group') {
+        return tag === rule.tag_pattern || tag.startsWith(`${rule.tag_pattern}/`);
+      }
       return tag.includes(rule.tag_pattern);
     case 'regex':
       try {
@@ -124,6 +129,20 @@ function makeLegacyLayout(totalSlots: number): LayoutTemplateRow {
 /** 価格（price_high）降順ソート */
 function sortByPriceDesc(cards: PreparedCardRow[]): PreparedCardRow[] {
   return [...cards].sort((a, b) => (b.price_high ?? 0) - (a.price_high ?? 0));
+}
+
+/** 同じフルタグを隣接させ、タグ内を価格降順にする（オリパーク互換）。 */
+function sortByNestedTagThenPrice(cards: PreparedCardRow[]): PreparedCardRow[] {
+  const groups = new Map<string, PreparedCardRow[]>();
+  for (const card of cards) {
+    const group = groups.get(card.tag ?? '__none__') ?? [];
+    group.push(card);
+    groups.set(card.tag ?? '__none__', group);
+  }
+  return [...groups.values()]
+    .map(sortByPriceDesc)
+    .sort((a, b) => (b[0]?.price_high ?? 0) - (a[0]?.price_high ?? 0))
+    .flat();
 }
 
 /**
@@ -212,12 +231,14 @@ export function planPages(
   cards: PreparedCardRow[],
   rules: RuleRow[],
   layoutsOrTotalSlots: LayoutTemplateRow[] | number,
+  groupNestedTags = false,
 ): PagePlan[] {
   if (cards.length === 0) return [];
   const layouts = typeof layoutsOrTotalSlots === 'number'
     ? [makeLegacyLayout(layoutsOrTotalSlots)]
     : layoutsOrTotalSlots;
   if (layouts.length === 0) return [];
+  const sortGroup = groupNestedTags ? sortByNestedTagThenPrice : sortByPriceDesc;
 
   // rules を priority 降順
   const sortedRules = [...rules].sort((a, b) => b.priority - a.priority);
@@ -254,7 +275,7 @@ export function planPages(
     switch (rule.behavior) {
       case 'isolate':
       case 'merge': {
-        const sortedMatched = sortByPriceDesc(matched);
+        const sortedMatched = sortGroup(matched);
         // BOX タグは専用レイアウト（box_8x5）を使用
         if (rule.tag_pattern === 'BOX' && rule.match_type === 'exact') {
           pages.push(...assignBoxGroup(sortedMatched, layouts, rule.tag_pattern));
@@ -282,7 +303,7 @@ export function planPages(
         if (matchesRule(card.tag, rule)) subset.push(card);
       }
       if (subset.length === 0) continue;
-      for (const c of sortByPriceDesc(subset)) {
+      for (const c of sortGroup(subset)) {
         consumed.add(c.id);
         ordered.push(c);
       }
@@ -323,7 +344,7 @@ export function planPages(
 
     // 同じ baseLabel が 2 回目以降なら丸数字を付けて区別
     const effectiveLabel = seen === 1 ? baseLabel : `${baseLabel}${toCircledNumber(seen)}`;
-    pages.push(...assignGroupToLayouts(sortByPriceDesc(bucket), layouts, effectiveLabel));
+    pages.push(...assignGroupToLayouts(sortGroup(bucket), layouts, effectiveLabel));
   }
 
   return pages;

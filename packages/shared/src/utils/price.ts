@@ -7,6 +7,7 @@ export type BoxConditionDiscountRates = {
 };
 export type BoxDiscountRates = Record<Franchise, BoxConditionDiscountRates>;
 export type StorePricingSettings = {
+  box_price_low_enabled?: boolean;
   box_discount_rates: BoxDiscountRates;
   psa10_discount_rates: Record<Franchise, number>;
 };
@@ -99,6 +100,9 @@ export function normalizeStorePricingSettings(settings: unknown): StorePricingSe
   }
 
   return {
+    ...(typeof source.box_price_low_enabled === 'boolean'
+      ? { box_price_low_enabled: source.box_price_low_enabled }
+      : {}),
     box_discount_rates: normalizedBoxRates,
     psa10_discount_rates: normalizedPsa10Rates,
   };
@@ -132,6 +136,9 @@ export function mergeStorePricingSettings(base: unknown, overrides: unknown): St
   return normalizeStorePricingSettings({
     ...normalizedBase,
     ...overrideRecord,
+    box_price_low_enabled: typeof overrideRecord.box_price_low_enabled === 'boolean'
+      ? overrideRecord.box_price_low_enabled
+      : normalizedBase.box_price_low_enabled,
     box_discount_rates: mergedBoxRates,
     psa10_discount_rates: {
       ...normalizedBase.psa10_discount_rates,

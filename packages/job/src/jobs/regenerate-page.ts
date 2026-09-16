@@ -9,7 +9,8 @@
 import sharp from 'sharp';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { getAccessToken, getBuybackSheetAccessToken } from '../lib/auth.js';
-import { publishManmanBuybackSheet } from '../lib/buyback-sheet.js';
+import { isBuybackSheetPublishDisabled, publishManmanBuybackSheet } from '../lib/buyback-sheet.js';
+import { COLOR, sendDiscordNotification } from '../lib/discord.js';
 import { composePage } from '../lib/image-composer.js';
 import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-drive.js';
 import { downloadTemplateAsset } from '../lib/asset-storage.js';
@@ -194,6 +195,9 @@ async function _runRegeneratePage(
   const orderedCards = page.card_ids.map(id => cardMap.get(id)!).filter(Boolean);
   const accessToken = tokyoPostalSnapshot ? '' : await getAccessToken();
   const pricingSettings = tokyoPostalSnapshot ? undefined : await loadStorePricingSettings(supabase, STORE_NAME);
+  const boxPriceLowEnabled = STORE_NAME === 'manman-akihabara'
+    ? (pricingSettings ?? await loadStorePricingSettings(supabase, STORE_NAME)).box_price_low_enabled === true
+    : true;
   const boxPrices = tokyoPostalSnapshot ? undefined : await loadShinsokuBoxPriceMap(accessToken);
   // Selection IDs remain available for source recovery; Tokyo Weiss/Dragon keep order-list prices.
   const orderedCardsWithCurrentPrices = (tokyoPostalSnapshot ? orderedCards : applyCurrentShinsokuBoxPrices(
@@ -391,8 +395,10 @@ async function _runRegeneratePage(
     gridCols: layoutTemplate?.grid_cols,
     rarityIconBuffers,
     cardImageBuffers,
+    requireCardImages: tokyoPostalSnapshot,
     dateText,
-    skipPriceLow: tokyoPostalSnapshot ? true : isBOX ? false : layoutTemplate?.skip_price_low ?? false,
+    skipPriceLow: tokyoPostalSnapshot ? !isBOX : isBOX ? false : layoutTemplate?.skip_price_low ?? false,
+    priceLowText: STORE_NAME === 'manman-akihabara' && isBOX && !boxPriceLowEnabled ? '-' : undefined,
     layoutAdjust: adjustments.layoutAdjust,
     rowPriceAdjust: adjustments.rowPriceAdjust,
     rowCardAdjust: adjustments.rowCardAdjust,
@@ -423,14 +429,17 @@ async function _runRegeneratePage(
     .getPublicUrl(storageKey);
 
   // ---- 9. generated_page 更新 ----
-  await supabase.from('generated_page').update({
+  const { error: pageUpdateError } = await supabase.from('generated_page').update({
     status: 'generated',
     image_key: storageKey,
     image_url: publicUrl.publicUrl,
     error_message: null,
   }).eq('id', pageId);
+  if (tokyoPostalSnapshot && pageUpdateError) {
+    throw new Error(`再生成ページの保存に失敗しました: ${pageUpdateError.message}`);
+  }
 
-  if (!tokyoPostalSnapshot) try {
+  if (!tokyoPostalSnapshot || !isBuybackSheetPublishDisabled()) try {
     const buybackSheetAccessToken = await getBuybackSheetAccessToken();
     const publishResult = await publishManmanBuybackSheet({
       supabase,
@@ -445,6 +454,12 @@ async function _runRegeneratePage(
   } catch (sheetError) {
     const message = sheetError instanceof Error ? sheetError.message : String(sheetError);
     console.error(`[regenerate-page] Google Sheet更新失敗（再生成画像は完了状態を維持）: ${message}`);
+    if (tokyoPostalSnapshot) await sendDiscordNotification({
+      title: '🟡 東京満満：再生成後のGoogle Sheet更新失敗',
+      description: '買取表画像の再生成は完了しています。シート更新だけ再実行できます。',
+      color: COLOR.WARNING,
+      fields: [{ name: 'Run', value: page.run_id }, { name: 'エラー', value: message.slice(0, 1024) }],
+    });
   }
 
   console.log(`[regenerate-page] 完了: ${storageKey}`);

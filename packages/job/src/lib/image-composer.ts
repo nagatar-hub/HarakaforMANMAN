@@ -34,10 +34,14 @@ export interface ComposePageParams {
   rarityIconBuffers?: Map<string, Buffer>;
   /** カード画像: card.id → Buffer */
   cardImageBuffers: Map<string, Buffer>;
+  /** Every listed card must have a decodable image; unused slots still use card backs. */
+  requireCardImages?: boolean;
   /** 日付文字列 (例: "2026/03/11") */
   dateText: string;
   /** true の場合 price_low（青）をスキップ（BOXページ用） */
   skipPriceLow?: boolean;
+  /** price_low の表示文字列を上書きする */
+  priceLowText?: string;
   /** レイアウト微調整: 全行に固定オフセット */
   layoutAdjust?: { cardYDelta: number; priceYDelta: number };
   /** 行別の価格Y微調整: rowIndex → { priceHighYDelta, priceLowYDelta } */
@@ -147,8 +151,10 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
     gridCols,
     rarityIconBuffers,
     cardImageBuffers,
+    requireCardImages = false,
     dateText,
     skipPriceLow,
+    priceLowText,
     layoutAdjust,
     rowPriceAdjust,
     rowCardAdjust,
@@ -160,7 +166,7 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
   const composites: OverlayOptions[] = [];
 
   // カード裏面をリサイズしておく
-  const cardBackResized = await sharp(cardBackBuffer)
+  const cardBackResized = requireCardImages && (totalSlots ?? 0) <= cards.length ? null : await sharp(cardBackBuffer)
     .resize(layout.cardWidth, layout.cardHeight, { fit: 'fill' })
     .png()
     .toBuffer();
@@ -195,12 +201,14 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
           .png()
           .toBuffer();
       } catch {
+        if (requireCardImages) throw new Error(`Card image cannot be decoded: ${card.id}`);
         // リサイズ失敗時はカード裏面を使用
-        cardBuffer = cardBackResized;
+        cardBuffer = cardBackResized!;
       }
     } else {
+      if (requireCardImages) throw new Error(`Card image is required: ${card.id}`);
       // 画像なし → カード裏面
-      cardBuffer = cardBackResized;
+      cardBuffer = cardBackResized!;
     }
 
     const rowCardDelta = rowCardAdjust?.[rowIndex] ?? 0;
@@ -261,10 +269,13 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
       });
 
       // price_low（青） — skipPriceLow が true の場合はスキップ
-      if (!skipPriceLow && card.price_low && card.price_low > 0) {
-        const priceLowText = formatPrice(card.price_low, assetProfile.price_format);
+      const renderedPriceLow = priceLowText
+        ?? (!skipPriceLow && card.price_low && card.price_low > 0
+          ? formatPrice(card.price_low, assetProfile.price_format)
+          : null);
+      if (renderedPriceLow) {
         const priceLowSvg = createPriceTextSvg({
-          text: priceLowText,
+          text: renderedPriceLow,
           width: layout.priceBoxWidth,
           height: layout.priceBoxHeight,
           fontFamily: assetProfile.font_family,
@@ -308,7 +319,7 @@ export async function composePage(params: ComposePageParams): Promise<Buffer> {
 
     const rowCardDelta2 = rowCardAdjust?.[rowIndex] ?? 0;
     composites.push({
-      input: cardBackResized,
+      input: cardBackResized!,
       left: x,
       top: rowConfig.cardY + adjustCardY + rowCardDelta2,
     });

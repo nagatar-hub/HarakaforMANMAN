@@ -218,6 +218,103 @@ export function buildBuybackSheetValues(params: {
   return [[...BUYBACK_SHEET_HEADERS], ...dataRows];
 }
 
+type TokyoSheetProduct = { id: string; snapshot_id: string; franchise: string; origins: unknown };
+
+export function buildTokyoBuybackSheetValues(params: {
+  runId: string;
+  snapshotId: string;
+  businessDate: string;
+  importId: string;
+  orderedCardIds: string[];
+  cards: PreparedCardRow[];
+  products: TokyoSheetProduct[];
+  orderListItems: PublishOrderListItem[];
+}): SheetCell[][] {
+  if (!params.orderedCardIds.length) throw new Error('東京シート出力対象の商品がありません');
+  assertNoDuplicateCardIds(params.orderedCardIds);
+  const cards = new Map(params.cards.map(card => [card.id, card]));
+  const products = new Map(params.products.map(product => [product.id, product]));
+  if (cards.size !== params.cards.length || products.size !== params.products.length) {
+    throw new Error('東京シート出力元の商品が重複しています');
+  }
+  const sourceIds = new Set<string>();
+  const outputIds = new Set<string>();
+  const values = params.orderedCardIds.map(id => {
+    const card = cards.get(id);
+    const sourceId = card?.source_shinsoku_id?.trim();
+    const product = sourceId ? products.get(sourceId) : undefined;
+    if (!card || card.run_id !== params.runId || !sourceId || !product
+      || product.snapshot_id !== params.snapshotId || product.franchise !== card.franchise) {
+      throw new Error(`東京シートのRun・snapshot商品が一致しません: ${id}`);
+    }
+    if (sourceIds.has(sourceId)) throw new Error(`東京シートの商品IDが重複しています: ${sourceId}`);
+    sourceIds.add(sourceId);
+    if (!Number.isSafeInteger(card.price_high) || (card.price_high ?? 0) <= 0
+      || card.price_source_date !== params.businessDate || !card.card_name.trim()) {
+      throw new Error(`東京シートの確定価格・価格日・名称が不正です: ${id}`);
+    }
+    if (!Array.isArray(product.origins)) throw new Error(`東京商品の掲載元が不正です: ${sourceId}`);
+    const kecakIds = [...new Set(product.origins.flatMap((origin: unknown): string[] => {
+      if (!origin || typeof origin !== 'object' || !('source' in origin) || origin.source !== 'kecak') return [];
+      if (!('id' in origin) || typeof origin.id !== 'string' || !origin.id.trim()) {
+        throw new Error(`東京商品のKECAK IDが不正です: ${sourceId}`);
+      }
+      return [origin.id];
+    }))];
+    if (kecakIds.length > 1) throw new Error(`東京商品のKECAK ID対応が曖昧です: ${sourceId}`);
+    const matches = params.orderListItems.filter(item => kecakIds.includes(item.excel_product_id));
+    if (matches.length > 1 || matches.some(item => item.import_id !== params.importId || item.franchise !== card.franchise)) {
+      throw new Error(`東京商品のオーダーリスト対応が曖昧です: ${sourceId}`);
+    }
+    const item = matches[0];
+    const outputId = item?.excel_product_id || sourceId;
+    if (outputIds.has(outputId)) throw new Error(`東京シートの出力商品IDが重複しています: ${outputId}`);
+    outputIds.add(outputId);
+    return [outputId, card.card_name, card.grade ?? '', item?.expansion ?? '', card.list_no ?? '',
+      item?.rarity ?? card.rarity ?? '', effectiveImageUrl(card), card.price_high,
+      params.businessDate.replaceAll('-', '/')];
+  });
+  return [[...BUYBACK_SHEET_HEADERS], ...values];
+}
+
+async function loadTokyoBuybackSheetValues(
+  supabase: SupabaseClient<Database>, runId: string, snapshotId: string, importId: string, pages: PublishPage[],
+): Promise<SheetCell[][]> {
+  const orderedCardIds = flattenGeneratedStorePageCardIds(pages);
+  const { data: snapshot, error } = await supabase.from('tokyo_buyback_snapshot')
+    .select('id,store,order_list_import_id,business_date').eq('id', snapshotId).eq('store', STORE_NAME).single();
+  if (error || !snapshot || snapshot.order_list_import_id !== importId) {
+    throw new Error(`東京シートのsnapshotが一致しません: ${error?.message ?? snapshotId}`);
+  }
+  const cards: PreparedCardRow[] = [];
+  const products: TokyoSheetProduct[] = [];
+  for (let offset = 0; offset < orderedCardIds.length; offset += QUERY_BATCH_SIZE) {
+    const { data, error } = await supabase.from('prepared_card').select('*')
+      .eq('run_id', runId).in('id', orderedCardIds.slice(offset, offset + QUERY_BATCH_SIZE));
+    if (error) throw new Error(`東京出力商品の取得に失敗しました: ${error.message}`);
+    cards.push(...(data ?? []));
+  }
+  const sourceIds = [...new Set(cards.map(card => card.source_shinsoku_id).filter((id): id is string => !!id))];
+  for (let offset = 0; offset < sourceIds.length; offset += QUERY_BATCH_SIZE) {
+    const { data, error } = await supabase.from('tokyo_buyback_product').select('id,snapshot_id,franchise,origins')
+      .eq('snapshot_id', snapshotId).in('id', sourceIds.slice(offset, offset + QUERY_BATCH_SIZE));
+    if (error) throw new Error(`東京snapshot商品の取得に失敗しました: ${error.message}`);
+    products.push(...(data ?? []));
+  }
+  const orderListItems: PublishOrderListItem[] = [];
+  // Preserve exact historical Excel IDs and metadata; never join another import or guess names.
+  for (let offset = 0; ; offset += QUERY_BATCH_SIZE) {
+    const { data, error } = await supabase.from('order_list_item')
+      .select('id,import_id,franchise,excel_product_id,card_name,grade,expansion,list_no,rarity')
+      .eq('import_id', importId).order('id').range(offset, offset + QUERY_BATCH_SIZE - 1);
+    if (error) throw new Error(`東京オーダーリスト取得に失敗しました: ${error.message}`);
+    orderListItems.push(...(data ?? []));
+    if ((data?.length ?? 0) < QUERY_BATCH_SIZE) break;
+  }
+  return buildTokyoBuybackSheetValues({ runId, snapshotId, importId, businessDate: snapshot.business_date,
+    orderedCardIds, cards, products, orderListItems });
+}
+
 async function fetchPreparedCards(
   supabase: SupabaseClient<Database>,
   ids: string[],
@@ -300,12 +397,12 @@ export async function publishManmanBuybackSheet(params: {
 
   const { data: run, error: runError } = await params.supabase
     .from('run')
-    .select('id, store, order_list_import_id')
+    .select('id, store, order_list_import_id, tokyo_snapshot_id')
     .eq('id', params.runId)
     .eq('store', STORE_NAME)
     .eq('status', 'completed')
     .not('generate_done_at', 'is', null)
-    .single<Pick<Database['public']['Tables']['run']['Row'], 'id' | 'store' | 'order_list_import_id'>>();
+    .single<Pick<Database['public']['Tables']['run']['Row'], 'id' | 'store' | 'order_list_import_id' | 'tokyo_snapshot_id'>>();
   if (runError || !run) {
     throw new Error(`MANMAN実行が見つかりません: ${runError?.message ?? params.runId}`);
   }
@@ -329,6 +426,20 @@ export async function publishManmanBuybackSheet(params: {
     .eq('run_id', params.runId)
     .returns<PublishPage[]>();
   if (pageError) throw new Error(`生成ページの取得に失敗しました: ${pageError.message}`);
+
+  if (STORE_NAME === 'manman-akihabara' && run.tokyo_snapshot_id) {
+    const values = await loadTokyoBuybackSheetValues(params.supabase, params.runId, run.tokyo_snapshot_id,
+      orderListImport.id, pages ?? []);
+    if (await findLatestRunId() !== params.runId) {
+      console.log(`[buyback-sheet] skipped stale Tokyo write run=${params.runId}`);
+      return { status: 'skipped', rowCount: 0, contentHash: null, spreadsheetId };
+    }
+    await replaceSheetValues({ accessToken: params.accessToken, spreadsheetId, sheetId: TARGET_SHEET_ID,
+      values, columnCount: BUYBACK_SHEET_HEADERS.length });
+    const contentHash = createHash('sha256').update(JSON.stringify(values)).digest('hex');
+    console.log(`[buyback-sheet] published: store=${STORE_NAME}, run=${params.runId}, rows=${values.length - 1}, hash=${contentHash}`);
+    return { status: 'completed', rowCount: values.length - 1, contentHash, spreadsheetId };
+  }
 
   const boxPrices = params.boxPrices ?? await loadShinsokuBoxPriceMap(params.accessToken);
   const pricingSettings = params.pricingSettings ?? await loadStorePricingSettings(params.supabase, STORE_NAME);

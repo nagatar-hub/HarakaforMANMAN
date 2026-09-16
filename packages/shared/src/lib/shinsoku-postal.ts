@@ -26,18 +26,22 @@ const normalize = (value: string) => value.normalize('NFKC').toLowerCase().repla
 
 function nameKey(value: string, type: PostalCandidate['productType'], franchise: string): string {
   let name = normalize(value).replace(/^[【\[]?psa10[】\]]?/, '').replace(/[【\[]psa10[】\]]$/, '');
-  if (type === 'PSA10') name = name.replace(/\(sa\)$/, '');
+  if (type === 'PSA10') name = name.replace(/\((?:sa|フラッグシップ)\)$/, '');
   if (type === 'BOX') {
     name = name.replace(/^[【\[]1?box[】\]]/, '')
       .replace(/^(?:ポケモンカードゲーム)?(?:スカーレット&バイオレット|ソード&シールド)?(?:強化拡張パック|拡張パック|ハイクラスパック)/, '')
-      .replace(/^「(.+)」(?:\([a-z0-9+&/\-]+\))?$/, '$1');
+      .replace(/^(?:ブースターパック|エクストラブースター|プレミアムブースター)/, '')
+      .replace(/^「(.+)」(?:\([a-z0-9+&/\-]+\))?$/, '$1')
+      .replace(/^『(.+)』(?:\([a-z0-9+&/\-]+\))?$/, '$1');
     if (franchise === 'ONE PIECE') name = name.replace(/^(?:op|eb|prb)\d{2}(?!\d)/, '');
     if (franchise === 'DRAGON BALL') name = name.replace(/(?:fb|sb)\d{2}$/, '');
+    if (franchise === 'WEISS SCHWARZ') name = name.replace(/\(初版再販問わず\)$/, '').replace(/[「」]/g, '');
+    name = name.replace(/未開封box$/, '');
   }
   return name;
 }
 
-function identity(product: Pick<PostalCandidate, 'franchise' | 'name' | 'modelNumber' | 'productType'>): string {
+export function postalProductIdentity(product: Pick<PostalCandidate, 'franchise' | 'name' | 'modelNumber' | 'productType'>): string {
   return JSON.stringify([product.franchise, product.productType, nameKey(product.name, product.productType, product.franchise),
     product.productType === 'PSA10' ? normalize(product.modelNumber ?? '') : '']);
 }
@@ -45,7 +49,7 @@ function identity(product: Pick<PostalCandidate, 'franchise' | 'name' | 'modelNu
 export function matchShinsokuPostalProducts(candidates: PostalCandidate[], products: ShinsokuPostalProduct[]) {
   const index = new Map<string, ShinsokuPostalProduct[]>();
   for (const product of products) {
-    const key = identity(product);
+    const key = postalProductIdentity(product);
     const bucket = index.get(key) ?? [];
     if (!bucket.some(p => p.id === product.id)) bucket.push(product);
     index.set(key, bucket);
@@ -53,7 +57,7 @@ export function matchShinsokuPostalProducts(candidates: PostalCandidate[], produ
   const matched = new Map<string, { product: ShinsokuPostalProduct; sources: PostalCandidate[] }>();
   const unmatched: { candidate: PostalCandidate; reason: 'not_found' | 'ambiguous' | 'missing_price' | 'missing_model' }[] = [];
   for (const candidate of candidates) {
-    const matches = index.get(identity(candidate)) ?? [];
+    const matches = index.get(postalProductIdentity(candidate)) ?? [];
     const reason = candidate.productType === 'PSA10' && !candidate.modelNumber?.trim() ? 'missing_model'
       : matches.length === 0 ? 'not_found' : matches.length > 1 ? 'ambiguous'
         : !matches[0].price ? 'missing_price' : null;

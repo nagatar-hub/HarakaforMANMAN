@@ -35,7 +35,8 @@ import { startOrderListLease } from '../lib/order-list-lease.js';
 import { getOptionalEnvOrSecret, getRequiredEnvOrSecret } from '../lib/env.js';
 import { loadStorePricingSettings } from '../lib/pricing-settings.js';
 import { buildTokyoBuybackSnapshot, TOKYO_BUYBACK_STORE } from './tokyo-buyback-sync.js';
-import { buildTokyoPreparedCards } from '../lib/tokyo-normal-cards.js';
+import { buildTokyoPreparedCards, loadTokyoCardImageMappings } from '../lib/tokyo-normal-cards.js';
+import { loadTokyoHarakaCards } from '../lib/haraka-card-images.js';
 import type {
   Database,
   PreparedCardRow,
@@ -348,14 +349,21 @@ export async function runSync(): Promise<void> {
   try {
     await lease.renewNow();
     if (STORE_NAME === TOKYO_BUYBACK_STORE) {
-      await updateProgress(supabase, run.id, 0, 100, '3つの商品一覧とシンソク郵送価格を取得中...');
+      await updateProgress(supabase, run.id, 0, 100, 'KECAK・チェッカーの商品一覧と、遊戯王・DB・ヴァイスのシンソク郵送PSA/BOX・価格を取得中...');
       const snapshot = await buildTokyoBuybackSnapshot(supabase, new Date(), { claimedImportId: orderListImport.id, runId: run.id });
+      const harakaCards = await loadTokyoHarakaCards(supabase);
+      const imageMappings = await loadTokyoCardImageMappings(supabase, snapshot);
       await lease.renewNow();
       const { data, error } = await supabase.rpc('publish_tokyo_buyback_snapshot', {
         p_snapshot: snapshot.snapshot, p_products: snapshot.products, p_run_id: run.id,
       });
       if (error || data !== snapshot.snapshot.id) throw new Error(`東京価格反映失敗: ${error?.message ?? 'snapshot mismatch'}`);
-      const prepared = buildTokyoPreparedCards(run.id, snapshot);
+      const prepared = buildTokyoPreparedCards(run.id, snapshot, imageMappings, harakaCards);
+      console.log(`[sync] 東京Haraka画像: matched=${prepared.filter(card => card.db_card_id).length}, db_rows=${harakaCards.length}; Sheets鮮度は未検証`);
+      const psaCount = prepared.filter(card => card.grade === 'PSA10').length;
+      const missingPsaImages = prepared.filter(card => card.grade === 'PSA10' && !card.image_url).length;
+      console.log(`[sync] 東京PSA画像: verified=${psaCount - missingPsaImages}, unmatched=${missingPsaImages}, total=${psaCount}; 未対応商品も保存`);
+      await updateProgress(supabase, run.id, 0, 100, `東京PSA画像: 対応 ${psaCount - missingPsaImages}/${psaCount}、未対応 ${missingPsaImages}件（買取表から除外）`);
       await batchInsert(supabase, 'prepared_card', prepared as unknown as Record<string, unknown>[]);
       await updateRunningRun(supabase, run.id, {
         total_imported: prepared.length, total_prepared: prepared.length, total_untagged: 0, total_price_missing: 0,

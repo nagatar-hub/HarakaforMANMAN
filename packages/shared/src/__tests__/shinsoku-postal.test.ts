@@ -24,14 +24,34 @@ test('BOX normalization preserves deluxe variants', () => {
   expect(matchShinsokuPostalProducts([{ ...box, franchise: 'ONE PIECE', name: '[1BOX]謀略の王国' }], [{ ...regular, franchise: 'ONE PIECE', name: 'OP04 謀略の王国' }]).matched).toHaveLength(1);
   expect(matchShinsokuPostalProducts([{ ...box, franchise: 'ONE PIECE', name: 'メモリアルコレクション' }], [{ ...regular, franchise: 'ONE PIECE', name: 'EB01 メモリアルコレクション' }]).matched).toHaveLength(1);
   expect(matchShinsokuPostalProducts([{ ...box, franchise: 'DRAGON BALL', name: 'MANGA BOOSTER 01' }], [{ ...regular, franchise: 'DRAGON BALL', name: 'MANGA BOOSTER 01 SB01' }]).matched).toHaveLength(1);
+  expect(matchShinsokuPostalProducts([{ ...box, franchise: 'WEISS SCHWARZ', name: '[1BOX]「Re:ゼロから始める異世界生活」Vol.3(初版再販問わず)' }],
+    [{ ...regular, franchise: 'WEISS SCHWARZ', name: 'Re:ゼロから始める異世界生活 Vol.3' }]).matched).toHaveLength(1);
+  expect(matchShinsokuPostalProducts([{ ...box, franchise: 'WEISS SCHWARZ', name: '[1BOX]ガンゲイル・オンラインⅡ(初版再販問わず)' }],
+    [{ ...regular, franchise: 'WEISS SCHWARZ', name: 'ガンゲイル・オンラインII' }]).matched).toHaveLength(1);
+  expect(matchShinsokuPostalProducts([{ ...box, franchise: 'WEISS SCHWARZ', name: '[1BOX]ブルーアーカイブ(初版再販問わず)' }], [
+    { ...regular, id: 'blue-1', franchise: 'WEISS SCHWARZ', name: 'ブルーアーカイブ The Animation' },
+    { ...regular, id: 'blue-2', franchise: 'WEISS SCHWARZ', name: 'ブルーアーカイブ 未開封BOX' },
+  ]).matched).toEqual([expect.objectContaining({ product: expect.objectContaining({ id: 'blue-2' }) })]);
+  expect(matchShinsokuPostalProducts([{ ...box, franchise: 'ONE PIECE', name: '[1BOX]王族の血統' }], [
+    { ...regular, franchise: 'ONE PIECE', name: 'ブースターパック 王族の血統' },
+  ]).matched).toHaveLength(1);
+  expect(matchShinsokuPostalProducts([{ ...box, franchise: 'ONE PIECE', name: '[1BOX]ONE PIECE Heroines Edition' }], [
+    { ...regular, franchise: 'ONE PIECE', name: 'エクストラブースター ONE PIECE Heroines Edition' },
+  ]).matched).toHaveLength(1);
   expect(matchShinsokuPostalProducts([{ ...box, name: '[1BOX]謀略の王国' }], [{ ...regular, name: 'OP04 謀略の王国(初版)' }]).matched).toHaveLength(0);
+  expect(matchShinsokuPostalProducts([{ ...box, name: '拡張パック『熱風のアリーナ』' }], [
+    { ...regular, name: '強化拡張パック「熱風のアリーナ」(SV9a)' },
+  ]).matched).toHaveLength(1);
 });
 
-test('PSA SA display suffix uses same model while substantive parentheses remain distinct', () => {
+test('known PSA display suffixes use the same model while substantive parentheses remain distinct', () => {
   const card = { ...candidate, name: 'エーフィ＆デオキシスGX', modelNumber: '177/173' };
   const listed = { ...product, name: 'エーフィ＆デオキシスGX(SA)', modelNumber: '177/173' };
   expect(matchShinsokuPostalProducts([card], [listed]).matched).toHaveLength(1);
   expect(matchShinsokuPostalProducts([card], [{ ...listed, modelNumber: '176/173' }]).matched).toHaveLength(0);
+  expect(matchShinsokuPostalProducts([{ ...candidate, franchise: 'ONE PIECE', name: 'ウタ', modelNumber: 'OP09-002' }], [
+    { ...product, franchise: 'ONE PIECE', name: 'ウタ(フラッグシップ)', modelNumber: 'OP09-002', price: 126000 },
+  ]).matched[0].product.price).toBe(126000);
   expect(matchShinsokuPostalProducts([{ ...candidate, name: 'ニンフィアEX(ピンク)' }], [{ ...product, name: 'ニンフィアEX' }]).matched).toHaveLength(0);
 });
 
@@ -47,6 +67,12 @@ test('direct postal client paginates, filters PSA10, uses only S price, recovers
   expect(products).toEqual([{ ...product, id: 's2', modelNumber: '077/067' }, product]);
   expect(mock.mock.calls.some(([url]) => new URL(url).searchParams.get('query') === '236/172')).toBe(true);
   expect(mock.mock.calls.every(([url]) => new URL(url).searchParams.get('postal_only') === 'true')).toBe(true);
+});
+
+test('catalog pull without candidates never sends a product name or model query', async () => {
+  const mock = jest.fn(async (url: string) => reply(new URL(url).searchParams.get('type') === 'PSA' ? [item] : []));
+  await fetchShinsokuPostalProducts({ fetchImpl: mock as unknown as typeof fetch, delayMs: 0, franchises: ['Pokemon'] });
+  expect(mock.mock.calls.every(([url]) => !new URL(url).searchParams.has('query'))).toBe(true);
 });
 
 test('invalid prices, conflicting duplicate IDs and stuck pagination fail instead of publishing partial data', async () => {

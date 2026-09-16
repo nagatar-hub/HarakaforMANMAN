@@ -4,6 +4,8 @@ const SECRET_BY_ENV: Record<string, string> = {
   KECAK_SPREADSHEET_ID: 'haraka-kecak-spreadsheet-id',
   HARAKA_DB_SPREADSHEET_ID: 'haraka-db-spreadsheet-id',
   POKEMON_BOX_SPREADSHEET_ID: 'haraka-pokemon-box-spreadsheet-id',
+  PELEKA_TOKYO_CATALOG_URL: 'haraka-peleka-tokyo-catalog-url',
+  PELEKA_TOKYO_CATALOG_TOKEN: 'haraka-peleka-tokyo-catalog-token',
 };
 
 export async function getRequiredEnvOrSecret(envName: keyof typeof SECRET_BY_ENV): Promise<string> {
