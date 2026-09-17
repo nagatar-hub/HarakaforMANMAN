@@ -34,12 +34,16 @@ test('gallery prices use each card historical snapshot, exact checker edition, a
       assert.equal(q.get('id'), 'in.(old,new)');
       assert.equal(q.has('order'), false, 'must not select latest snapshot');
       data = ['old', 'new'].map(id => ({ id, checker_run_id: `checker-${id}`, checker_source_store: 'oripark',
-        order_list_import_id: `order-${id}`, report: id === 'old' ? {} : { price_sources: { IAP1: { source: 'kecak', price: 2000 } } } }));
+        order_list_import_id: `order-${id}`, business_date: '2026-09-17', report: {
+          order_business_date: id === 'old' ? '2026-09-16' : '2026-09-17',
+          ...(id === 'new' ? { price_sources: { IAP1: { source: 'shinsoku', price: 2000 } } } : {}),
+        } }));
     } else if (table === 'tokyo_buyback_product') {
       const old = q.get('snapshot_id') === 'eq.old';
       data = [{ id: 'IAP1', source_price: old ? 1000 : 2000, origins: [
-        { source: 'kecak', id: 'K1', ...(old ? {} : { sourcePrice: 2000 }) },
+        { source: 'kecak', id: 'K1', sourcePrice: old ? 1500 : 2000 }, { source: 'kecak', id: 'K2' },
         { source: 'avirile', id: '42:1:7' }, { source: 'toreca_bank', id: '42:1:0' },
+        { source: 'avirile', id: '42:2:7' }, { source: 'toreca_bank', id: '42:2:0' }, { source: 'toreca_bank', id: '42:2:8' },
       ] }];
     } else if (table === 'kaitori_checker_offer_snapshot') {
       assert.equal(q.get('store'), 'eq.oripark');
@@ -47,20 +51,25 @@ test('gallery prices use each card historical snapshot, exact checker edition, a
       assert.equal(q.get('source_product_id'), 'in.(42)');
       const old = q.get('run_id') === 'eq.checker-old';
       assert.ok(old || q.get('run_id') === 'eq.checker-new');
+      const current = '2026-09-16T15:00:00.000Z';
+      const previous = '2026-09-16T14:59:59.999Z';
       data = [
-        { source_product_id: 42, shop_id: 13, condition_id: 1, edition_id: 0, buy_price: 999999 },
-        { source_product_id: 42, shop_id: 13, condition_id: 2, edition_id: 7, buy_price: 888888 },
-        { source_product_id: 42, shop_id: 13, condition_id: 1, edition_id: 7, buy_price: old ? 3000 : 4000 },
-        { source_product_id: 42, shop_id: 3, condition_id: 1, edition_id: 0, buy_price: old ? 0 : 5000 },
+        { source_product_id: 42, shop_id: 13, condition_id: 1, edition_id: 0, buy_price: 999999, source_updated_at: old ? previous : current },
+        { source_product_id: 42, shop_id: 13, condition_id: 2, edition_id: 7, buy_price: 888888, source_updated_at: previous },
+        { source_product_id: 42, shop_id: 13, condition_id: 1, edition_id: 7, buy_price: old ? 3000 : 4000, source_updated_at: old ? previous : current },
+        { source_product_id: 42, shop_id: 3, condition_id: 1, edition_id: 0, buy_price: old ? 0 : 5000, source_updated_at: old ? previous : current },
+        { source_product_id: 42, shop_id: 3, condition_id: 2, edition_id: 0, buy_price: 6000, source_updated_at: null },
+        { source_product_id: 42, shop_id: 3, condition_id: 2, edition_id: 8, buy_price: 7000, source_updated_at: '2026-09-17T15:00:00.000Z' },
       ];
     } else if (table === 'order_list_import') {
-      assert.equal(q.get('id'), 'eq.order-old');
+      const old = q.get('id') === 'eq.order-old';
+      assert.ok(old || q.get('id') === 'eq.order-new');
       assert.equal(q.get('store'), 'eq.manman-akihabara');
-      data = { id: 'order-old' };
+      data = { id: old ? 'order-old' : 'order-new', business_date: old ? '2026-09-16' : '2026-09-17' };
     } else if (table === 'order_list_item') {
-      assert.equal(q.get('import_id'), 'eq.order-old');
-      assert.equal(q.get('excel_product_id'), 'in.(K1)');
-      data = [{ id: 'order-row', excel_product_id: 'K1', source_price: 1500 }];
+      assert.equal(q.get('import_id'), 'eq.order-new', 'must not read previous-day KECAK prices');
+      assert.equal(q.get('excel_product_id'), 'in.(K2)');
+      data = [{ id: 'order-row', excel_product_id: 'K2', source_price: 1600 }];
     } else throw new Error(`Unexpected table ${table}`);
     return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
   };
@@ -70,11 +79,10 @@ test('gallery prices use each card historical snapshot, exact checker edition, a
     const payload = await response.json() as { cards: any[] };
     assert.deepEqual(payload.cards.map(card => card.id), ['b', 'a', 'manual']);
     assert.deepEqual(payload.cards[0].pricing, { listings: [
-      { store: 'KECAK', price: 2000 }, { store: 'アヴィリール', price: 4000 }, { store: 'トレカバンク', price: 5000 },
-    ], adopted: { store: 'KECAK', price: 2000 } });
-    assert.deepEqual(payload.cards[1].pricing, { listings: [
-      { store: 'KECAK', price: 1500 }, { store: 'アヴィリール', price: 3000 }, { store: 'トレカバンク', price: null },
-    ], adopted: { store: null, price: 1000 } });
+      { store: 'KECAK', price: 2000 }, { store: 'KECAK', price: 1600 },
+      { store: 'アヴィリール', price: 4000 }, { store: 'トレカバンク', price: 5000 },
+    ], adopted: { store: 'シンソク郵送買取', price: 2000 } });
+    assert.deepEqual(payload.cards[1].pricing, { listings: [], adopted: { store: null, price: 1000 } });
     assert.deepEqual(payload.cards[2].pricing, { listings: [], adopted: null });
     assert.ok(payload.cards.every(card => !('run_id' in card) && !('source_shinsoku_id' in card) && !('origins' in card)));
     assert.deepEqual(payload.cards.map(card => card.price_high), [1800, 900, 123]);

@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { tokyoBusinessDate } from '@haraka/shared';
 
 export type GalleryCardPricing = {
   listings: { store: string; price: number | null }[];
@@ -13,6 +14,11 @@ const price = (value: unknown): number | null => typeof value === 'number'
   && Number.isSafeInteger(value) && value > 0 && value <= 100_000_000 ? value : null;
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
+const isTokyoBusinessDate = (value: unknown, businessDate: unknown): boolean => {
+  if (typeof value !== 'string' || typeof businessDate !== 'string') return false;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && tokyoBusinessDate(date) === businessDate;
+};
 
 /** Use each card's immutable generation snapshot, never today's catalog or a name match. */
 export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[]): Promise<Map<string, GalleryCardPricing>> {
@@ -25,10 +31,11 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
   const snapshotIds = [...new Set((runs ?? []).map(run => run.tokyo_snapshot_id).filter(Boolean))];
   if (!snapshotIds.length) return result;
   const { data: snapshots, error: snapshotError } = await db.from('tokyo_buyback_snapshot')
-    .select('id,checker_run_id,checker_source_store,order_list_import_id,report')
+    .select('id,checker_run_id,checker_source_store,order_list_import_id,business_date,report')
     .eq('store', 'manman-akihabara').in('id', snapshotIds);
   if (snapshotError) throw new Error(snapshotError.message);
   for (const snapshot of snapshots ?? []) {
+    const report = object(snapshot.report);
     const snapshotCards = cards.filter(card => runSnapshots.get(card.run_id) === snapshot.id);
     const ids = [...new Set(snapshotCards.map(card => card.source_shinsoku_id).filter(Boolean))];
     if (!ids.length) continue;
@@ -38,45 +45,54 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
     const origins = (row: { origins: unknown }): Origin[] => Array.isArray(row.origins)
       ? row.origins.map(value => object(value) as Origin) : [];
     const allOrigins = (products ?? []).flatMap(origins);
+    let kecakImport: { id: string; business_date: string } | null = null;
+    if (snapshot.order_list_import_id && allOrigins.some(origin => origin.source === 'kecak')) {
+      const { data, error } = await db.from('order_list_import').select('id,business_date')
+        .eq('id', snapshot.order_list_import_id).eq('store', 'manman-akihabara').maybeSingle();
+      if (error) throw new Error(error.message);
+      kecakImport = data;
+    }
+    const hasCurrentKecakPrices = kecakImport?.business_date === snapshot.business_date;
     const checkerIds = [...new Set(allOrigins.filter(origin => ['avirile', 'toreca_bank'].includes(origin.source ?? ''))
       .flatMap(origin => typeof origin.id === 'string' && /^\d+:\d+:\d+$/.test(origin.id) ? [Number(origin.id.split(':')[0])] : []))];
     const offers = new Map<string, number | null>();
     if (snapshot.checker_run_id && snapshot.checker_source_store === 'oripark' && checkerIds.length) {
       for (let offset = 0; ; offset += 1000) {
         const { data, error } = await db.from('kaitori_checker_offer_snapshot')
-          .select('source_product_id,shop_id,condition_id,edition_id,buy_price')
+          .select('source_product_id,shop_id,condition_id,edition_id,buy_price,source_updated_at')
           .eq('run_id', snapshot.checker_run_id).eq('store', snapshot.checker_source_store)
           .in('source_product_id', checkerIds).in('shop_id', [3, 13])
           .order('source_product_id').order('shop_id').order('condition_id').order('edition_id')
           .range(offset, offset + 999);
         if (error) throw new Error(error.message);
-        for (const offer of data ?? []) offers.set(`${offer.shop_id}:${offer.source_product_id}:${offer.condition_id}:${offer.edition_id}`, price(offer.buy_price));
+        for (const offer of data ?? []) {
+          if (isTokyoBusinessDate(offer.source_updated_at, snapshot.business_date)) {
+            offers.set(`${offer.shop_id}:${offer.source_product_id}:${offer.condition_id}:${offer.edition_id}`, price(offer.buy_price));
+          }
+        }
         if ((data?.length ?? 0) < 1000) break;
       }
     }
-    const missingKecakIds = [...new Set(allOrigins.filter(origin => origin.source === 'kecak'
-      && !Object.hasOwn(origin, 'sourcePrice') && typeof origin.id === 'string').map(origin => origin.id))];
+    const missingKecakIds = hasCurrentKecakPrices
+      ? [...new Set(allOrigins.filter(origin => origin.source === 'kecak'
+        && !Object.hasOwn(origin, 'sourcePrice') && typeof origin.id === 'string').map(origin => origin.id))]
+      : [];
     const kecakPrices = new Map<string, number | null>();
-    if (missingKecakIds.length && snapshot.order_list_import_id) {
-      const { data: imports, error: importError } = await db.from('order_list_import').select('id')
-        .eq('id', snapshot.order_list_import_id).eq('store', 'manman-akihabara').maybeSingle();
-      if (importError) throw new Error(importError.message);
-      if (imports) {
-        for (let offset = 0; ; offset += 1000) {
-          const { data, error } = await db.from('order_list_item').select('id,excel_product_id,source_price')
-            .eq('import_id', imports.id).in('excel_product_id', missingKecakIds).order('id').range(offset, offset + 999);
-          if (error) throw new Error(error.message);
-          for (const item of data ?? []) {
-            const previous = kecakPrices.get(item.excel_product_id);
-            const next = price(item.source_price);
-            // Duplicate exact IDs with conflicting prices cannot establish a historical price.
-            kecakPrices.set(item.excel_product_id, previous === undefined || previous === next ? next : null);
-          }
-          if ((data?.length ?? 0) < 1000) break;
+    if (missingKecakIds.length && kecakImport) {
+      for (let offset = 0; ; offset += 1000) {
+        const { data, error } = await db.from('order_list_item').select('id,excel_product_id,source_price')
+          .eq('import_id', kecakImport.id).in('excel_product_id', missingKecakIds).order('id').range(offset, offset + 999);
+        if (error) throw new Error(error.message);
+        for (const item of data ?? []) {
+          const previous = kecakPrices.get(item.excel_product_id);
+          const next = price(item.source_price);
+          // Duplicate exact IDs with conflicting prices cannot establish a historical price.
+          kecakPrices.set(item.excel_product_id, previous === undefined || previous === next ? next : null);
         }
+        if ((data?.length ?? 0) < 1000) break;
       }
     }
-    const priceSources = object(object(snapshot.report).price_sources);
+    const priceSources = object(report.price_sources);
     for (const product of products ?? []) {
       const provenance = object(priceSources[product.id]);
       const productOrigins = origins(product);
@@ -88,6 +104,7 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
       for (const origin of productOrigins) {
         const store = labels[origin.source ?? ''];
         if (!store) continue;
+        if (origin.source === 'kecak' && !hasCurrentKecakPrices) continue;
         let amount: number | null = null;
         if (origin.source === 'kecak') amount = Object.hasOwn(origin, 'sourcePrice')
           ? price(origin.sourcePrice) : kecakPrices.get(origin.id ?? '') ?? null;
@@ -95,6 +112,7 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
           amount = offers.get(`${origin.source === 'avirile' ? 13 : 3}:${origin.id}`) ?? null;
         }
         if (origin.source === 'shinsoku' && provenSource === 'shinsoku') amount = adoptedPrice;
+        if (amount === null) continue;
         if (!listings.some(row => row.store === store && row.price === amount)) listings.push({ store, price: amount });
       }
       const pricing: GalleryCardPricing = { listings, adopted: { store: adoptedStore, price: adoptedPrice } };
