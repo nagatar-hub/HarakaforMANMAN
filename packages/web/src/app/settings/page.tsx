@@ -7,7 +7,19 @@ import {
   calculateSteppedDiscountPreview,
   normalizePreviewBasePrice,
 } from '@/lib/settings-preview';
-import { FRANCHISES, FRANCHISE_JA, calculateBoxPriceHigh, calculatePelekaAlignedBuyPriceRange, type Franchise } from '@haraka/shared';
+import {
+  DEFAULT_TOKYO_OUTLIER_GUARD,
+  DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS,
+  DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
+  FRANCHISES,
+  FRANCHISE_JA,
+  TOKYO_PRICE_SOURCES,
+  calculateBoxPriceHigh,
+  calculatePelekaAlignedBuyPriceRange,
+  type Franchise,
+  type TokyoOutlierGuard,
+  type TokyoPriceSource,
+} from '@haraka/shared';
 
 type Psa10Rates = Record<Franchise, number>;
 type BoxConditionRates = {
@@ -15,12 +27,17 @@ type BoxConditionRates = {
   no_shrink: number;
 };
 type BoxRates = Record<Franchise, BoxConditionRates>;
+type TokyoSourceRates = Record<TokyoPriceSource, { high: number; low: number }>;
 
 interface StoreConfig {
   store: string;
   settings: {
+    box_price_low_enabled?: boolean;
     box_discount_rates?: Partial<Record<Franchise, Partial<BoxConditionRates>>>;
     psa10_discount_rates?: Partial<Record<Franchise, number>>;
+    tokyo_source_discount_rates?: Partial<Record<TokyoPriceSource, Partial<{ high: number; low: number }>>>;
+    tokyo_outlier_guard?: Partial<TokyoOutlierGuard>;
+    tokyo_price_max_age_days?: number;
   };
 }
 
@@ -46,6 +63,17 @@ const DEFAULT_BOX_RATES: BoxRates = {
   'WEISS SCHWARZ': { shrink: 6, no_shrink: 13 },
   'DRAGON BALL': { shrink: 6, no_shrink: 13 },
 };
+const TOKYO_SOURCE_LABELS: Record<TokyoPriceSource, string> = {
+  kecak: 'KECAK',
+  blue_rocket: 'Blue Rocket',
+  toreca_bank: 'トレカバンク',
+  avirile: 'アヴィリール',
+  shinsoku: 'シンソク郵送買取',
+};
+const DEFAULT_TOKYO_SOURCE_RATES = Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, {
+  high: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES[source].high * 100,
+  low: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES[source].low * 100,
+}])) as TokyoSourceRates;
 
 function clampRate(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -67,10 +95,21 @@ function normalizeBoxRates(savedBoxRates: StoreConfig['settings']['box_discount_
   }, {} as BoxRates);
 }
 
+function normalizeTokyoSourceRates(saved: StoreConfig['settings']['tokyo_source_discount_rates']): TokyoSourceRates {
+  return Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, {
+    high: (saved?.[source]?.high ?? DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES[source].high) * 100,
+    low: (saved?.[source]?.low ?? DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES[source].low) * 100,
+  }])) as TokyoSourceRates;
+}
+
 export default function SettingsPage() {
   const [config, setConfig] = useState<StoreConfig | null>(null);
+  const [boxPriceLowEnabled, setBoxPriceLowEnabled] = useState(false);
   const [boxRates, setBoxRates] = useState<BoxRates>(DEFAULT_BOX_RATES);
   const [psa10Rates, setPsa10Rates] = useState<Psa10Rates>(DEFAULT_PSA10_RATES);
+  const [tokyoSourceRates, setTokyoSourceRates] = useState<TokyoSourceRates>(DEFAULT_TOKYO_SOURCE_RATES);
+  const [outlierGuard, setOutlierGuard] = useState<TokyoOutlierGuard>(DEFAULT_TOKYO_OUTLIER_GUARD);
+  const [priceMaxAgeDays, setPriceMaxAgeDays] = useState(DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS);
   const [psaPreviewBasePrice, setPsaPreviewBasePrice] = useState('30000');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -82,7 +121,14 @@ export default function SettingsPage() {
         const savedPsa10Rates = data.settings.psa10_discount_rates ?? {};
         const savedBoxRates = data.settings.box_discount_rates ?? {};
         setConfig(data);
+        setBoxPriceLowEnabled(data.settings.box_price_low_enabled === true);
         setBoxRates(normalizeBoxRates(savedBoxRates));
+        setTokyoSourceRates(normalizeTokyoSourceRates(data.settings.tokyo_source_discount_rates));
+        setOutlierGuard({
+          max_median_ratio: data.settings.tokyo_outlier_guard?.max_median_ratio ?? DEFAULT_TOKYO_OUTLIER_GUARD.max_median_ratio,
+          max_source_price: data.settings.tokyo_outlier_guard?.max_source_price ?? DEFAULT_TOKYO_OUTLIER_GUARD.max_source_price,
+        });
+        setPriceMaxAgeDays(data.settings.tokyo_price_max_age_days ?? DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS);
         setPsa10Rates(Object.fromEntries(FRANCHISES.map((franchise) => [
           franchise,
           toPercent(savedPsa10Rates[franchise], DEFAULT_PSA10_RATES[franchise]),
@@ -108,15 +154,49 @@ export default function SettingsPage() {
     }));
   }
 
+  function updateTokyoSourceRate(source: TokyoPriceSource, key: 'high' | 'low', value: number) {
+    setTokyoSourceRates(current => ({ ...current, [source]: { ...current[source], [key]: value } }));
+  }
+
   async function handleSave() {
     setSaving(true);
     setError(null);
     setSaved(false);
     try {
+      if (config?.store === 'manman-akihabara') {
+        for (const source of TOKYO_PRICE_SOURCES) {
+          const rates = tokyoSourceRates[source];
+          if (!Number.isFinite(rates.high) || rates.high < 0 || rates.high > 100) {
+            throw new Error(`${TOKYO_SOURCE_LABELS[source]}の減額率は0〜100%で設定してください`);
+          }
+        }
+        if (!Number.isFinite(outlierGuard.max_median_ratio) || outlierGuard.max_median_ratio < 2 || outlierGuard.max_median_ratio > 1000) {
+          throw new Error('外れ値の倍率は2〜1000倍で設定してください');
+        }
+        if (!Number.isSafeInteger(outlierGuard.max_source_price)
+          || outlierGuard.max_source_price < 1000 || outlierGuard.max_source_price > 100000000) {
+          throw new Error('外れ値の元価格上限は1,000〜100,000,000円で設定してください');
+        }
+        if (!Number.isSafeInteger(priceMaxAgeDays) || priceMaxAgeDays < 0 || priceMaxAgeDays > 30) {
+          throw new Error('価格の許容経過日数は0〜30日で設定してください');
+        }
+      }
       const updated = await apiFetch<StoreConfig>('/api/store-config', {
         method: 'PATCH',
         body: JSON.stringify({
           settings: {
+            ...(config?.store === 'manman-akihabara' ? { box_price_low_enabled: boxPriceLowEnabled } : {}),
+            ...(config?.store === 'manman-akihabara' ? { tokyo_source_discount_rates: Object.fromEntries(
+              // 下限減額率は買取表に出ないため画面では扱わない。減額率は大きいほど価格が下がるので
+              // 「下限率 >= 上限率」が上限価格 >= 下限価格の条件。保存済みの値を保ち、
+              // 画面から触れない値で保存が弾かれないよう、満たさなくなる場合だけ上限率に合わせる。
+              TOKYO_PRICE_SOURCES.map(source => [source, {
+                high: tokyoSourceRates[source].high / 100,
+                low: Math.max(tokyoSourceRates[source].low, tokyoSourceRates[source].high) / 100,
+              }]),
+            ) } : {}),
+            ...(config?.store === 'manman-akihabara'
+              ? { tokyo_outlier_guard: outlierGuard, tokyo_price_max_age_days: priceMaxAgeDays } : {}),
             box_discount_rates: Object.fromEntries(FRANCHISES.map((franchise) => [franchise, {
               shrink: boxRates[franchise].shrink / 100,
               ...(CONFIGURABLE_PRICING_FRANCHISES.some(item => item === franchise)
@@ -157,7 +237,93 @@ export default function SettingsPage() {
         )}
 
         <div className="space-y-10">
-          <section className="bg-warm-100 rounded-xl px-5 py-4">
+          {config?.store === 'manman-akihabara' && <section>
+            <h2 className="text-lg font-bold text-text-primary mb-2">東京比較価格の店舗別減額率</h2>
+            <p className="text-sm text-text-secondary mb-6">
+              各店舗の元価格へ減額率を適用し、最も高くなった店舗の金額を採用します。
+            </p>
+            <div className="space-y-5">
+              {TOKYO_PRICE_SOURCES.map(source => <div key={source} className="grid gap-3 border-b border-border-card pb-5 last:border-b-0 sm:grid-cols-[1fr_140px] sm:items-end">
+                <p className="text-sm font-bold text-text-primary">{TOKYO_SOURCE_LABELS[source]}</p>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold text-text-secondary">減額率</span>
+                  <span className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={tokyoSourceRates[source].high}
+                      onChange={event => updateTokyoSourceRate(source, 'high', Number(event.target.value))}
+                      className="w-full rounded-lg border border-border-card bg-transparent px-3 py-2 text-right font-bold text-text-primary focus:outline-none"
+                    />
+                    <span className="text-text-secondary">%</span>
+                  </span>
+                </label>
+              </div>)}
+            </div>
+            <h3 className="text-sm font-bold text-text-primary mt-8 mb-2">比較に使う価格の鮮度</h3>
+            <p className="text-sm text-text-secondary mb-4">
+              各店舗が最後に価格を更新した日から何日前までを比較に入れるかです。0 にすると当日更新分だけを使います。
+              広げるほど比較できる商品は増えますが、すでに終了している価格を採用する可能性も上がります。
+            </p>
+            <label className="block max-w-xs">
+              <span className="mb-1 block text-xs font-semibold text-text-secondary">許容する経過日数</span>
+              <span className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  max={30}
+                  step={1}
+                  value={priceMaxAgeDays}
+                  onChange={event => setPriceMaxAgeDays(Number(event.target.value))}
+                  className="w-full rounded-lg border border-border-card bg-transparent px-3 py-2 text-right font-bold text-text-primary focus:outline-none"
+                />
+                <span className="text-text-secondary">日前まで</span>
+              </span>
+            </label>
+
+            <h3 className="text-sm font-bold text-text-primary mt-8 mb-2">外れ値の除外</h3>
+            <p className="text-sm text-text-secondary mb-4">
+              1店舗だけが異常な元価格を出していた場合に、その店舗を比較から除外します。
+              倍率は同一商品の他店舗の元価格の中央値に対する比で判定し、比較相手が無い商品は元価格上限だけで判定します。
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold text-text-secondary">他店舗中央値に対する上限倍率</span>
+                <span className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={2}
+                    max={1000}
+                    step={1}
+                    value={outlierGuard.max_median_ratio}
+                    onChange={event => setOutlierGuard(current => ({ ...current, max_median_ratio: Number(event.target.value) }))}
+                    className="w-full rounded-lg border border-border-card bg-transparent px-3 py-2 text-right font-bold text-text-primary focus:outline-none"
+                  />
+                  <span className="text-text-secondary">倍</span>
+                </span>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold text-text-secondary">元価格の上限</span>
+                <span className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={1000}
+                    max={100000000}
+                    step={1000}
+                    value={outlierGuard.max_source_price}
+                    onChange={event => setOutlierGuard(current => ({ ...current, max_source_price: Number(event.target.value) }))}
+                    className="w-full rounded-lg border border-border-card bg-transparent px-3 py-2 text-right font-bold text-text-primary focus:outline-none"
+                  />
+                  <span className="text-text-secondary">円</span>
+                </span>
+              </label>
+            </div>
+          </section>}
+
+          {/* 以下は東京では公開価格に使われない。東京の価格は店舗別減額率だけで決まる。 */}
+          {config?.store !== 'manman-akihabara' && <section className="bg-warm-100 rounded-xl px-5 py-4">
             <h2 className="text-sm font-bold text-text-primary">
               割引後価格の端数処理（BOX上限を除く）
             </h2>
@@ -173,11 +339,26 @@ export default function SettingsPage() {
             <p className="text-xs text-text-secondary mt-3">
               例: 元価格 ¥105,000・10%引き → 割引後 ¥94,500 → 10万円未満のルールで ¥94,000
             </p>
-          </section>
+          </section>}
 
-          <section>
+          {config?.store !== 'manman-akihabara' && <section>
             <h2 className="text-lg font-bold text-text-primary mb-6">BOX 割引率</h2>
             <p className="text-sm text-text-secondary mb-6">シュリンク有りはシンソクのS価格に割引率を1回だけ適用し、1,000円未満を切り捨てます。</p>
+
+            {config?.store === 'manman-akihabara' && (
+              <label className="mb-8 flex items-start gap-3 rounded-xl border border-border-card px-5 py-4">
+                <input
+                  type="checkbox"
+                  checked={boxPriceLowEnabled}
+                  onChange={(event) => setBoxPriceLowEnabled(event.target.checked)}
+                  className="mt-1 h-4 w-4 accent-text-primary"
+                />
+                <span>
+                  <span className="block text-sm font-bold text-text-primary">BOXの下限価格を表示</span>
+                  <span className="mt-1 block text-xs text-text-secondary">OFFの場合、シュリンク無し価格は「-」で表示します。</span>
+                </span>
+              </label>
+            )}
 
             <div className="space-y-8">
               {BOX_FRANCHISE_OPTIONS.map(({ key: franchise, label: franchiseLabel }) => {
@@ -235,7 +416,11 @@ export default function SettingsPage() {
                       </div>
                       <div className="flex justify-between items-baseline mt-2">
                         <span className="text-text-secondary">シュリンク無し</span>
-                        <span className="text-xl font-bold text-text-primary">¥{previewBoxNoShrink.toLocaleString()}</span>
+                        <span className="text-xl font-bold text-text-primary">
+                          {config?.store === 'manman-akihabara' && !boxPriceLowEnabled
+                            ? '-'
+                            : `¥${previewBoxNoShrink.toLocaleString()}`}
+                        </span>
                       </div>
                       <p className="text-xs text-text-secondary mt-1">
                         シュリンク有りは1,000円単位。シュリンク無しの既存計算は変更しません。
@@ -245,9 +430,9 @@ export default function SettingsPage() {
                 );
               })}
             </div>
-          </section>
+          </section>}
 
-          <section className="border-t border-border-card pt-8">
+          {config?.store !== 'manman-akihabara' && <section className="border-t border-border-card pt-8">
             <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <h2 className="text-lg font-bold text-text-primary">商材別 減額率</h2>
               <label className="block sm:w-48">
@@ -309,7 +494,7 @@ export default function SettingsPage() {
                 );
               })}
             </div>
-          </section>
+          </section>}
 
           <button
             onClick={handleSave}

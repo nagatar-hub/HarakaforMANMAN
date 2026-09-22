@@ -5,7 +5,71 @@ import {
   calculateBuyPriceHigh,
   calculatePelekaAlignedBuyPriceRange,
   floorDiscountedPriceByTier,
+  mergeStorePricingSettings,
+  normalizeStorePricingSettings,
+  validateTokyoOutlierGuard,
+  validateTokyoPriceMaxAgeDays,
+  validateTokyoSourceDiscountRates,
 } from '../utils/price';
+
+describe('Tokyo source discount settings', () => {
+  it('uses the approved five-source defaults and preserves a partial source update', () => {
+    const defaults = normalizeStorePricingSettings({});
+    expect(defaults.tokyo_source_discount_rates).toEqual({
+      kecak: { high: 0.05, low: 0.05 }, blue_rocket: { high: 0.10, low: 0.10 },
+      toreca_bank: { high: 0.10, low: 0.10 }, avirile: { high: 0.10, low: 0.10 },
+      shinsoku: { high: 0.05, low: 0.05 },
+    });
+    const merged = mergeStorePricingSettings(defaults, { tokyo_source_discount_rates: { kecak: { high: 0.04 } } });
+    expect(merged.tokyo_source_discount_rates.kecak).toEqual({ high: 0.04, low: 0.05 });
+    expect(merged.tokyo_source_discount_rates.blue_rocket).toEqual({ high: 0.10, low: 0.10 });
+  });
+
+  it('rejects out-of-range and inverted high/low settings', () => {
+    const settings = normalizeStorePricingSettings({});
+    expect(validateTokyoSourceDiscountRates(settings.tokyo_source_discount_rates)).toBeNull();
+    expect(validateTokyoSourceDiscountRates({ ...settings.tokyo_source_discount_rates,
+      kecak: { high: -0.01, low: 0.05 } })).toContain('0〜100%');
+    expect(validateTokyoSourceDiscountRates({ ...settings.tokyo_source_discount_rates,
+      shinsoku: { high: 0.10, low: 0.05 } })).toContain('下限減額率');
+  });
+});
+
+describe('Tokyo outlier guard settings', () => {
+  it('defaults to 10x the other sources and a 50,000,000 yen source ceiling', () => {
+    const defaults = normalizeStorePricingSettings({});
+    expect(defaults.tokyo_outlier_guard).toEqual({ max_median_ratio: 10, max_source_price: 50_000_000 });
+    expect(validateTokyoOutlierGuard(defaults.tokyo_outlier_guard)).toBeNull();
+    const merged = mergeStorePricingSettings(defaults, { tokyo_outlier_guard: { max_median_ratio: 5 } });
+    expect(merged.tokyo_outlier_guard).toEqual({ max_median_ratio: 5, max_source_price: 50_000_000 });
+  });
+
+  it('rejects a ratio that would exclude every source and a non-integer or out-of-range ceiling', () => {
+    for (const ratio of [1, 1.9, 0, -1, NaN, Infinity, 1001]) {
+      expect(validateTokyoOutlierGuard({ max_median_ratio: ratio, max_source_price: 50_000_000 })).toContain('倍率');
+    }
+    for (const price of [999, 0, -1, 1000.5, NaN, Infinity, 100_000_001]) {
+      expect(validateTokyoOutlierGuard({ max_median_ratio: 10, max_source_price: price })).toContain('元価格上限');
+    }
+  });
+});
+
+describe('Tokyo price age window', () => {
+  it('defaults to allowing yesterday and keeps a partial update', () => {
+    expect(normalizeStorePricingSettings({}).tokyo_price_max_age_days).toBe(1);
+    expect(normalizeStorePricingSettings({ tokyo_price_max_age_days: 3 }).tokyo_price_max_age_days).toBe(3);
+    expect(mergeStorePricingSettings({ tokyo_price_max_age_days: 3 }, {}).tokyo_price_max_age_days).toBe(3);
+    expect(mergeStorePricingSettings({ tokyo_price_max_age_days: 3 },
+      { tokyo_price_max_age_days: 0 }).tokyo_price_max_age_days).toBe(0);
+  });
+
+  it('accepts 0-30 whole days and rejects anything else', () => {
+    for (const days of [0, 1, 3, 30]) expect(validateTokyoPriceMaxAgeDays(days)).toBeNull();
+    for (const days of [-1, 31, 1.5, NaN, Infinity]) {
+      expect(validateTokyoPriceMaxAgeDays(days)).toContain('許容経過日数');
+    }
+  });
+});
 
 describe('BOX upper price from raw S', () => {
   it.each([[999, 0], [10000, 9000], [20000, 18000], [100000, 93000], [1000000, 930000], [20431, 19000]])(

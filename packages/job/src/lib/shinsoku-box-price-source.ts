@@ -111,11 +111,15 @@ export function parseShinsokuBoxPriceRows(rows: string[][]): Map<string, number>
 export function applyShinsokuBoxPriceOverrides(
   rows: RawImportInsert[],
   priceMap: Map<string, number>,
+  preserveSharedOrderListPrices = false,
 ): { rows: RawImportInsert[]; missingNames: string[] } {
   const missingNames: string[] = [];
 
   const overriddenRows = rows.map((row) => {
     if (!isBoxRow(row)) return row;
+    if (preserveSharedOrderListPrices
+      && row.price_source === 'order_list'
+      && (row.franchise === 'WEISS SCHWARZ' || row.franchise === 'DRAGON BALL')) return row;
 
     const productName = normalizeShinsokuBoxProductName(row.card_name);
     const price = priceMap.get(priceKey(row.franchise, productName));
@@ -174,9 +178,11 @@ export async function loadShinsokuBoxPriceMap(accessToken: string): Promise<Map<
 
 export function applyCurrentShinsokuBoxPrices<T extends Pick<PreparedCardRow,
   'card_name' | 'franchise' | 'grade' | 'price_high'
->>(cards: T[], prices: Map<string, number>, settings: StorePricingSettings): T[] {
+>>(cards: T[], prices: Map<string, number>, settings: StorePricingSettings, preserveSharedOrderListPrices = false): T[] {
   return cards.map(card => {
     if (!isBoxRow(card)) return card;
+    if (preserveSharedOrderListPrices
+      && (card.franchise === 'WEISS SCHWARZ' || card.franchise === 'DRAGON BALL')) return card;
     const sourcePrice = prices.get(priceKey(card.franchise, normalizeShinsokuBoxProductName(card.card_name)));
     if (sourcePrice == null) return { ...card, price_high: 0 };
     const franchise = card.franchise as Franchise;

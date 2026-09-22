@@ -1,11 +1,29 @@
 import {
   DEFAULT_BOX_DISCOUNT_RATES,
   DEFAULT_PSA10_DISCOUNT_RATES,
+  DEFAULT_TOKYO_OUTLIER_GUARD,
+  DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS,
+  DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
   mergeStorePricingSettings,
   normalizeStorePricingSettings,
 } from '@haraka/shared';
 
 describe('normalizeStorePricingSettings', () => {
+  it('BOX下限表示はbooleanだけを保持し、部分更新でも既存値を維持する', () => {
+    expect(normalizeStorePricingSettings({}).box_price_low_enabled).toBeUndefined();
+    expect(normalizeStorePricingSettings({ box_price_low_enabled: true }).box_price_low_enabled).toBe(true);
+    expect(normalizeStorePricingSettings({ box_price_low_enabled: false }).box_price_low_enabled).toBe(false);
+    expect(normalizeStorePricingSettings({ box_price_low_enabled: 'true' }).box_price_low_enabled).toBeUndefined();
+    expect(mergeStorePricingSettings(
+      { box_price_low_enabled: true },
+      { psa10_discount_rates: { Pokemon: 0.11 } },
+    ).box_price_low_enabled).toBe(true);
+    expect(mergeStorePricingSettings(
+      { box_price_low_enabled: true },
+      { box_price_low_enabled: false },
+    ).box_price_low_enabled).toBe(false);
+  });
+
   it('設定画面の価格キーを canonical な2種類として正規化する', () => {
     const settings = normalizeStorePricingSettings({
       buy_price_high_discount_rate: 0.18,
@@ -71,6 +89,9 @@ describe('normalizeStorePricingSettings', () => {
         'WEISS SCHWARZ': 0.06,
         'DRAGON BALL': 0.06,
       },
+      tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
+      tokyo_outlier_guard: DEFAULT_TOKYO_OUTLIER_GUARD,
+      tokyo_price_max_age_days: DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS,
     });
   });
 
@@ -153,6 +174,9 @@ describe('normalizeStorePricingSettings', () => {
         'WEISS SCHWARZ': 0.06,
         'DRAGON BALL': 0.06,
       },
+      tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
+      tokyo_outlier_guard: DEFAULT_TOKYO_OUTLIER_GUARD,
+      tokyo_price_max_age_days: DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS,
     });
   });
 

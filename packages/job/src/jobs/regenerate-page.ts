@@ -9,7 +9,8 @@
 import sharp from 'sharp';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { getAccessToken, getBuybackSheetAccessToken } from '../lib/auth.js';
-import { publishManmanBuybackSheet } from '../lib/buyback-sheet.js';
+import { isBuybackSheetPublishDisabled, publishManmanBuybackSheet } from '../lib/buyback-sheet.js';
+import { COLOR, sendDiscordNotification } from '../lib/discord.js';
 import { composePage } from '../lib/image-composer.js';
 import { downloadDriveFile, downloadImagesWithConcurrency } from '../lib/google-drive.js';
 import { downloadTemplateAsset } from '../lib/asset-storage.js';
@@ -35,7 +36,7 @@ import type {
 import { FRANCHISE_STORAGE_SLUG } from '@haraka/shared';
 
 type RunRow = Database['public']['Tables']['run']['Row'];
-type OwnedPageRun = Pick<RunRow, 'id' | 'order_list_import_id'>;
+type OwnedPageRun = Pick<RunRow, 'id' | 'order_list_import_id'> & { tokyo_snapshot_id?: string | null };
 
 const LABEL_MAP: Record<string, string> = {
   'ピカチュウ': 'pikachu',
@@ -99,7 +100,7 @@ async function findOwnedPageRunId(
 
   const { data: run, error: runError } = await supabase
     .from('run')
-    .select('id, order_list_import_id')
+    .select('id, order_list_import_id, tokyo_snapshot_id')
     .eq('id', page.run_id)
     .eq('store', STORE_NAME)
     .maybeSingle<OwnedPageRun>();
@@ -133,6 +134,7 @@ async function _runRegeneratePage(
   pageId: string,
   ownedRun: OwnedPageRun,
 ) {
+  const tokyoPostalSnapshot = STORE_NAME === 'manman-akihabara' && Boolean(ownedRun.tokyo_snapshot_id);
 
   // ---- 1. ページ情報取得 ----
   const { data: page, error: pageErr } = await supabase
@@ -191,11 +193,16 @@ async function _runRegeneratePage(
 
   // card_ids の順序を保持
   const orderedCards = page.card_ids.map(id => cardMap.get(id)!).filter(Boolean);
-  const accessToken = await getAccessToken();
-  const pricingSettings = await loadStorePricingSettings(supabase, STORE_NAME);
-  const boxPrices = await loadShinsokuBoxPriceMap(accessToken);
-  // Selection IDs remain available for source recovery; missing BOX prices never render.
-  const orderedCardsWithCurrentPrices = applyCurrentShinsokuBoxPrices(orderedCards, boxPrices, pricingSettings)
+  const accessToken = tokyoPostalSnapshot ? '' : await getAccessToken();
+  const pricingSettings = tokyoPostalSnapshot ? undefined : await loadStorePricingSettings(supabase, STORE_NAME);
+  const boxPriceLowEnabled = STORE_NAME === 'manman-akihabara'
+    ? (pricingSettings ?? await loadStorePricingSettings(supabase, STORE_NAME)).box_price_low_enabled === true
+    : true;
+  const boxPrices = tokyoPostalSnapshot ? undefined : await loadShinsokuBoxPriceMap(accessToken);
+  // Selection IDs remain available for source recovery; Tokyo Weiss/Dragon keep order-list prices.
+  const orderedCardsWithCurrentPrices = (tokyoPostalSnapshot ? orderedCards : applyCurrentShinsokuBoxPrices(
+    orderedCards, boxPrices!, pricingSettings!, STORE_NAME === 'manman-akihabara',
+  ))
     .filter(card => !isBoxRow(card) || (card.price_high ?? 0) > 0);
 
   console.log(`[regenerate-page] カード数: ${orderedCardsWithCurrentPrices.length}`);
@@ -213,6 +220,7 @@ async function _runRegeneratePage(
   if (profileErr || !profile) throw new Error(`プロファイルが見つかりません: ${profileErr?.message}`);
 
   let layoutTemplate: LayoutTemplateRow | null = null;
+  if (tokyoPostalSnapshot && !page.layout_template_id) throw new Error('東京郵送価格ページのレイアウトがありません');
   if (page.layout_template_id) {
     const { data: layoutRow, error: layoutErr } = await supabase
       .from('layout_template')
@@ -221,6 +229,7 @@ async function _runRegeneratePage(
       .eq('store', STORE_NAME)
       .single<LayoutTemplateRow>();
     if (layoutErr || !layoutRow) throw new Error(`layout_template 取得失敗: ${layoutErr?.message ?? '該当なし'}`);
+    if (tokyoPostalSnapshot && layoutRow.franchise !== page.franchise) throw new Error('東京郵送価格ページの商材とレイアウトが一致しません');
     layoutTemplate = layoutRow;
   }
 
@@ -249,7 +258,7 @@ async function _runRegeneratePage(
     cardBackBuffer = await downloadTemplateAsset({
       supabase,
       storagePath: layoutTemplate.card_back_storage_path,
-      driveId: profile.card_back_image,
+      driveId: tokyoPostalSnapshot ? null : profile.card_back_image,
       accessToken,
       label: `${page.franchise}/${layoutTemplate.slug} カード裏`,
     });
@@ -363,7 +372,11 @@ async function _runRegeneratePage(
     : undefined;
 
   const dateText = formatGenerationDate(displayDate);
-  const adjustments = resolveRegenerateAdjustments({
+  const adjustments = tokyoPostalSnapshot ? {
+    layoutAdjust: layout.layoutAdjust,
+    rowPriceAdjust: layout.rowPriceAdjust,
+    rowCardAdjust: layout.rowCardAdjust,
+  } : resolveRegenerateAdjustments({
     layout,
     isBOX,
     fallbackLayoutAdjust: layoutAdjust,
@@ -382,8 +395,10 @@ async function _runRegeneratePage(
     gridCols: layoutTemplate?.grid_cols,
     rarityIconBuffers,
     cardImageBuffers,
+    requireCardImages: tokyoPostalSnapshot,
     dateText,
-    skipPriceLow: isBOX ? false : layoutTemplate?.skip_price_low ?? false,
+    skipPriceLow: tokyoPostalSnapshot ? !isBOX : isBOX ? false : layoutTemplate?.skip_price_low ?? false,
+    priceLowText: STORE_NAME === 'manman-akihabara' && isBOX && !boxPriceLowEnabled ? '-' : undefined,
     layoutAdjust: adjustments.layoutAdjust,
     rowPriceAdjust: adjustments.rowPriceAdjust,
     rowCardAdjust: adjustments.rowCardAdjust,
@@ -414,21 +429,24 @@ async function _runRegeneratePage(
     .getPublicUrl(storageKey);
 
   // ---- 9. generated_page 更新 ----
-  await supabase.from('generated_page').update({
+  const { error: pageUpdateError } = await supabase.from('generated_page').update({
     status: 'generated',
     image_key: storageKey,
     image_url: publicUrl.publicUrl,
     error_message: null,
   }).eq('id', pageId);
+  if (tokyoPostalSnapshot && pageUpdateError) {
+    throw new Error(`再生成ページの保存に失敗しました: ${pageUpdateError.message}`);
+  }
 
-  try {
+  if (!tokyoPostalSnapshot || !isBuybackSheetPublishDisabled()) try {
     const buybackSheetAccessToken = await getBuybackSheetAccessToken();
     const publishResult = await publishManmanBuybackSheet({
       supabase,
       runId: page.run_id,
       accessToken: buybackSheetAccessToken,
-      boxPrices,
-      pricingSettings,
+      boxPrices: boxPrices!,
+      pricingSettings: pricingSettings!,
     });
     if (publishResult.status === 'completed') {
       console.log(`[regenerate-page] Google Sheet更新完了: ${publishResult.rowCount}商品`);
@@ -436,6 +454,12 @@ async function _runRegeneratePage(
   } catch (sheetError) {
     const message = sheetError instanceof Error ? sheetError.message : String(sheetError);
     console.error(`[regenerate-page] Google Sheet更新失敗（再生成画像は完了状態を維持）: ${message}`);
+    if (tokyoPostalSnapshot) await sendDiscordNotification({
+      title: '🟡 東京満満：再生成後のGoogle Sheet更新失敗',
+      description: '買取表画像の再生成は完了しています。シート更新だけ再実行できます。',
+      color: COLOR.WARNING,
+      fields: [{ name: 'Run', value: page.run_id }, { name: 'エラー', value: message.slice(0, 1024) }],
+    });
   }
 
   console.log(`[regenerate-page] 完了: ${storageKey}`);

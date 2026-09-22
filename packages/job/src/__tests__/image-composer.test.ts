@@ -3,7 +3,7 @@ import type { AssetProfileRow, LayoutConfig, PreparedCardRow } from '@haraka/sha
 const mockCompositeCalls: unknown[][] = [];
 
 jest.mock('sharp', () => {
-  return jest.fn(() => {
+  return jest.fn((input: Buffer) => {
     const instance: Record<string, jest.Mock> = {};
     instance.resize = jest.fn(() => instance);
     instance.png = jest.fn(() => instance);
@@ -11,12 +11,16 @@ jest.mock('sharp', () => {
       mockCompositeCalls.push(composites);
       return instance;
     });
-    instance.toBuffer = jest.fn(async () => Buffer.from('mock-image'));
+    instance.toBuffer = jest.fn(async () => {
+      if (input.toString() === 'corrupt') throw new Error('Invalid image');
+      return Buffer.from('mock-image');
+    });
     return instance;
   });
 });
 
 import { composePage } from '../lib/image-composer';
+import { customBuybackDemandByCardId } from '../jobs/render-custom-buyback';
 
 function makeCard(overrides: Partial<PreparedCardRow> = {}): PreparedCardRow {
   return {
@@ -70,6 +74,49 @@ describe('composePage', () => {
     mockCompositeCalls.length = 0;
   });
 
+  it('strict mode rejects missing/corrupt card images, whereas legacy callers keep back fallback', async () => {
+    for (const cardImageBuffers of [new Map<string, Buffer>(), new Map([['card-1', Buffer.from('corrupt')]])]) {
+      const params = { templateBuffer: Buffer.from('template'), cardBackBuffer: Buffer.from('back'), cards: [makeCard()],
+        layout, assetProfile, cardImageBuffers, dateText: '09/07' };
+      await expect(composePage({ ...params, requireCardImages: true })).rejects.toThrow('Card image');
+      await expect(composePage(params)).resolves.toEqual(Buffer.from('mock-image'));
+    }
+  });
+
+  it('strict mode fills unused slots with backs but adds no price or demand for them', async () => {
+    const params = { templateBuffer: Buffer.from('template'), cardBackBuffer: Buffer.from('back'), cards: [makeCard()],
+      layout, assetProfile: { ...assetProfile, grid_cols: 2 }, cardImageBuffers: new Map([['card-1', Buffer.from('card-image')]]),
+      dateText: '09/07', totalSlots: 2, requireCardImages: true };
+    await expect(composePage(params)).resolves.toEqual(Buffer.from('mock-image'));
+    const strictLayers = mockCompositeCalls.at(-1)! as Array<{ input: Buffer; left: number; top: number }>;
+    const emptySlotLayers = strictLayers.filter(layer => layer.left === 100);
+    expect(emptySlotLayers).toEqual([{ input: Buffer.from('mock-image'), left: 100, top: 0 }]);
+    await composePage({ ...params, requireCardImages: false, cardBackBuffer: Buffer.from('back') });
+    expect(mockCompositeCalls.at(-1)).toEqual(strictLayers);
+    await composePage({ ...params, totalSlots: 1, cardBackBuffer: Buffer.from('corrupt') });
+    expect(mockCompositeCalls.at(-1)!.length).toBe(strictLayers.length - 1);
+  });
+
+  it('Tokyo Shinsoku one-price rows render the price without overlapping demand; other stores retain demand', async () => {
+    for (const [store, catalog_source, expectDemand] of [
+      ['manman-akihabara', 'shinsoku', false],
+      ['manman', 'kaitori_checker', true],
+      ['oripark', 'kaitori_checker', true],
+      ['manman-akihabara', 'prepared_card', true],
+    ] as const) {
+      await composePage({
+        templateBuffer: Buffer.from('template'), cardBackBuffer: Buffer.from('back'), cards: [makeCard()],
+        layout: { ...layout, rows: [{ cardY: 0, priceHighY: 140, priceLowY: 140 }] }, assetProfile,
+        cardImageBuffers: new Map([['card-1', Buffer.from('card-image')]]), dateText: '09/07', skipPriceLow: true,
+        demandByCardId: customBuybackDemandByCardId({ store, catalog_source }, [{ id: 'card-1', demand: 1 }]),
+      });
+      const composites = mockCompositeCalls.at(-1) as Array<{ input: Buffer }>;
+      const text = composites.map(layer => layer.input.toString()).join('\n');
+      expect(text).toContain('28,500');
+      expect(text.includes('1枚募集！')).toBe(expectDemand);
+    }
+  });
+
   it('1価格テンプレートでも商材別減額率を反映した price_high を表示する', async () => {
     await composePage({
       templateBuffer: Buffer.from('template'),
@@ -86,6 +133,24 @@ describe('composePage', () => {
     const svgText = finalComposite.map(item => item.input.toString('utf8')).join('\n');
 
     expect(svgText).toContain('¥28,500');
+    expect(svgText).not.toContain('¥24,000');
+  });
+
+  it('price_low の表示文字列を上書きできる', async () => {
+    await composePage({
+      templateBuffer: Buffer.from('template'),
+      cardBackBuffer: Buffer.from('back'),
+      cards: [makeCard()],
+      layout,
+      assetProfile,
+      cardImageBuffers: new Map([['card-1', Buffer.from('card-image')]]),
+      dateText: '06/06',
+      priceLowText: '-',
+    });
+
+    const finalComposite = mockCompositeCalls.at(-1) as Array<{ input: Buffer }>;
+    const svgText = finalComposite.map(item => item.input.toString('utf8')).join('\n');
+    expect(svgText).toContain('>-</text>');
     expect(svgText).not.toContain('¥24,000');
   });
 });

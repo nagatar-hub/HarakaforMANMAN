@@ -826,23 +826,28 @@ orderListImportRoutes.get('/order-list/runs/:id/csv', async (c) => {
   const supabase = createSupabaseClient();
   const { data: scopedRun, error: scopedRunError } = await supabase
     .from('run')
-    .select('id')
+    .select('id, order_list_import_id')
     .eq('id', runId)
     .eq('store', STORE_NAME)
     .maybeSingle();
   if (scopedRunError) return c.json({ error: scopedRunError.message }, 500);
-  if (!scopedRun) return c.json({ error: 'データがありません' }, 404);
+  if (!scopedRun?.order_list_import_id) return c.json({ error: 'データがありません' }, 404);
 
-  const { data, error } = await supabase
-    .from('raw_import')
-    .select('franchise, excel_product_id, card_name, grade, list_no, rarity, source_price, demand, image_url')
-    .eq('run_id', runId)
-    .eq('price_source', 'order_list')
-    .order('franchise')
-    .order('source_price', { ascending: false });
-
-  if (error) return c.json({ error: error.message }, 500);
-  if (!data || data.length === 0) return c.json({ error: 'データがありません' }, 404);
+  const data: Pick<OrderListItemRow, 'franchise' | 'excel_product_id' | 'card_name' | 'grade' | 'list_no' | 'rarity' | 'source_price' | 'demand' | 'image_url'>[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data: page, error } = await supabase
+      .from('order_list_item')
+      .select('franchise, excel_product_id, card_name, grade, list_no, rarity, source_price, demand, image_url')
+      .eq('import_id', scopedRun.order_list_import_id)
+      .order('franchise')
+      .order('source_price', { ascending: false })
+      .order('id')
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) return c.json({ error: error.message }, 500);
+    data.push(...(page ?? []));
+    if (!page || page.length < PAGE_SIZE) break;
+  }
+  if (data.length === 0) return c.json({ error: 'データがありません' }, 404);
 
   const headers = ['フランチャイズ', 'Excel商品ID', 'カード名', 'グレード', '品番', 'レアリティ', '納品希望価格(税込)', '募集数', '画像URL'];
   const rows = data.map((row) => [

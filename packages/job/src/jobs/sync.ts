@@ -34,6 +34,9 @@ import { OAuthInvalidGrantError } from '../lib/fetch-with-retry.js';
 import { startOrderListLease } from '../lib/order-list-lease.js';
 import { getOptionalEnvOrSecret, getRequiredEnvOrSecret } from '../lib/env.js';
 import { loadStorePricingSettings } from '../lib/pricing-settings.js';
+import { buildTokyoBuybackSnapshot, TOKYO_BUYBACK_STORE } from './tokyo-buyback-sync.js';
+import { buildTokyoPreparedCards, loadTokyoCardImageMappings } from '../lib/tokyo-normal-cards.js';
+import { loadTokyoHarakaCards } from '../lib/haraka-card-images.js';
 import type {
   Database,
   PreparedCardRow,
@@ -345,6 +348,38 @@ export async function runSync(): Promise<void> {
   const lease = createOrderListLease(supabase, orderListImport.id, run.id);
   try {
     await lease.renewNow();
+    if (STORE_NAME === TOKYO_BUYBACK_STORE) {
+      await updateProgress(supabase, run.id, 0, 100, 'KECAK・チェッカーの商品一覧と、遊戯王・DB・ヴァイスのシンソク郵送PSA/BOX・価格を取得中...');
+      const snapshot = await buildTokyoBuybackSnapshot(supabase, new Date(), { claimedImportId: orderListImport.id, runId: run.id });
+      const harakaCards = await loadTokyoHarakaCards(supabase);
+      const imageMappings = await loadTokyoCardImageMappings(supabase, snapshot);
+      await lease.renewNow();
+      const { data, error } = await supabase.rpc('publish_tokyo_buyback_snapshot', {
+        p_snapshot: snapshot.snapshot, p_products: snapshot.products, p_run_id: run.id,
+      });
+      if (error || data !== snapshot.snapshot.id) throw new Error(`東京価格反映失敗: ${error?.message ?? 'snapshot mismatch'}`);
+      const prepared = buildTokyoPreparedCards(run.id, snapshot, imageMappings, harakaCards);
+      console.log(`[sync] 東京Haraka画像: matched=${prepared.filter(card => card.db_card_id).length}, db_rows=${harakaCards.length}; Sheets鮮度は未検証`);
+      const psaCount = prepared.filter(card => card.grade === 'PSA10').length;
+      const missingPsaImages = prepared.filter(card => card.grade === 'PSA10' && !card.image_url).length;
+      console.log(`[sync] 東京PSA画像: verified=${psaCount - missingPsaImages}, unmatched=${missingPsaImages}, total=${psaCount}; 未対応商品も保存`);
+      await updateProgress(supabase, run.id, 0, 100, `東京PSA画像: 対応 ${psaCount - missingPsaImages}/${psaCount}、未対応 ${missingPsaImages}件（買取表から除外）`);
+      await batchInsert(supabase, 'prepared_card', prepared as unknown as Record<string, unknown>[]);
+      await updateRunningRun(supabase, run.id, {
+        total_imported: prepared.length, total_prepared: prepared.length, total_untagged: 0, total_price_missing: 0,
+        import_done_at: new Date().toISOString(), prepare_done_at: new Date().toISOString(),
+      }, '東京商品保存記録更新失敗');
+      await lease.renewNow();
+      await lease.stop();
+      const { error: finalizeError } = await supabase.rpc('finalize_order_list_sync', {
+        p_import_id: orderListImport.id, p_run_id: run.id, p_total_prepared: prepared.length,
+        p_total_pages: 0, p_completed_at: new Date().toISOString(),
+      });
+      if (finalizeError) throw new Error(`東京同期完了更新失敗: ${finalizeError.message}`);
+      await clearProgress(supabase, run.id);
+      console.log(`[sync] 東京完了: snapshot=${snapshot.snapshot.id}, prepared=${prepared.length}; 通常生成でページを計画`);
+      return;
+    }
     // ---- 3. Haraka DB 用 OAuth access token 取得 ----
     await updateProgress(supabase, run.id, 0, 100, '認証中...');
     const accessToken = await getAccessToken();
@@ -364,6 +399,7 @@ export async function runSync(): Promise<void> {
     const boxPriceResult = applyShinsokuBoxPriceOverrides(
       buildOrderListRawImports(orderListItems, run.id),
       boxPriceMap,
+      STORE_NAME === 'manman-akihabara',
     );
     const rawImportInserts = boxPriceResult.rows;
     if (boxPriceResult.missingNames.length > 0) {

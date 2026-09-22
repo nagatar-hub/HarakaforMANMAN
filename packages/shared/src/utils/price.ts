@@ -6,9 +6,25 @@ export type BoxConditionDiscountRates = {
   no_shrink: number;
 };
 export type BoxDiscountRates = Record<Franchise, BoxConditionDiscountRates>;
+export const TOKYO_PRICE_SOURCES = ['kecak', 'blue_rocket', 'toreca_bank', 'avirile', 'shinsoku'] as const;
+export type TokyoPriceSource = typeof TOKYO_PRICE_SOURCES[number];
+export type TokyoSourceDiscountRate = { high: number; low: number };
+export type TokyoSourceDiscountRates = Record<TokyoPriceSource, TokyoSourceDiscountRate>;
+/** 1店舗だけの異常な元価格が5ソース比較の採用値になるのを防ぐ。 */
+export type TokyoOutlierGuard = {
+  /** 同一商品の他ソース元価格の中央値に対する倍率。超えたソースは比較から除外する。 */
+  max_median_ratio: number;
+  /** 比較相手が無い商品でも効く元価格の上限。 */
+  max_source_price: number;
+};
 export type StorePricingSettings = {
+  box_price_low_enabled?: boolean;
   box_discount_rates: BoxDiscountRates;
   psa10_discount_rates: Record<Franchise, number>;
+  tokyo_source_discount_rates: TokyoSourceDiscountRates;
+  tokyo_outlier_guard: TokyoOutlierGuard;
+  /** 各ソースの元価格を何日前まで比較に入れるか。0 は当日のみ。 */
+  tokyo_price_max_age_days: number;
 };
 
 export const DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE = 0.15;
@@ -31,9 +47,28 @@ export const DEFAULT_PSA10_DISCOUNT_RATES: Record<Franchise, number> = {
   'WEISS SCHWARZ': 0.06,
   'DRAGON BALL': 0.06,
 };
+export const DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES: TokyoSourceDiscountRates = {
+  kecak: { high: 0.05, low: 0.05 },
+  blue_rocket: { high: 0.10, low: 0.10 },
+  toreca_bank: { high: 0.10, low: 0.10 },
+  avirile: { high: 0.10, low: 0.10 },
+  shinsoku: { high: 0.05, low: 0.05 },
+};
+// 2026-09-22 の実データ検証: 当日のみ 1293 件に対し、1日前まで許すと掲載 +33 件、
+// 上限が上がる商品は 23 件・最大 +200,000 円。3日前まで広げると 74 件・最大 +700,000 円。
+export const DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS = 1;
+export const DEFAULT_TOKYO_OUTLIER_GUARD: TokyoOutlierGuard = {
+  max_median_ratio: 10,
+  // 2026-09-22 の実データで確認した最高元価格は 31,000,000 円（neo 拡張パック第4弾 BOX）。
+  // 実在の超高額商品を落とさず、99,999,999 円のような異常値は落とせる水準にする。
+  max_source_price: 50_000_000,
+};
 export const DEFAULT_STORE_PRICING_SETTINGS: StorePricingSettings = {
   box_discount_rates: DEFAULT_BOX_DISCOUNT_RATES,
   psa10_discount_rates: DEFAULT_PSA10_DISCOUNT_RATES,
+  tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
+  tokyo_outlier_guard: DEFAULT_TOKYO_OUTLIER_GUARD,
+  tokyo_price_max_age_days: DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS,
 };
 
 const PELEKA_TREKAMAN_POKEMON_UPPER_PERCENT = 94;
@@ -76,6 +111,55 @@ function normalizeBoxConditionDiscountRates(
   };
 }
 
+function normalizeTokyoSourceDiscountRates(source: unknown): TokyoSourceDiscountRates {
+  const record = isRecord(source) ? source : {};
+  return Object.fromEntries(TOKYO_PRICE_SOURCES.map(key => {
+    const value = isRecord(record[key]) ? record[key] : {};
+    const fallback = DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES[key];
+    return [key, {
+      high: numberOrDefault(value.high, fallback.high),
+      low: numberOrDefault(value.low, fallback.low),
+    }];
+  })) as TokyoSourceDiscountRates;
+}
+
+function normalizeTokyoOutlierGuard(source: unknown): TokyoOutlierGuard {
+  const record = isRecord(source) ? source : {};
+  return {
+    max_median_ratio: numberOrDefault(record.max_median_ratio, DEFAULT_TOKYO_OUTLIER_GUARD.max_median_ratio),
+    max_source_price: numberOrDefault(record.max_source_price, DEFAULT_TOKYO_OUTLIER_GUARD.max_source_price),
+  };
+}
+
+export function validateTokyoOutlierGuard(guard: TokyoOutlierGuard): string | null {
+  // 1倍以下だと中央値を上回る全ソースが落ちるため、2倍を下限にする。
+  if (!Number.isFinite(guard.max_median_ratio) || guard.max_median_ratio < 2 || guard.max_median_ratio > 1000) {
+    return '外れ値の倍率は2〜1000倍で設定してください';
+  }
+  if (!Number.isSafeInteger(guard.max_source_price) || guard.max_source_price < 1000 || guard.max_source_price > 100_000_000) {
+    return '外れ値の元価格上限は1,000〜100,000,000円で設定してください';
+  }
+  return null;
+}
+
+export function validateTokyoPriceMaxAgeDays(days: number): string | null {
+  if (!Number.isSafeInteger(days) || days < 0 || days > 30) {
+    return '価格の許容経過日数は0〜30日で設定してください';
+  }
+  return null;
+}
+
+export function validateTokyoSourceDiscountRates(rates: TokyoSourceDiscountRates): string | null {
+  for (const source of TOKYO_PRICE_SOURCES) {
+    const { high, low } = rates[source];
+    if (![high, low].every(rate => Number.isFinite(rate) && rate >= 0 && rate <= 1)) {
+      return `${source}の減額率は0〜100%で設定してください`;
+    }
+    if (low < high) return `${source}の下限減額率は上限減額率以上に設定してください`;
+  }
+  return null;
+}
+
 export function normalizeStorePricingSettings(settings: unknown): StorePricingSettings {
   const source = isRecord(settings) ? settings : {};
   const boxRates = isRecord(source.box_discount_rates) ? source.box_discount_rates : {};
@@ -99,8 +183,14 @@ export function normalizeStorePricingSettings(settings: unknown): StorePricingSe
   }
 
   return {
+    ...(typeof source.box_price_low_enabled === 'boolean'
+      ? { box_price_low_enabled: source.box_price_low_enabled }
+      : {}),
     box_discount_rates: normalizedBoxRates,
     psa10_discount_rates: normalizedPsa10Rates,
+    tokyo_source_discount_rates: normalizeTokyoSourceDiscountRates(source.tokyo_source_discount_rates),
+    tokyo_outlier_guard: normalizeTokyoOutlierGuard(source.tokyo_outlier_guard),
+    tokyo_price_max_age_days: numberOrDefault(source.tokyo_price_max_age_days, DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS),
   };
 }
 
@@ -109,6 +199,8 @@ export function mergeStorePricingSettings(base: unknown, overrides: unknown): St
   const overrideRecord = isRecord(overrides) ? overrides : {};
   const boxOverrides = isRecord(overrideRecord.box_discount_rates) ? overrideRecord.box_discount_rates : {};
   const psa10Overrides = isRecord(overrideRecord.psa10_discount_rates) ? overrideRecord.psa10_discount_rates : {};
+  const tokyoOverrides = isRecord(overrideRecord.tokyo_source_discount_rates)
+    ? overrideRecord.tokyo_source_discount_rates : {};
   const legacyBoxOverrides = isRecord(boxOverrides)
     ? normalizeBoxConditionDiscountRates(boxOverrides, DEFAULT_BOX_CONDITION_DISCOUNT_RATES)
     : DEFAULT_BOX_CONDITION_DISCOUNT_RATES;
@@ -132,11 +224,24 @@ export function mergeStorePricingSettings(base: unknown, overrides: unknown): St
   return normalizeStorePricingSettings({
     ...normalizedBase,
     ...overrideRecord,
+    box_price_low_enabled: typeof overrideRecord.box_price_low_enabled === 'boolean'
+      ? overrideRecord.box_price_low_enabled
+      : normalizedBase.box_price_low_enabled,
     box_discount_rates: mergedBoxRates,
     psa10_discount_rates: {
       ...normalizedBase.psa10_discount_rates,
       ...psa10Overrides,
     },
+    tokyo_source_discount_rates: Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, {
+      ...normalizedBase.tokyo_source_discount_rates[source],
+      ...(isRecord(tokyoOverrides[source]) ? tokyoOverrides[source] : {}),
+    }])),
+    tokyo_outlier_guard: {
+      ...normalizedBase.tokyo_outlier_guard,
+      ...(isRecord(overrideRecord.tokyo_outlier_guard) ? overrideRecord.tokyo_outlier_guard : {}),
+    },
+    tokyo_price_max_age_days: numberOrDefault(overrideRecord.tokyo_price_max_age_days,
+      normalizedBase.tokyo_price_max_age_days),
   });
 }
 

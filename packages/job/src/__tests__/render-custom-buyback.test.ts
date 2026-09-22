@@ -48,3 +48,14 @@ test('custom renderer prints the editable display date, not the price source dat
   expect(customBuybackDisplayDateText(sheet.display_date)).toBe('08/05');
   expect(sheet.display_date).not.toBe(sheet.price_business_date);
 });
+
+test('Tokyo renderer keeps the direct postal snapshot and the already discounted display price', () => {
+  const prepared = customItemToPreparedCard({ ...item, price_source: 'shinsoku', source_shinsoku_id: 'IAP1', final_price_high: 93000 }, {
+    ...sheet, store: 'manman-akihabara', catalog_source: 'shinsoku', price_snapshot_run_id: null,
+    kaitori_checker_run_id: null, tokyo_snapshot_id: 'tokyo-direct-1',
+  });
+  expect(prepared.run_id).toBe('tokyo-direct-1');
+  expect(prepared.price_high).toBe(93000);
+  expect(prepared.price_low).toBeNull();
+  expect(prepared.price_source).toBe('manual');
+});

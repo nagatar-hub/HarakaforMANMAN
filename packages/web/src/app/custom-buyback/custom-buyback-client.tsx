@@ -33,13 +33,15 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
-export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: string }) {
+export function CustomBuybackClient({ initialSheetId, enableTokyoFranchises = false }: { initialSheetId?: string; enableTokyoFranchises?: boolean }) {
   const [sheets, setSheets] = useState<CustomBuybackSheetRow[]>([]);
   const [detail, setDetail] = useState<SheetDetail | null>(null);
   const [selectedSheetId, setSelectedSheetId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<Flash | null>(null);
+  const [tracking, setTracking] = useState<{ id: string; fetched_at: string; report: { matched_count?: number; unmatched_count?: number } } | null>(null);
+  const [trackingPending, setTrackingPending] = useState(false);
   const [showCatalog, setShowCatalog] = useState(false);
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
   const [catalogFilters, setCatalogFilters] = useState<CatalogFilters>(DEFAULT_CATALOG_FILTERS);
@@ -96,6 +98,46 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
   }, [detail?.sheet.id, detail?.sheet.status, loadDetail]);
 
   function showError(error: unknown) { setFlash({ type: 'error', message: messageOf(error) }); }
+  async function loadTracking() {
+    const status = await apiJson<{ snapshot: typeof tracking }>('sync-prices');
+    setTracking(status.snapshot);
+    return status.snapshot;
+  }
+  async function syncTokyoPrices() {
+    setBusy('sync-prices');
+    try {
+      const result = await apiJson<{ status: string; warning?: string }>('sync-prices', { method: 'POST' });
+      setTrackingPending(true);
+      setFlash({ type: 'info', message: result.status === 'unknown'
+        ? result.warning ?? '起動結果を確認できません。取得状況を確認しています。'
+        : '3リストとShinsoku郵送価格の照合を開始しました。完了後、保存した表は「最新価格へ更新」で反映できます。' });
+    } catch (error) { showError(error); } finally { setBusy(null); }
+  }
+  useEffect(() => {
+    if (!enableTokyoFranchises) return;
+    void loadTracking().catch(showError);
+    // Tracking is independent from the selected sheet.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enableTokyoFranchises]);
+  useEffect(() => {
+    if (!trackingPending) return;
+    const previousId = tracking?.id;
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      void apiJson<{ snapshot: typeof tracking }>('sync-prices').then(({ snapshot }) => {
+        if (snapshot && snapshot.id !== previousId) {
+          setTracking(snapshot); setTrackingPending(false);
+          setFlash({ type: 'success', message: `Shinsoku郵送価格の取得が完了しました。掲載候補 ${snapshot.report.matched_count ?? 0}件` });
+        } else if (Date.now() - started > 10 * 60 * 1000) {
+          setTrackingPending(false);
+          setFlash({ type: 'error', message: '10分以内に取得完了を確認できませんでした。再実行前に取得状況を確認してください。保存した表の価格は「最新価格へ更新」まで変わりません。' });
+        }
+      }).catch(error => { setTrackingPending(false); showError(error); });
+    }, 5000);
+    return () => window.clearInterval(timer);
+    // Freeze the snapshot ID at the start of this poll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackingPending]);
   async function selectSheet(id: string) {
     setSelectedSheetId(id); setLoading(true); setShowCatalog(false); setCatalog(null); setCatalogFilters(DEFAULT_CATALOG_FILTERS); setCatalogSelection(new Set()); setCatalogKnownCards(new Map()); setUndoStack([]); setRedoStack([]);
     try { await loadDetail(id); } catch (error) { showError(error); } finally { setLoading(false); }
@@ -239,7 +281,7 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
     setBusy('refresh');
     try {
       setDetail(await apiJson<SheetDetail>(`sheets/${detail.sheet.id}/refresh-prices`, { method: 'POST', body: JSON.stringify({ preserve_overrides: preserveOverrides }) }));
-      const source = detail.sheet.catalog_source === 'kaitori_checker' ? '買取チェッカー価格' : '取得価格';
+      const source = detail.sheet.catalog_source === 'shinsoku' ? '東京比較価格' : detail.sheet.catalog_source === 'kaitori_checker' ? '買取チェッカー価格' : '取得価格';
       setFlash({ type: 'success', message: preserveOverrides ? `手修正を維持して最新の${source}へ更新しました` : `すべて最新の${source}へ戻しました` });
     } catch (error) { showError(error); } finally { setBusy(null); }
   }
@@ -278,9 +320,10 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
   return (
     <div className="relative left-1/2 w-[calc(100vw-1.5rem)] max-w-[1720px] -translate-x-1/2 pb-10 sm:w-[calc(100vw-3rem)]">
       <header className="mb-6 flex flex-col gap-3 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
-        <div><p className="mb-1 text-xs font-bold uppercase tracking-[0.2em] text-accent">Custom Buyback Studio</p><h1 className="page-title text-3xl text-text-primary sm:text-5xl">カスタム買取表</h1><p className="mt-2 max-w-2xl text-sm text-text-secondary">取得した最高価格を起点に、必要な商品だけを選び、表示価格・募集数・配置を調整できます。</p></div>
+        <div><p className="mb-1 text-xs font-bold uppercase tracking-[0.2em] text-accent">Custom Buyback Studio</p><h1 className="page-title text-3xl text-text-primary sm:text-5xl">カスタム買取表</h1><p className="mt-2 max-w-2xl text-sm text-text-secondary">{enableTokyoFranchises ? 'KECAK・トレカバンク・アヴィリールの商品を、Shinsoku郵送価格と設定減額率で掲載します。' : '取得した最高価格を起点に、必要な商品だけを選び、表示価格・募集数・配置を調整できます。'}</p></div>
         <div className="flex flex-wrap gap-2"><Link href="/gallery/custom" className="rounded-full border border-border-card bg-white px-5 py-2.5 text-sm font-bold hover:bg-warm-50">ギャラリーを見る</Link><button type="button" onClick={startNew} className="rounded-full bg-text-primary px-5 py-2.5 text-sm font-bold text-white hover:bg-warm-800">＋ 新しい表</button></div>
       </header>
+      {enableTokyoFranchises && <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card-bg p-4 text-sm"><button type="button" onClick={() => void syncTokyoPrices()} disabled={trackingPending || busy === 'sync-prices'} className="rounded-full bg-text-primary px-4 py-2 font-bold text-white disabled:opacity-40">{trackingPending ? '郵送価格を取得中…' : 'Shinsoku郵送価格を取得'}</button><button type="button" onClick={() => void loadTracking().catch(showError)} className="underline">取得状況を確認</button><span role="status">{tracking ? `最終取得 ${new Date(tracking.fetched_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })} · 掲載候補 ${tracking.report.matched_count ?? 0}件 · 未照合 ${tracking.report.unmatched_count ?? 0}件` : '価格取得はまだ完了していません'}</span></div>}
       {flash && <div role="status" className={`mb-5 flex justify-between rounded-xl border px-4 py-3 text-sm ${flash.type === 'error' ? 'border-red-300 bg-red-50 text-red-800' : flash.type === 'success' ? 'border-green-300 bg-green-50 text-green-800' : 'border-blue-300 bg-blue-50 text-blue-800'}`}><span>{flash.message}</span><button type="button" onClick={() => setFlash(null)} className="ml-3 font-bold">×</button></div>}
       <div className="grid gap-5 lg:grid-cols-[250px_minmax(0,1fr)]">
         <aside className="rounded-2xl border border-border-card bg-card-bg p-3 lg:sticky lg:top-5 lg:h-fit">
@@ -290,9 +333,9 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
           </div>
         </aside>
         <section className="min-w-0">
-          {loading ? <div className="rounded-2xl border border-border-card bg-card-bg p-12 text-center text-text-secondary">読み込み中...</div> : !detail ? <CreateSheetPanel busy={busy === 'create'} onCreate={createSheet} /> : <div className="space-y-5">
+          {loading ? <div className="rounded-2xl border border-border-card bg-card-bg p-12 text-center text-text-secondary">読み込み中...</div> : !detail ? <CreateSheetPanel busy={busy === 'create'} onCreate={createSheet} enableTokyoFranchises={enableTokyoFranchises} /> : <div className="space-y-5">
             <SheetToolbar detail={detail} busy={busy} generatedCount={generatedPages.length} onDisplayDateChange={(value) => void updateDisplayDate(value)} onAdd={openCatalog} onClone={() => void cloneSheet()} onRefresh={() => void refreshPrices(true)} onResetRefresh={() => void refreshPrices(false)} onRender={() => void renderSheet()} onCsv={downloadCsv} onZip={() => void downloadImagesAsZip(generatedPages.map((page) => ({ image_url: page.image_url!, filename: `${safeDownloadName(detail.sheet.name)}_${String(page.page_index + 1).padStart(2, '0')}.png` })), `${safeDownloadName(detail.sheet.name)}.zip`)} onDelete={() => void deleteSheet()} />
-            {showCatalog && createPortal(<CatalogPanel catalogSource={detail.sheet.catalog_source} productType={detail.sheet.product_type} filters={catalogFilters} setFilters={setCatalogFilters} result={catalog} knownCards={catalogKnownCards} selection={catalogSelection} loading={catalogLoading} error={catalogError} busy={busy} existingSourceIds={new Set(detail.items.map((item) => item.source_kaitori_product_id == null ? item.source_prepared_card_id : String(item.source_kaitori_product_id)).filter((id): id is string => Boolean(id)))} onToggle={(id) => setCatalogSelection((current) => toggleSet(current, id))} onSelectVisible={(ids) => setCatalogSelection((current) => new Set([...current, ...ids]))} onClearSelection={() => setCatalogSelection(new Set())} onAdd={() => void addCatalogCards()} onClose={closeCatalog} />, document.body)}
+            {showCatalog && createPortal(<CatalogPanel catalogSource={detail.sheet.catalog_source} productType={detail.sheet.product_type} filters={catalogFilters} setFilters={setCatalogFilters} result={catalog} knownCards={catalogKnownCards} selection={catalogSelection} loading={catalogLoading} error={catalogError} busy={busy} existingSourceIds={new Set(detail.items.map((item) => item.source_shinsoku_id ?? (item.source_kaitori_product_id == null ? item.source_prepared_card_id : String(item.source_kaitori_product_id))).filter((id): id is string => Boolean(id)))} onToggle={(id) => setCatalogSelection((current) => toggleSet(current, id))} onSelectVisible={(ids) => setCatalogSelection((current) => new Set([...current, ...ids]))} onClearSelection={() => setCatalogSelection(new Set())} onAdd={() => void addCatalogCards()} onClose={closeCatalog} />, document.body)}
             {detail.sheet.price_business_date !== tokyoBusinessDate() && <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">この表の価格基準日は {detail.sheet.price_business_date} です。「最新価格へ更新」で最新化できます。</div>}
             {detail.items.length === 0 ? <button type="button" onClick={openCatalog} className="flex min-h-72 w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed border-warm-300 bg-card-bg/50 hover:border-accent hover:bg-accent-light"><span className="text-4xl">＋</span><strong className="mt-2">商品を追加</strong><span className="mt-1 text-sm text-text-secondary">商品カタログから複数選択できます</span></button> : <>
               <BulkToolbar locked={detail.sheet.status === 'rendering'} selected={selectedItems.size} total={detail.items.length} operation={bulkOperation} value={bulkValue} busy={busy === 'bulk'} undoCount={undoStack.length} redoCount={redoStack.length} setOperation={setBulkOperation} setValue={setBulkValue} onSelectAll={() => setSelectedItems(selectedItems.size === detail.items.length ? new Set() : new Set(detail.items.map((item) => item.id)))} onClearSelection={() => setSelectedItems(new Set())} onApply={() => void applyBulkPrice()} onUndo={() => void undo()} onRedo={() => void redo()} />
@@ -306,28 +349,33 @@ export function CustomBuybackClient({ initialSheetId }: { initialSheetId?: strin
   );
 }
 
-function CreateSheetPanel({ busy, onCreate }: {
+function CreateSheetPanel({ busy, onCreate, enableTokyoFranchises }: {
   busy: boolean;
   onCreate: (input: { name: string; franchise: CustomBuybackFranchise; product_type: CustomBuybackProductType; kind: 'postal' | 'store'; display_date: string }) => Promise<void>;
+  enableTokyoFranchises: boolean;
 }) {
   const [name, setName] = useState('');
   const [displayDate, setDisplayDate] = useState(tokyoBusinessDate());
   const [franchise, setFranchise] = useState<CustomBuybackFranchise>('Pokemon');
   const [productType, setProductType] = useState<CustomBuybackProductType>('psa');
   const [kind, setKind] = useState<'postal' | 'store'>('store');
+  const franchises: CustomBuybackFranchise[] = enableTokyoFranchises
+    ? ['Pokemon', 'ONE PIECE', 'YU-GI-OH!', 'WEISS SCHWARZ', 'DRAGON BALL']
+    : ['Pokemon', 'ONE PIECE', 'YU-GI-OH!'];
+  const storeOnly = franchise === 'WEISS SCHWARZ' || franchise === 'DRAGON BALL';
   return <form onSubmit={(event) => { event.preventDefault(); void onCreate({ name, franchise, product_type: productType, kind, display_date: displayDate }); }} className="rounded-2xl border border-border-card bg-card-bg p-5 sm:p-8">
     <div className="mb-7"><span className="text-xs font-bold text-accent">STEP 1</span><h2 className="mt-1 text-2xl font-bold">表の種類を選ぶ</h2><p className="mt-1 text-sm text-text-secondary">作成後にカードを検索して追加します。</p></div>
     <label className="mb-5 block"><span className="mb-2 block text-sm font-bold">表の名前</span><input required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} placeholder="例：8月3日 ポケモンPSA強化" className="w-full rounded-xl border border-border-card bg-white px-4 py-3 outline-none focus:border-accent" /></label>
     <label className="mb-5 block"><span className="mb-2 block text-sm font-bold">表に表示する日付</span><input required type="date" value={displayDate} onChange={(event) => setDisplayDate(event.target.value)} className="w-full rounded-xl border border-border-card bg-white px-4 py-3 outline-none focus:border-accent sm:max-w-xs" /><span className="mt-1.5 block text-xs text-text-secondary">画像へ印字され、カスタムギャラリーもこの日付で整理されます。作成後も変更できます。</span></label>
-    <fieldset className="mb-5"><legend className="mb-2 text-sm font-bold">カードタイトル</legend><div className="grid gap-2 sm:grid-cols-3">{(['Pokemon', 'ONE PIECE', 'YU-GI-OH!'] as const).map((value) => <Choice key={value} selected={franchise === value} onClick={() => setFranchise(value)}>{value}</Choice>)}</div></fieldset>
+    <fieldset className="mb-5"><legend className="mb-2 text-sm font-bold">カードタイトル</legend><div className="grid gap-2 sm:grid-cols-3">{franchises.map((value) => <Choice key={value} selected={franchise === value} onClick={() => { setFranchise(value); if (value === 'WEISS SCHWARZ' || value === 'DRAGON BALL') setKind('store'); }}>{value}</Choice>)}</div></fieldset>
     <fieldset className="mb-5"><legend className="mb-2 text-sm font-bold">商品タイプ</legend><div className="grid grid-cols-2 gap-2"><Choice selected={productType === 'psa'} onClick={() => setProductType('psa')}><strong>PSA</strong><small>表示価格＋募集枚数</small></Choice><Choice selected={productType === 'box'} onClick={() => setProductType('box')}><strong>BOX</strong><small>表示価格＋募集個数</small></Choice></div></fieldset>
-    <fieldset className="mb-7"><legend className="mb-2 text-sm font-bold">用途</legend><div className="grid grid-cols-2 gap-2"><Choice selected={kind === 'store'} onClick={() => setKind('store')}>店頭用</Choice><Choice selected={kind === 'postal'} onClick={() => setKind('postal')}>郵送用</Choice></div></fieldset>
+    <fieldset className="mb-7"><legend className="mb-2 text-sm font-bold">用途</legend><div className="grid grid-cols-2 gap-2"><Choice selected={kind === 'store'} onClick={() => setKind('store')}>店頭用</Choice><Choice selected={kind === 'postal'} onClick={() => setKind('postal')} disabled={storeOnly}>郵送用</Choice></div></fieldset>
     <button disabled={busy || !name.trim()} className="w-full rounded-xl bg-text-primary px-5 py-3.5 font-bold text-white disabled:opacity-40">{busy ? '作成中...' : 'この内容で作成 →'}</button>
   </form>;
 }
 
-function Choice({ selected, onClick, children }: { selected: boolean; onClick: () => void; children: React.ReactNode }) {
-  return <button type="button" onClick={onClick} className={`flex min-h-16 flex-col items-center justify-center rounded-xl border px-3 py-2 text-sm transition ${selected ? 'border-accent bg-accent-light text-accent ring-1 ring-accent' : 'border-border-card bg-white hover:border-warm-400'}`}>{children}</button>;
+function Choice({ selected, onClick, children, disabled = false }: { selected: boolean; onClick: () => void; children: React.ReactNode; disabled?: boolean }) {
+  return <button type="button" onClick={onClick} disabled={disabled} className={`flex min-h-16 flex-col items-center justify-center rounded-xl border px-3 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-40 ${selected ? 'border-accent bg-accent-light text-accent ring-1 ring-accent' : 'border-border-card bg-white hover:border-warm-400'}`}>{children}</button>;
 }
 
 function SheetToolbar({ detail, busy, generatedCount, onDisplayDateChange, onAdd, onClone, onRefresh, onResetRefresh, onRender, onCsv, onZip, onDelete }: {
@@ -337,7 +385,7 @@ function SheetToolbar({ detail, busy, generatedCount, onDisplayDateChange, onAdd
   const rendering = detail.sheet.status === 'rendering';
   return <section className="rounded-2xl border border-border-card bg-card-bg p-4 sm:p-6"><div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
     <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h2 className="truncate text-2xl font-bold">{detail.sheet.name}</h2><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${rendering ? 'bg-blue-100 text-blue-700' : detail.sheet.status === 'ready' ? 'bg-green-100 text-green-700' : detail.sheet.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-warm-100 text-warm-700'}`}>{statusLabel(detail.sheet.status)}</span></div><p className="mt-1 text-xs text-text-secondary">{detail.sheet.franchise} · {detail.sheet.product_type.toUpperCase()} · {detail.sheet.kind === 'store' ? '店頭用' : '郵送用'} · {detail.items.length}件</p><div className="mt-3 flex flex-wrap items-end gap-3"><label className="text-xs font-bold"><span className="mb-1 block text-text-secondary">表の日付</span><input aria-label="表の日付" type="date" value={detail.sheet.display_date} disabled={rendering || busy === 'display-date'} onChange={(event) => onDisplayDateChange(event.target.value)} className="rounded-lg border border-border-card bg-white px-3 py-2 font-normal disabled:opacity-50" /></label><p className="pb-2 text-[11px] text-text-secondary">作成日時 {formatCreatedAt(detail.sheet.created_at)}<br />価格基準日 {detail.sheet.price_business_date}</p></div>{detail.sheet.error_message && <p className="mt-2 text-xs text-red-700">{detail.sheet.error_message}</p>}</div>
-    <div className="flex flex-wrap gap-2"><button type="button" onClick={onAdd} disabled={rendering} className="rounded-full bg-text-primary px-4 py-2 text-xs font-bold text-white disabled:opacity-40">＋ 商品追加</button><button type="button" onClick={onRender} disabled={rendering || detail.items.length === 0 || busy === 'render'} className="rounded-full bg-accent px-4 py-2 text-xs font-bold text-white disabled:opacity-40">{rendering ? '生成中...' : '画像を生成'}</button><ActionMenu label="その他"><button type="button" disabled={rendering} onClick={onRefresh}>手修正を維持して最新の{detail.sheet.catalog_source === 'kaitori_checker' ? '買取チェッカー価格' : '取得価格'}へ更新</button><button type="button" disabled={rendering} onClick={onResetRefresh}>手修正も最新の{detail.sheet.catalog_source === 'kaitori_checker' ? '買取チェッカー価格' : '取得価格'}へ戻す</button><button type="button" onClick={onClone}>この表を複製</button><button type="button" onClick={onCsv}>商品明細CSV</button><button type="button" onClick={onZip} disabled={generatedCount === 0}>生成画像をZIP保存</button><button type="button" disabled={rendering} onClick={onDelete} className="!text-red-700">表を削除</button></ActionMenu></div>
+    <div className="flex flex-wrap gap-2"><button type="button" onClick={onAdd} disabled={rendering} className="rounded-full bg-text-primary px-4 py-2 text-xs font-bold text-white disabled:opacity-40">＋ 商品追加</button><button type="button" onClick={onRender} disabled={rendering || detail.items.length === 0 || busy === 'render'} className="rounded-full bg-accent px-4 py-2 text-xs font-bold text-white disabled:opacity-40">{rendering ? '生成中...' : '画像を生成'}</button><ActionMenu label="その他"><button type="button" disabled={rendering} onClick={onRefresh}>手修正を維持して最新の{detail.sheet.catalog_source === 'shinsoku' ? '東京比較価格' : detail.sheet.catalog_source === 'kaitori_checker' ? '買取チェッカー価格' : '取得価格'}へ更新</button><button type="button" disabled={rendering} onClick={onResetRefresh}>手修正も最新の{detail.sheet.catalog_source === 'shinsoku' ? '東京比較価格' : detail.sheet.catalog_source === 'kaitori_checker' ? '買取チェッカー価格' : '取得価格'}へ戻す</button><button type="button" onClick={onClone}>この表を複製</button><button type="button" onClick={onCsv}>商品明細CSV</button><button type="button" onClick={onZip} disabled={generatedCount === 0}>生成画像をZIP保存</button><button type="button" disabled={rendering} onClick={onDelete} className="!text-red-700">表を削除</button></ActionMenu></div>
   </div></section>;
 }
 
@@ -391,9 +439,9 @@ function CatalogPanel({ catalogSource, productType, filters, setFilters, result,
   return <div ref={dialogRoot} className="fixed inset-0 z-[60] bg-black/55 p-2 sm:p-4" role="presentation">
     <section role="dialog" aria-modal="true" aria-labelledby="catalog-title" className="mx-auto flex h-[calc(100dvh-1rem)] max-w-[1680px] flex-col overflow-hidden border border-warm-300 bg-warm-50 shadow-2xl sm:h-[calc(100dvh-2rem)] sm:rounded-2xl">
       <header className="shrink-0 border-b border-border-card bg-warm-50 px-4 py-3 sm:px-6 sm:py-4">
-        <div className="flex items-start justify-between gap-4"><div><h2 id="catalog-title" className="text-lg font-bold sm:text-2xl">{catalogSource === 'kaitori_checker' ? '買取チェッカー' : '商品カタログ'}から{productType.toUpperCase()}を追加</h2><p className="mt-1 text-xs text-text-secondary sm:text-sm">条件を変えると自動で更新します。最高買取価格がある商品を最大100件表示します。</p></div><button type="button" onClick={onClose} aria-label="商品選択を閉じる" className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-border-card bg-white text-2xl leading-none hover:bg-warm-100 focus-visible:outline-2 focus-visible:outline-accent">×</button></div>
+        <div className="flex items-start justify-between gap-4"><div><h2 id="catalog-title" className="text-lg font-bold sm:text-2xl">{catalogSource === 'kaitori_checker' ? '買取チェッカー' : '商品カタログ'}から{productType.toUpperCase()}を追加</h2><p className="mt-1 text-xs text-text-secondary sm:text-sm">条件を変えると自動で更新します。{catalogSource === 'shinsoku' ? '5店舗の当日価格を比較して採用した商品' : '最高買取価格がある商品'}を最大100件表示します。</p></div><button type="button" onClick={onClose} aria-label="商品選択を閉じる" className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-border-card bg-white text-2xl leading-none hover:bg-warm-100 focus-visible:outline-2 focus-visible:outline-accent">×</button></div>
         <div className="mt-4 grid gap-2 md:grid-cols-[minmax(18rem,2fr)_minmax(8rem,0.7fr)_minmax(8rem,0.7fr)_minmax(11rem,0.9fr)_auto]">
-          <label><span className="sr-only">商品名・型番・レアリティ・店舗名</span><input ref={searchInput} type="search" value={filters.q} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} placeholder="商品名・型番・レアリティ・店舗名" className="h-11 w-full rounded-lg border border-border-card bg-white px-3 text-sm outline-none focus:border-accent focus:ring-1 focus:ring-accent" /></label>
+          <label><span className="sr-only">{catalogSource === 'shinsoku' ? '商品名・型番' : '商品名・型番・レアリティ・店舗名'}</span><input ref={searchInput} type="search" value={filters.q} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} placeholder={catalogSource === 'shinsoku' ? '商品名・型番' : '商品名・型番・レアリティ・店舗名'} className="h-11 w-full rounded-lg border border-border-card bg-white px-3 text-sm outline-none focus:border-accent focus:ring-1 focus:ring-accent" /></label>
           <label><span className="sr-only">最低価格</span><input type="number" min="0" max="100000000" inputMode="numeric" value={filters.minPrice} onChange={(event) => setFilters((current) => ({ ...current, minPrice: event.target.value }))} placeholder="最低価格" className="h-11 w-full rounded-lg border border-border-card bg-white px-3 text-sm outline-none focus:border-accent" /></label>
           <label><span className="sr-only">最高価格</span><input type="number" min="0" max="100000000" inputMode="numeric" value={filters.maxPrice} onChange={(event) => setFilters((current) => ({ ...current, maxPrice: event.target.value }))} placeholder="最高価格" className="h-11 w-full rounded-lg border border-border-card bg-white px-3 text-sm outline-none focus:border-accent" /></label>
           <label><span className="sr-only">並び替え</span><select value={filters.sort} onChange={(event) => setFilters((current) => ({ ...current, sort: event.target.value as CatalogFilters['sort'] }))} className="h-11 w-full rounded-lg border border-border-card bg-white px-3 text-sm outline-none focus:border-accent"><option value="price_desc">価格が高い順</option><option value="price_asc">価格が安い順</option><option value="name_asc">商品名順</option></select></label>

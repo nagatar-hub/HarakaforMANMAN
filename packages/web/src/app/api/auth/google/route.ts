@@ -80,12 +80,15 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     target,
     secret: secretResult.value,
   });
-  const authUrl = buildAuthorizationUrl({
+  const authUrl = new URL(buildAuthorizationUrl({
     clientId,
     redirectUri,
     state,
     mode: target === 'operator' ? 'operator' : 'sheet',
-  });
+  }));
+  if (target === 'operator' && process.env.STORE_NAME?.trim() === 'manman-akihabara') {
+    authUrl.searchParams.set('hd', 'tomstocks.net');
+  }
   const response = NextResponse.redirect(authUrl);
   response.cookies.set(OPERATOR_OAUTH_NONCE_COOKIE, nonce, {
     httpOnly: true,

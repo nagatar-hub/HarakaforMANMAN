@@ -28,7 +28,7 @@ export function customItemToPreparedCard(
   item: CustomBuybackItemRow,
   sheet: CustomBuybackSheetRow,
 ): PreparedCardRow {
-  const sourceRunId = sheet.price_snapshot_run_id ?? sheet.kaitori_checker_run_id;
+  const sourceRunId = sheet.tokyo_snapshot_id ?? sheet.price_snapshot_run_id ?? sheet.kaitori_checker_run_id;
   if (!sourceRunId) throw new Error('カスタム買取表の価格スナップショットがありません');
   return {
     id: item.id,
@@ -50,7 +50,7 @@ export function customItemToPreparedCard(
     price_low: null,
     image_status: item.image_status,
     source: 'manual',
-    price_source: item.price_source === 'kaitori_checker' ? 'manual' : item.price_source,
+    price_source: item.price_source === 'kaitori_checker' || item.price_source === 'shinsoku' ? 'manual' : item.price_source,
     price_source_date: item.price_source_date,
     created_at: item.created_at,
   };
@@ -58,6 +58,15 @@ export function customItemToPreparedCard(
 
 export function customBuybackDisplayDateText(displayDate: string): string {
   return displayDate.slice(5).replace('-', '/');
+}
+
+export function customBuybackDemandByCardId(
+  sheet: Pick<CustomBuybackSheetRow, 'store' | 'catalog_source'>,
+  items: Pick<CustomBuybackItemRow, 'id' | 'demand'>[],
+): Map<string, number> | undefined {
+  // Tokyo's one-price template has no separate demand row (lowY equals highY).
+  if (sheet.store === 'manman-akihabara' && sheet.catalog_source === 'shinsoku') return undefined;
+  return new Map(items.map(item => [item.id, item.demand]));
 }
 
 export async function runRenderCustomBuyback(): Promise<void> {
@@ -270,7 +279,7 @@ async function renderOnePage(params: RenderOnePageParams): Promise<void> {
       cardImageBuffers,
       dateText,
       skipPriceLow: true,
-      demandByCardId: new Map(items.map((item) => [item.id, item.demand])),
+      demandByCardId: customBuybackDemandByCardId(sheet, items),
       layoutAdjust: layout.layout_config.layoutAdjust,
       rowPriceAdjust: layout.layout_config.rowPriceAdjust,
       rowCardAdjust: layout.layout_config.rowCardAdjust,

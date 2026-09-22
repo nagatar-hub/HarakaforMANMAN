@@ -27,13 +27,15 @@ import { updateProgress, clearProgress } from '../lib/progress.js';
 import { planPages, type PagePlan } from '../lib/page-planner.js';
 import { batchInsert } from '../lib/batch.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
-import { getOptionalEnvOrSecret } from '../lib/env.js';
+import { getOptionalEnvOrSecret, getRequiredEnvOrSecret } from '../lib/env.js';
+import { buildTokyoPelekaCatalog, publishTokyoPelekaCatalog } from '../lib/peleka-catalog.js';
 import { loadStorePricingSettings } from '../lib/pricing-settings.js';
 import { applyCurrentShinsokuBoxPrices, loadShinsokuBoxPriceMap } from '../lib/shinsoku-box-price-source.js';
 import { isBoxRow } from '../lib/box-row.js';
 import {
   formatGenerationDate,
   getJstDateParts,
+  parseBusinessDate,
   resolveGenerationDisplayDate,
 } from '../lib/generation-date.js';
 import type {
@@ -50,6 +52,7 @@ import { FRANCHISES, FRANCHISE_STORAGE_SLUG } from '@haraka/shared';
 
 type RunRow = Database['public']['Tables']['run']['Row'];
 type GeneratedPageInsert = Database['public']['Tables']['generated_page']['Insert'];
+type SupabaseClient = Awaited<ReturnType<typeof createSupabaseClientFromSecrets>>;
 
 // ---------------------------------------------------------------------------
 // ヘルパー関数
@@ -109,6 +112,59 @@ function makeFixedBoxPlans(cards: PreparedCardRow[], totalSlots: number): PagePl
   return plans;
 }
 
+export function planTokyoGalleryPages(cards: PreparedCardRow[], layouts: LayoutTemplateRow[], rules: RuleRow[] = []): PagePlan[] {
+  return (['PSA10', 'BOX'] as const).flatMap(type => {
+    const group = cards.filter(card => (card.tag === 'BOX' || card.grade === '未開封BOX' || card.grade === 'BOX') === (type === 'BOX'));
+    const candidates = layouts.filter(layout => layout.is_active && (layout.slug.startsWith('box_') === (type === 'BOX')));
+    if (group.length && !candidates.length) throw new Error(`東京 ${type} レイアウトがありません`);
+    if (type === 'BOX') return planPages(group.map(card => ({ ...card, tag: 'BOX' })), [], candidates)
+      .map((plan, index) => ({ ...plan, label: index ? `BOX-${index + 1}` : 'BOX' }));
+    const scopedRules = rules.filter(rule => rule.store === 'manman-akihabara' && group.some(card => card.franchise === rule.franchise))
+      .sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
+    return planPages(group, scopedRules, candidates, true);
+  });
+}
+
+/** Plan Tokyo pages only after the actual images can be decoded; reuse those bytes when rendering. */
+export async function prepareTokyoRenderableCards(cards: PreparedCardRow[]) {
+  const downloaded = await downloadImagesWithConcurrency('', cards.map(card => card.image_url || card.alt_image_url || null), 8);
+  const buffers = new Map<string, Buffer>();
+  for (let i = 0; i < cards.length; i++) {
+    const card = cards[i];
+    let bytes = downloaded[i];
+    const usable = async (value: Buffer | null) => {
+      if (!value) return false;
+      try { await sharp(value, { limitInputPixels: 25_000_000 }).stats(); return true; } catch { return false; }
+    };
+    if (!await usable(bytes)) {
+      bytes = card.image_url && card.alt_image_url
+        ? (await downloadImagesWithConcurrency('', [card.alt_image_url], 1))[0] : null;
+      if (!await usable(bytes)) continue;
+    }
+    buffers.set(card.id, bytes!);
+  }
+  return { cards: cards.filter(card => buffers.has(card.id)), buffers };
+}
+
+export async function loadAllTokyoPreparedCards(
+  supabase: SupabaseClient,
+  runId: string,
+  franchise: Franchise,
+): Promise<PreparedCardRow[]> {
+  const cards: PreparedCardRow[] = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase.from('prepared_card').select('*')
+      .eq('run_id', runId).eq('franchise', franchise)
+      .order('id', { ascending: true }).range(from, from + pageSize - 1)
+      .returns<PreparedCardRow[]>();
+    if (error) throw new Error(`prepared_card 取得失敗: ${error.message}`);
+    const page = data ?? [];
+    cards.push(...page);
+    if (page.length < pageSize) return cards;
+  }
+}
+
 export async function runGenerate() {
   const supabase = await createSupabaseClientFromSecrets();
   const t0 = Date.now();
@@ -138,6 +194,7 @@ export async function runGenerate() {
     );
   }
   console.log(`[generate] Run claim参加: ${run.id}`);
+  const tokyoSnapshot = STORE_NAME === 'manman-akihabara' && !!run.tokyo_snapshot_id;
   const generationStartedAt = new Date();
   // Storage は従来どおり生成日のJSTパスを維持し、画像表示日だけExcel業務日を使う。
   const storageDate = getJstDateParts(generationStartedAt);
@@ -145,39 +202,73 @@ export async function runGenerate() {
   const generationVersion = Date.now();
 
   try {
-    const displayDate = await resolveGenerationDisplayDate({
-      orderListImportId: run.order_list_import_id,
-      now: generationStartedAt,
-      loadBusinessDate: async (importId) => {
-        const { data, error } = await supabase
-          .from('order_list_import')
-          .select('business_date')
-          .eq('id', importId)
-          .eq('store', STORE_NAME)
-          .maybeSingle<{ business_date: string }>();
-        if (error) {
-          throw new Error(`オーダーリスト業務日取得失敗: ${error.message}`);
-        }
-        return data?.business_date ?? null;
-      },
-    });
+    const displayDate = tokyoSnapshot
+      ? await (async () => {
+        const { data, error } = await supabase.from('tokyo_buyback_snapshot').select('business_date')
+          .eq('id', run.tokyo_snapshot_id!).eq('store', STORE_NAME).maybeSingle<{ business_date: string }>();
+        if (error || !data) throw new Error(`東京価格日取得失敗: ${error?.message ?? run.tokyo_snapshot_id}`);
+        return parseBusinessDate(data.business_date);
+      })()
+      : await resolveGenerationDisplayDate({
+        orderListImportId: run.order_list_import_id,
+        now: generationStartedAt,
+        loadBusinessDate: async (importId) => {
+          const { data, error } = await supabase
+            .from('order_list_import')
+            .select('business_date')
+            .eq('id', importId)
+            .eq('store', STORE_NAME)
+            .maybeSingle<{ business_date: string }>();
+          if (error) {
+            throw new Error(`オーダーリスト業務日取得失敗: ${error.message}`);
+          }
+          return data?.business_date ?? null;
+        },
+      });
+    const pelekaConfig = tokyoSnapshot ? {
+      endpoint: await getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_URL'),
+      token: await getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_TOKEN'),
+    } : null;
 
     // 価格取得・照合が失敗した場合は、既存画像やページを変更しない。
-    const accessToken = await getAccessToken();
-    const pricingSettings = await loadStorePricingSettings(supabase, STORE_NAME);
-    const boxPrices = await loadShinsokuBoxPriceMap(accessToken);
+    const accessToken = tokyoSnapshot ? '' : await getAccessToken();
+    const pricingSettings = tokyoSnapshot ? undefined : await loadStorePricingSettings(supabase, STORE_NAME);
+    const boxPriceLowEnabled = STORE_NAME === 'manman-akihabara'
+      ? (pricingSettings ?? await loadStorePricingSettings(supabase, STORE_NAME)).box_price_low_enabled === true
+      : true;
+    const boxPrices = tokyoSnapshot ? new Map() : await loadShinsokuBoxPriceMap(accessToken);
     const pricedCardsByFranchise = new Map<Franchise, PreparedCardRow[]>();
+    const tokyoImageBuffers = new Map<string, Buffer>();
     for (const franchise of FRANCHISES) {
-      const { data: cards, error } = await supabase.from('prepared_card').select('*')
-        .eq('run_id', run.id).eq('franchise', franchise).returns<PreparedCardRow[]>();
-      if (error) throw new Error(`prepared_card 取得失敗: ${error.message}`);
-      pricedCardsByFranchise.set(franchise, applyCurrentShinsokuBoxPrices(cards ?? [], boxPrices, pricingSettings));
+      let cards: PreparedCardRow[];
+      if (tokyoSnapshot) {
+        cards = await loadAllTokyoPreparedCards(supabase, run.id, franchise);
+      } else {
+        const result = await supabase.from('prepared_card').select('*')
+          .eq('run_id', run.id).eq('franchise', franchise).returns<PreparedCardRow[]>();
+        if (result.error) throw new Error(`prepared_card 取得失敗: ${result.error.message}`);
+        cards = result.data ?? [];
+      }
+      if (tokyoSnapshot && cards.some(card => card.price_source !== 'shinsoku' || !card.source_shinsoku_id)) {
+        throw new Error('東京通常RunにShinsoku以外の価格が含まれています');
+      }
+      if (tokyoSnapshot) {
+        const visible = await prepareTokyoRenderableCards(cards);
+        pricedCardsByFranchise.set(franchise, visible.cards);
+        for (const [id, bytes] of visible.buffers) tokyoImageBuffers.set(id, bytes);
+        console.log(`[generate] ${franchise}: 画像あり ${visible.cards.length}件、画像なし・取得失敗 ${cards.length - visible.cards.length}件を掲載除外`);
+      } else {
+        pricedCardsByFranchise.set(franchise, applyCurrentShinsokuBoxPrices(
+          cards, boxPrices, pricingSettings!, STORE_NAME === 'manman-akihabara',
+        ));
+      }
     }
 
     // ---- 2. Storage クリーンアップ ----
     await updateProgress(supabase, run.id, 0, 100, 'クリーンアップ中...');
     console.log('[generate] Storage クリーンアップ中...');
-    for (const folder of FRANCHISES.map((franchise) => franchise.replace(/[^a-zA-Z0-9._-]/g, ''))) {
+    // Tokyo keeps previous normal-gallery images recoverable; new files are versioned.
+    for (const folder of (tokyoSnapshot ? [] : FRANCHISES).map((franchise) => franchise.replace(/[^a-zA-Z0-9._-]/g, ''))) {
       const prefix = `generated/${STORE_NAME}/${datePath}/${folder}`;
       const { data: files } = await supabase.storage.from('haraka-images').list(prefix);
       if (files && files.length > 0) {
@@ -190,7 +281,7 @@ export async function runGenerate() {
     // ---- 2.5. ページプランを再生成（最新の prepared_card + 価格フィルター適用） ----
     await updateProgress(supabase, run.id, 5, 100, 'ページプラン再生成中...');
     console.log('[generate] ページプラン再生成...');
-    const psa10DiscountRates = pricingSettings.psa10_discount_rates;
+    const psa10DiscountRates: Partial<Record<Franchise, number>> = pricingSettings?.psa10_discount_rates ?? {};
     const psaRateSummary = FRANCHISES
       .filter(franchise => typeof psa10DiscountRates[franchise] === 'number')
       .map(franchise => `${franchise}=${((psa10DiscountRates[franchise] ?? 0) * 100).toFixed(0)}%`)
@@ -248,10 +339,10 @@ export async function runGenerate() {
       const psaCards = validCards.filter(c => !isBoxCard(c));
       const boxCards = validCards.filter(isBoxCard);
 
-      const psaPlans = planPages(psaCards, rules ?? [], layouts);
-      const boxPlans = makeFixedBoxPlans(boxCards, profile.total_slots);
-      const pagePlans = [...psaPlans, ...boxPlans];
-      console.log(`[generate]   ${franchise}: PSA ${psaCards.length}枚/${psaPlans.length}ページ, BOX ${boxCards.length}枚/${boxPlans.length}ページ`);
+      const psaPlans = tokyoSnapshot ? [] : planPages(psaCards, rules ?? [], layouts);
+      const boxPlans = tokyoSnapshot ? [] : makeFixedBoxPlans(boxCards, profile.total_slots);
+      const pagePlans = tokyoSnapshot ? planTokyoGalleryPages(validCards, layouts, rules ?? []) : [...psaPlans, ...boxPlans];
+      console.log(`[generate]   ${franchise}: PSA ${psaCards.length}枚, BOX ${boxCards.length}枚 / ${pagePlans.length}ページ`);
 
       if (pagePlans.length === 0) continue;
 
@@ -274,7 +365,7 @@ export async function runGenerate() {
     // ---- 3. OAuth access token 取得 ----
     console.log('[generate] Access token 取得完了');
 
-    const harakaDbSpreadsheetId = await getOptionalEnvOrSecret('HARAKA_DB_SPREADSHEET_ID');
+    const harakaDbSpreadsheetId = tokyoSnapshot ? null : await getOptionalEnvOrSecret('HARAKA_DB_SPREADSHEET_ID');
     if (!harakaDbSpreadsheetId) {
       console.log('[generate] HARAKA_DB_SPREADSHEET_ID 未設定: レアリティアイコン取得をスキップ');
     }
@@ -359,7 +450,7 @@ export async function runGenerate() {
         cardBackCache.set(layoutTemplate.id, cardBack);
       }));
 
-      const needsBoxAssets = generatedPages.some(p => isBoxLabel(p.page_label));
+      const needsBoxAssets = !tokyoSnapshot && generatedPages.some(p => isBoxLabel(p.page_label));
       let boxTemplateBuffer: Buffer | null = null;
       let boxCardBackBuffer: Buffer | null = null;
       if (needsBoxAssets) {
@@ -459,7 +550,8 @@ export async function runGenerate() {
           ? layoutById.get(generatedPage.layout_template_id)
           : null;
         const isBoxPage = isBoxLabel(label);
-        if (!layoutTemplate && !isBoxPage) {
+        const usesLegacyBoxAssets = isBoxPage && !tokyoSnapshot;
+        if (!layoutTemplate && !usesLegacyBoxAssets) {
           const errMsg = `layout_template が未設定: page_id=${generatedPage.id}`;
           console.error(`[generate]     ${errMsg}`);
           await supabase.from('generated_page').update({
@@ -469,11 +561,11 @@ export async function runGenerate() {
           return;
         }
 
-        const layout = isBoxPage
+        const layout = usesLegacyBoxAssets
           ? makeBoxLayout(assetProfile.layout_config as LayoutConfig)
           : layoutTemplate!.layout_config;
-        const currentTemplate = isBoxPage ? boxTemplateBuffer : templateCache.get(layoutTemplate!.id);
-        const currentCardBack = isBoxPage ? boxCardBackBuffer : cardBackCache.get(layoutTemplate!.id);
+        const currentTemplate = usesLegacyBoxAssets ? boxTemplateBuffer : templateCache.get(layoutTemplate!.id);
+        const currentCardBack = usesLegacyBoxAssets ? boxCardBackBuffer : cardBackCache.get(layoutTemplate!.id);
         if (!currentTemplate || !currentCardBack) {
           const errMsg = `テンプレートキャッシュが未設定: ${isBoxPage ? 'BOX' : layoutTemplate!.slug}`;
           console.error(`[generate]     ${errMsg}`);
@@ -487,7 +579,8 @@ export async function runGenerate() {
         // カード画像のダウンロード（image_url → alt_image_url バリデーション付きフォールバック）
         const tDl = Date.now();
         const primaryUrls = pageCards.map(c => c.image_url || c.alt_image_url || null);
-        const primaryBuffers = await downloadImagesWithConcurrency(accessToken, primaryUrls, 8);
+        const primaryBuffers = tokyoSnapshot ? pageCards.map(card => tokyoImageBuffers.get(card.id) ?? null)
+          : await downloadImagesWithConcurrency(accessToken, primaryUrls, 8);
 
         // DL成功でも sharp で読めなければ alt_image_url でリトライ
         const altRetryIndices: number[] = [];
@@ -542,20 +635,22 @@ export async function runGenerate() {
         try {
           const tCompose = Date.now();
           const imageBuffer = await composePage({
+            requireCardImages: tokyoSnapshot,
             templateBuffer: currentTemplate,
             cardBackBuffer: currentCardBack,
             cards: pageCards,
             layout,
             assetProfile: assetProfile,
-            gridCols: isBoxPage ? assetProfile.grid_cols : layoutTemplate!.grid_cols,
+            gridCols: usesLegacyBoxAssets ? assetProfile.grid_cols : layoutTemplate!.grid_cols,
             rarityIconBuffers,
             cardImageBuffers,
             dateText,
-            skipPriceLow: isBoxPage ? false : layoutTemplate!.skip_price_low,
+            skipPriceLow: tokyoSnapshot ? !isBoxPage : isBoxPage ? false : layoutTemplate!.skip_price_low,
+            priceLowText: STORE_NAME === 'manman-akihabara' && isBoxPage && !boxPriceLowEnabled ? '-' : undefined,
             layoutAdjust: layout.layoutAdjust,
             rowPriceAdjust: layout.rowPriceAdjust,
             rowCardAdjust: layout.rowCardAdjust,
-            totalSlots: isBoxPage ? assetProfile.total_slots : layoutTemplate!.total_slots,
+            totalSlots: usesLegacyBoxAssets ? assetProfile.total_slots : layoutTemplate!.total_slots,
           });
           const composeMs = Date.now() - tCompose;
 
@@ -621,6 +716,27 @@ export async function runGenerate() {
       console.log(`[generate]   ${franchise} 完了: ${Date.now() - tFranchise}ms`);
     }
 
+    if (tokyoSnapshot) {
+      const { data: finalPages, error } = await supabase.from('generated_page').select('status,card_ids')
+        .eq('run_id', run.id);
+      const expectedIds = [...pricedCardsByFranchise.values()].flat().map(card => card.id);
+      const actualIds = (finalPages ?? []).flatMap(page => page.card_ids);
+      if (error || !finalPages?.length || finalPages.some(page => page.status !== 'generated')
+        || actualIds.length !== expectedIds.length || new Set(actualIds).size !== expectedIds.length
+        || expectedIds.some(id => !actualIds.includes(id))) {
+        throw new Error('東京通常ギャラリーの全商品・画像生成を確認できません');
+      }
+      const cardsById = new Map([...pricedCardsByFranchise.values()].flat().map(card => [card.id, card]));
+      const payload = buildTokyoPelekaCatalog({
+        runId: run.id,
+        snapshotId: run.tokyo_snapshot_id!,
+        businessDate: `${displayDate.year}-${displayDate.month}-${displayDate.day}`,
+        generatedAt: run.started_at,
+        cards: actualIds.map(id => cardsById.get(id)!),
+      });
+      await publishTokyoPelekaCatalog(pelekaConfig!.endpoint, pelekaConfig!.token, payload);
+      console.log(`[generate] Peleka東京カタログ反映完了: ${payload.count}商品 sha256=${payload.productsSha256}`);
+    }
     // ---- 5. Run 完了更新（claim token一致時だけ） ----
     const completedAt = new Date().toISOString();
     const { data: completedRun, error: completionError } = await supabase

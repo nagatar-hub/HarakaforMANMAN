@@ -1,0 +1,26 @@
+# 東京満満（manman-akihabara）専用ビルド。
+#
+# cloudbuild.yaml はイメージを可変タグ（:latest）で push するが、オリパーク/manman の
+# Cloud Run Jobs は `haraka/haraka-manman-job` をタグ参照しているため、:latest を
+# 上書きすると他店舗が次回実行時に新イメージを拾ってしまう。
+# 東京だけを反映したいときはこの設定でコミットSHA付きタグを push し、
+# 東京のサービスへダイジェスト指定で差し替える（:latest は触らない）。
+#
+#   gcloud builds submit --config=cloudbuild.tokyo.yaml --region=asia-northeast1 \
+#     --substitutions=_TAG=tokyo5src-$(git rev-parse --short HEAD) .
+#   gcloud run jobs update haraka-manman-akihabara-{sync,generate,custom-render,watchdog} \
+#     --image=<repo>/haraka-manman-job@<digest> --region=asia-northeast1
+#   gcloud run services update haraka-manman-akihabara-api \
+#     --image=<repo>/haraka-manman-api@<digest> --region=asia-northeast1
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-api:${_TAG}', '.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-job:${_TAG}', '-f', 'packages/job/Dockerfile', '.']
+substitutions:
+  _TAG: 'tokyo-manual'
+images:
+  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-api:${_TAG}'
+  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-job:${_TAG}'
+options:
+  machineType: 'E2_HIGHCPU_8'

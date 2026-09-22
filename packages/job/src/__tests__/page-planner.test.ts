@@ -5,6 +5,7 @@
  */
 
 import { planPages } from '../lib/page-planner';
+import { planTokyoGalleryPages } from '../jobs/generate';
 import type {
   PreparedCardRow,
   RuleRow,
@@ -92,6 +93,58 @@ function makeLayout(slots: number, overrides: Partial<LayoutTemplateRow> = {}): 
 }
 
 const LAYOUTS = [1, 2, 4, 6, 9, 15, 20, 40].map(n => makeLayout(n));
+
+describe('Tokyo normal gallery', () => {
+  it('restores configured PSA groups without mixing BOX or other-store rules', () => {
+    const cards = [makeCard({ id:'pikachu-low',tag:'ピカチュウ/VMAX',price_high:100 }),
+      makeCard({id:'pikachu-high',tag:'ピカチュウ/プロモ',price_high:200}),
+      makeCard({id:'vstar',tag:'VSTAR/SAR',price_high:300}),
+      makeCard({id:'box-low',tag:'BOX',grade:'未開封BOX',price_high:10}),
+      makeCard({id:'box-high',tag:'BOX',grade:'未開封BOX',price_high:20})];
+    const rules = [makeRule({id:'p',store:'manman-akihabara',tag_pattern:'ピカチュウ',match_type:'contains',behavior:'group',group_key:'ピカチュウ',priority:900}),
+      makeRule({id:'a',store:'manman-akihabara',tag_pattern:'AR',match_type:'contains',behavior:'group',group_key:'AR/SAR',priority:1000}),
+      makeRule({id:'v',store:'manman-akihabara',tag_pattern:'VSTAR',match_type:'contains',behavior:'group',group_key:'GX/TAG/V/VMAX/VSTAR',priority:500}),
+      makeRule({id:'foreign',store:'manman',tag_pattern:'.*',match_type:'regex',behavior:'exclude',priority:9999})];
+    const before=JSON.stringify(cards);
+    const plans=planTokyoGalleryPages(cards,[makeLayout(2,{id:'psa'}),makeLayout(2,{id:'box',slug:'box_2'})],rules);
+    expect(plans.map(p=>[p.label,p.cardIds,p.layoutTemplateId])).toEqual([
+      ['ピカチュウ',['pikachu-high','pikachu-low'],'psa'],['GX/TAG/V/VMAX/VSTAR',['vstar'],'psa'],['BOX',['box-high','box-low'],'box']]);
+    expect(JSON.stringify(cards)).toBe(before);
+  });
+  it('keeps tag 2 together and sorts prices inside each tag 2 group', () => {
+    const cards = [
+      makeCard({ id:'promo-low',tag:'ピカチュウ/プロモ',price_high:100 }),
+      makeCard({ id:'vmax-high',tag:'ピカチュウ/VMAX',price_high:400 }),
+      makeCard({ id:'promo-high',tag:'ピカチュウ/プロモ',price_high:300 }),
+      makeCard({ id:'vmax-low',tag:'ピカチュウ/VMAX',price_high:200 }),
+    ];
+    const rules=[makeRule({store:'manman-akihabara',tag_pattern:'ピカチュウ',match_type:'contains',behavior:'group',group_key:'ピカチュウ'})];
+    const plans=planTokyoGalleryPages(cards,[makeLayout(4,{id:'psa'})],rules);
+    expect(plans[0].cardIds).toEqual(['vmax-high','vmax-low','promo-high','promo-low']);
+    expect(planPages(cards,[],[makeLayout(4,{id:'non-tokyo'})])[0].cardIds)
+      .toEqual(['vmax-high','promo-high','vmax-low','promo-low']);
+  });
+  it('keeps raw nested tag selections usable and leaves other-store contains matching unchanged', () => {
+    const cards=[makeCard({id:'selected',tag:'ピカチュウ/VMAX/プロモ'}),makeCard({id:'other',tag:'ピカチュウ/V'})];
+    const rule=makeRule({store:'manman-akihabara',tag_pattern:'ピカチュウ/VMAX',match_type:'contains',behavior:'group',group_key:'選択グループ'});
+    const before=JSON.stringify(rule);
+    expect(planPages(cards,[rule],LAYOUTS)[0]).toMatchObject({label:'選択グループ',cardIds:['selected']});
+    expect(JSON.stringify(rule)).toBe(before);
+    expect(planPages([makeCard({id:'legacy',tag:'VSTAR'})],[{...rule,store:'manman',tag_pattern:'AR'}],LAYOUTS)[0])
+      .toMatchObject({label:'選択グループ',cardIds:['legacy']});
+  });
+  it('places every PSA and BOX once with their own stored layout and unchanged price', () => {
+    const cards = Array.from({ length: 471 }, (_, n) => makeCard({ id: `tokyo-${n}`,
+      tag: n < 416 ? 'PSA10' : 'BOX', price_high: 9700, price_low: 9700 }));
+    const layouts = [makeLayout(24, { id: 'psa', slug: 'store_40' }), makeLayout(30, { id: 'box', slug: 'box_30' })];
+    const plans = planTokyoGalleryPages(cards, layouts);
+    expect(plans.flatMap(p => p.cardIds).sort()).toEqual(cards.map(c => c.id).sort());
+    expect(plans.filter(p => p.label.startsWith('PSA10')).every(p => p.layoutTemplateId === 'psa')).toBe(true);
+    expect(plans.filter(p => p.label.startsWith('BOX')).every(p => p.layoutTemplateId === 'box')).toBe(true);
+    expect(cards.every(c => c.price_high === 9700)).toBe(true);
+    expect(() => planTokyoGalleryPages(cards, layouts.slice(0, 1))).toThrow('BOX');
+  });
+});
 
 // ---------------------------------------------------------------------------
 

@@ -3,6 +3,9 @@ import {
   DEFAULT_STORE_PRICING_SETTINGS,
   mergeStorePricingSettings,
   normalizeStorePricingSettings,
+  validateTokyoSourceDiscountRates,
+  validateTokyoOutlierGuard,
+  validateTokyoPriceMaxAgeDays,
 } from '@haraka/shared';
 import { createSupabaseClient } from '../lib/supabase.js';
 
@@ -42,6 +45,12 @@ storeConfigRoutes.patch('/store-config', async (c) => {
     .single();
 
   const mergedSettings = mergeStorePricingSettings(existing?.settings, body.settings);
+  if (STORE_NAME === 'manman-akihabara') {
+    const validationError = validateTokyoSourceDiscountRates(mergedSettings.tokyo_source_discount_rates)
+      ?? validateTokyoOutlierGuard(mergedSettings.tokyo_outlier_guard)
+      ?? validateTokyoPriceMaxAgeDays(mergedSettings.tokyo_price_max_age_days);
+    if (validationError) return c.json({ error: validationError }, 400);
+  }
 
   const { data, error } = await supabase
     .from('store_config')

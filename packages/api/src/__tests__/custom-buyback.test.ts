@@ -5,16 +5,51 @@ import {
   buildCustomBuybackCatalogOrFilter,
   buildKaitoriCheckerCatalogOrFilter,
   customBuybackRoutes,
+  isCustomBuybackFranchise,
   mapKaitoriCheckerCatalogCard,
+  mapTokyoCatalogCard,
   matchCustomBuybackRefreshCards,
   parseCustomBuybackCatalogIds,
   parseCustomBuybackCatalogQuery,
   parseCustomBuybackCreate,
   parseCustomBuybackPricePatch,
   parseCustomBuybackSheetPatch,
+  usesKaitoriChecker,
 } from '../routes/custom-buyback.js';
 
 const originalToken = process.env.ORDER_LIST_IMPORT_API_TOKEN;
+
+test('Tokyo catalog carries only the already discounted Shinsoku price and stable item ID', () => {
+  const psa = mapTokyoCatalogCard({ snapshot_id: 'snapshot', id: 'shinsoku-123', franchise: 'Pokemon',
+    product_type: 'psa', name: 'カイ', model_number: '236/172', image_url: null,
+    source_price: 10000, price_high: 9700, price_low: 9000, selected_high_source: 'kecak',
+    selected_low_source: 'shinsoku', origins: ['kecak','bank'] }, '2026-09-07');
+  assert.equal(psa.price_high, 9700);
+  assert.equal(psa.shop_name, 'KECAK');
+  assert.equal(psa.price_low, null);
+  assert.equal(psa.price_source, 'shinsoku');
+  assert.equal(psa.source, 'shinsoku');
+  assert.equal(psa.id, 'shinsoku-123');
+  assert.equal(psa.source_product_id, null);
+  assert.equal(psa.list_no, '236/172');
+  assert.equal(psa.grade, 'PSA10');
+  assert.equal(psa.price_source_date, '2026-09-07');
+  const box = mapTokyoCatalogCard({ snapshot_id: 'snapshot', id: 'box-123', franchise: 'Pokemon',
+    product_type: 'box', name: 'BOX', model_number: null, image_url: null,
+    source_price: 10000, price_high: 9600, price_low: 9600, selected_high_source: 'avirile',
+    selected_low_source: 'avirile', origins: ['aviril'] }, '2026-09-07');
+  assert.equal(box.tag, 'BOX');
+  assert.equal(box.price_high, 9600);
+  assert.equal(box.shop_name, 'アヴィリール');
+  // Pre-comparison snapshots carry no selected source and keep the original label.
+  assert.equal(mapTokyoCatalogCard({ snapshot_id: 'snapshot', id: 'legacy', franchise: 'Pokemon',
+    product_type: 'box', name: 'BOX', model_number: null, image_url: null, source_price: 10000,
+    price_high: 9600, price_low: null, selected_high_source: null, selected_low_source: null,
+    origins: [] }, '2026-09-07').shop_name, 'シンソク郵送買取');
+  assert.equal(parseCustomBuybackCatalogIds({ prepared_card_ids: ['box-123'] }, 'shinsoku').ok, false);
+  assert.equal(parseCustomBuybackCatalogIds({ catalog_ids: ['box-123', 'box-123'] }, 'shinsoku').ok, false);
+  assert.deepEqual(parseCustomBuybackCatalogIds({ catalog_ids: ['box-123'] }, 'shinsoku'), { ok: true, value: ['box-123'] });
+});
 
 afterEach(() => {
   if (originalToken === undefined) delete process.env.ORDER_LIST_IMPORT_API_TOKEN;
@@ -45,6 +80,23 @@ test('sheet create input is normalized and constrained', () => {
   assert.equal(parseCustomBuybackCreate({
     name: 'bad', franchise: 'Pokemon', product_type: 'sealed', kind: 'store',
   }).ok, false);
+  assert.equal(parseCustomBuybackCreate({
+    name: '東京ヴァイス', franchise: 'WEISS SCHWARZ', product_type: 'psa', kind: 'store',
+  }, 'manman-akihabara').ok, true);
+  assert.equal(parseCustomBuybackCreate({
+    name: '大阪ヴァイス', franchise: 'WEISS SCHWARZ', product_type: 'psa', kind: 'store',
+  }, 'manman').ok, false);
+  assert.equal(parseCustomBuybackCreate({
+    name: '東京ドラゴン郵送', franchise: 'DRAGON BALL', product_type: 'psa', kind: 'postal',
+  }, 'manman-akihabara').ok, false);
+});
+
+test('Weiss and Dragon use the store order-list snapshot', () => {
+  assert.equal(isCustomBuybackFranchise('WEISS SCHWARZ', 'manman-akihabara'), true);
+  assert.equal(isCustomBuybackFranchise('DRAGON BALL', 'manman-akihabara'), true);
+  assert.equal(isCustomBuybackFranchise('WEISS SCHWARZ', 'manman'), false);
+  assert.equal(usesKaitoriChecker('WEISS SCHWARZ'), false);
+  assert.equal(usesKaitoriChecker('DRAGON BALL'), false);
 });
 
 test('sheet date patch accepts real calendar dates and rejects impossible dates', () => {

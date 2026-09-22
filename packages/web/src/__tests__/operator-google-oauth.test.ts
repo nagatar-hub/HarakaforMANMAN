@@ -161,6 +161,20 @@ test('Tokyo operator callback accepts a verified tomstocks.net user without an i
   });
 });
 
+test('Tokyo operator login selects the tomstocks.net Google Workspace domain', async () => {
+  configureOperatorOAuth();
+  process.env.STORE_NAME = 'manman-akihabara';
+  const request = new NextRequest(
+    'https://app.example/api/auth/google?target=operator&return_to=%2Fruns',
+    { headers: { Host: 'app.example', 'X-Forwarded-Proto': 'https' } },
+  );
+
+  const response = await startGoogleOAuth(request);
+
+  expect(response.status).toBe(307);
+  expect(new URL(response.headers.get('location')!).searchParams.get('hd')).toBe('tomstocks.net');
+});
+
 test('operator callback fails closed for an unverified user', async () => {
   configureOperatorOAuth();
   const nonce = 'nonce-unverified';
