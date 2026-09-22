@@ -77,10 +77,34 @@ test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied check
   expect(fetchShinsokuPostalProducts).toHaveBeenCalledWith();
 });
 
-test('Tokyo fails closed when any of the five sources has no same-day price', async () => {
+// ラインアップは和集合で金額は比較候補でしかないため、当日価格が無いソースは
+// その日の比較に参加しないだけで、掲載全体は止めない。
+test('a source with no same-day price simply sits out the comparison', async () => {
   const offers = OFFERS.filter(offer => offer.shop_id !== 11);
   const db = database([{ ...completed, offer_count: offers.length }], offers);
-  await expect(buildTokyoBuybackSnapshot(db, now)).rejects.toThrow('Blue Rocketの当日価格がありません');
+  const result = await buildTokyoBuybackSnapshot(db, now);
+  expect(result.snapshot.report.source_counts).toEqual({
+    kecak: 1, blue_rocket: 0, toreca_bank: 1, avirile: 1, shinsoku: 1 });
+  expect(result.products.map(product => [product.id, product.selected_high_source])).toEqual([
+    ['IAP1', 'kecak'],
+    [expect.stringMatching(/^TOKYO_[0-9a-f]{64}$/), 'avirile'],
+  ]);
+  expect(result.products[0].origins.map(origin => origin.source)).toEqual(['kecak', 'toreca_bank', 'shinsoku']);
+});
+
+// 翌日になり KECAK のオーダーリストも買取チェッカーも前日のまま、という実運用で起きる状況。
+// 前日の金額は一切採用せず、当日価格を持つシンソクだけで掲載を続ける。
+test('a previous-day KECAK order list never prices as today, and publishing continues on Shinsoku alone', async () => {
+  const nextDay = new Date('2026-09-09T20:00:00Z'); // JST 2026-09-10 05:00
+  const result = await buildTokyoBuybackSnapshot(database([completed]), nextDay);
+  expect(result.snapshot.business_date).toBe('2026-09-10');
+  expect(result.snapshot.report.source_counts).toEqual({
+    kecak: 0, blue_rocket: 0, toreca_bank: 0, avirile: 0, shinsoku: 1 });
+  expect(result.products.map(product => [product.id, product.source_price, product.selected_high_source])).toEqual([
+    ['IAP1', 123000, 'shinsoku'],
+  ]);
+  // KECAK 130,000 は前日の金額なので、どの商品の採用元にもならない。
+  expect(result.products.every(product => product.origins.every(origin => origin.source === 'shinsoku'))).toBe(true);
 });
 
 test.each([

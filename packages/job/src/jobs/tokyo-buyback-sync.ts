@@ -23,7 +23,7 @@ type CheckerOffer = { source_product_id: number; shop_id: number; condition_id: 
   edition_name?: string | null; buy_price?: number; source_updated_at?: string | null };
 export type TokyoCandidate = Omit<PostalCandidate, 'source'> & { source: TokyoPriceSource; sourceProductId?: number;
   conditionId?: number; sourcePrice?: number | null; dbCardId?: string | null; imageUrl?: string | null;
-  observedAt?: string | null };
+  observedAt?: string | null; priceStale?: boolean };
 type ComparedOrigin = TokyoCandidate & { rawPrice: number; highRate: number; highPrice: number;
   lowRate: number; lowPrice: number; excluded?: true };
 
@@ -49,10 +49,6 @@ export function tokyoComparableOrigins(origins: ComparedOrigin[], guard: TokyoOu
 const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = {
   11: 'blue_rocket', 3: 'toreca_bank', 13: 'avirile',
 };
-const SOURCE_LABELS: Record<TokyoPriceSource, string> = {
-  kecak: 'KECAK', blue_rocket: 'Blue Rocket', toreca_bank: 'トレカバンク',
-  avirile: 'アヴィリール', shinsoku: 'シンソク郵送買取',
-};
 const validPrice = (price: number | null | undefined): price is number =>
   Number.isSafeInteger(price) && price! > 0 && price! <= 100_000_000;
 const currentTokyoDate = (value: string | null | undefined, businessDate?: string) => {
@@ -63,8 +59,11 @@ const currentTokyoDate = (value: string | null | undefined, businessDate?: strin
 };
 
 export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[],
-  options: { businessDate?: string; kecakObservedAt?: string | null } = {}): TokyoCandidate[] {
+  options: { businessDate?: string; kecakObservedAt?: string | null; kecakBusinessDate?: string } = {}): TokyoCandidate[] {
   const candidates: TokyoCandidate[] = [];
+  // 前日のオーダーリストでも商品自体はラインアップに残すが、金額は当日のものだけを比較へ出す。
+  // 鮮度は取込時刻ではなくオーダーリスト自身の業務日で判定する。
+  const kecakPriceIsCurrent = !options.businessDate || options.kecakBusinessDate === options.businessDate;
   for (const row of orderRows) {
     if (!KECAK_FRANCHISES.includes(row.franchise)) continue;
     if (['excluded', 'invalid'].includes(row.match_status) || isBuiltInOrderListExclusion(row.card_name)) continue;
@@ -72,7 +71,8 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
     const productType = isBoxRow(row) ? 'BOX' : grade === 'PSA10' ? 'PSA10' : null;
     if (productType) candidates.push({ source: 'kecak', id: row.excel_product_id,
       franchise: row.franchise, name: row.card_name, modelNumber: row.list_no, productType,
-      sourcePrice: row.source_price, dbCardId: row.db_card_id, observedAt: options.kecakObservedAt });
+      sourcePrice: kecakPriceIsCurrent ? row.source_price : null, priceStale: !kecakPriceIsCurrent,
+      dbCardId: row.db_card_id, observedAt: options.kecakObservedAt });
   }
   const productById = new Map(products.map(product => [product.source_product_id, product]));
   const seen = new Set<string>();
@@ -105,14 +105,15 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
     imageUrl: product.imageUrl, observedAt,
   }))];
   const groups = new Map<string, TokyoCandidate[]>();
-  const unmatched: { candidate: TokyoCandidate; reason: 'missing_model' | 'invalid_price' | 'ambiguous' | 'zero_after_discount' | 'outlier_price' }[] = [];
+  const unmatched: { candidate: TokyoCandidate; reason: 'missing_model' | 'invalid_price' | 'stale_price' | 'ambiguous' | 'zero_after_discount' | 'outlier_price' }[] = [];
   for (const candidate of all) {
     if (candidate.productType === 'PSA10' && !candidate.modelNumber?.trim()) {
       unmatched.push({ candidate, reason: 'missing_model' });
       continue;
     }
     if (!validPrice(candidate.sourcePrice)) {
-      unmatched.push({ candidate, reason: 'invalid_price' });
+      // 前日の金額は「不正」ではなく「当日でないので不参加」として区別する。
+      unmatched.push({ candidate, reason: candidate.priceStale ? 'stale_price' : 'invalid_price' });
       continue;
     }
     const identity = postalProductIdentity(candidate);
@@ -196,7 +197,6 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     throw new Error('東京満満の最新オーダーリストを反映してから価格を取得してください');
   }
   const businessDate = tokyoBusinessDate(now);
-  if (order.business_date !== businessDate) throw new Error('KECAKの当日価格がありません');
   if (claim) {
     const { data: run, error } = await db.from('run').select('id,order_list_sync_request_id,order_list_sync_request_fingerprint')
       .eq('id', claim.runId).eq('store', TOKYO_BUYBACK_STORE).eq('order_list_import_id', order.id)
@@ -234,18 +234,19 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   }
   if (products.length !== checker.product_count || offers.length !== checker.offer_count) throw new Error('買取チェッカーの保存件数が完了記録と一致しません');
   const candidates = tokyoProductCandidates(orderRows, products, offers, {
-    businessDate, kecakObservedAt: order.created_at ?? `${businessDate}T00:00:00+09:00`,
+    businessDate, kecakBusinessDate: order.business_date,
+    kecakObservedAt: order.created_at ?? `${order.business_date}T00:00:00+09:00`,
   });
   // Pull the public catalog first; Tokyo order-list names and model numbers never leave Haraka.
   const sourceProducts = await fetchShinsokuPostalProducts();
   const fetchedAt = now.toISOString();
+  // ラインアップは5ソースの和集合で、金額は比較候補でしかない。当日価格が無いソースは
+  // その日の比較に参加しないだけで、掲載全体を止める理由にはしない。件数は報告に残す。
   const sourceCounts = Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, source === 'shinsoku'
     ? sourceProducts.filter(product => validPrice(product.price)).length
     : candidates.filter(row => row.source === source && validPrice(row.sourcePrice)).length]));
-  const missingSource = TOKYO_PRICE_SOURCES.find(source => sourceCounts[source] === 0);
-  if (missingSource) throw new Error(`${SOURCE_LABELS[missingSource]}の当日価格がありません`);
   const result = compareTokyoSourceProducts(candidates, sourceProducts, settings, fetchedAt);
-  if (!result.products.length) throw new Error('5店舗の当日価格に掲載可能な商品がありません');
+  if (!result.products.length) throw new Error('当日価格で掲載可能な商品がありません');
   return { snapshot: { id: randomUUID(), store: TOKYO_BUYBACK_STORE, order_list_import_id: order.id,
     checker_run_id: checker.id, checker_source_store: CHECKER_STORE, fetched_at: fetchedAt,
     business_date: businessDate, settings,

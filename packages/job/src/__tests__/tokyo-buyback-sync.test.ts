@@ -42,6 +42,23 @@ test('checker offers outside the Tokyo business date never enter the lineup', ()
   expect(candidates.map(row => row.source)).toEqual(['toreca_bank']);
 });
 
+test('a previous-day KECAK order list keeps its lineup row but never prices as today', () => {
+  const rows = [{ id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172',
+    grade: 'PSA10', match_status: 'matched', source_price: 130000 }];
+  const current = tokyoProductCandidates(rows, [], [], { businessDate: '2026-09-23', kecakBusinessDate: '2026-09-23' });
+  const stale = tokyoProductCandidates(rows, [], [], { businessDate: '2026-09-23', kecakBusinessDate: '2026-09-22' });
+  expect(current.map(row => [row.source, row.sourcePrice])).toEqual([['kecak', 130000]]);
+  // 商品はラインアップに残るが、前日の金額は比較へ出さない。
+  expect(stale.map(row => [row.source, row.sourcePrice])).toEqual([['kecak', null]]);
+  // 他ソースが当日価格を持てば、そちらだけで掲載が続く。
+  expect(compareTokyoSourceProducts(stale, [OFFICIAL], SETTINGS, OBSERVED_AT).products
+    .map(product => [product.selected_high_source, product.source_price])).toEqual([['shinsoku', 100000]]);
+  const alone = compareTokyoSourceProducts(stale, [], SETTINGS, OBSERVED_AT);
+  expect(alone.products).toEqual([]);
+  // 「不正な価格」ではなく「当日でないので不参加」として報告する。
+  expect(alone.unmatched.map(row => row.reason)).toEqual(['stale_price']);
+});
+
 test('the five sources compete on discounted price and KECAK can win over Shinsoku', () => {
   const candidates = tokyoProductCandidates([
     { id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172', grade: 'PSA10', match_status: 'matched', source_price: 110000 },
