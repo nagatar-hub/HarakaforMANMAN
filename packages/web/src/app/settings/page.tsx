@@ -166,10 +166,9 @@ export default function SettingsPage() {
       if (config?.store === 'manman-akihabara') {
         for (const source of TOKYO_PRICE_SOURCES) {
           const rates = tokyoSourceRates[source];
-          if (![rates.high, rates.low].every(rate => Number.isFinite(rate) && rate >= 0 && rate <= 100)) {
+          if (!Number.isFinite(rates.high) || rates.high < 0 || rates.high > 100) {
             throw new Error(`${TOKYO_SOURCE_LABELS[source]}の減額率は0〜100%で設定してください`);
           }
-          if (rates.low < rates.high) throw new Error(`${TOKYO_SOURCE_LABELS[source]}の下限減額率は上限減額率以上に設定してください`);
         }
         if (!Number.isFinite(outlierGuard.max_median_ratio) || outlierGuard.max_median_ratio < 2 || outlierGuard.max_median_ratio > 1000) {
           throw new Error('外れ値の倍率は2〜1000倍で設定してください');
@@ -188,9 +187,11 @@ export default function SettingsPage() {
           settings: {
             ...(config?.store === 'manman-akihabara' ? { box_price_low_enabled: boxPriceLowEnabled } : {}),
             ...(config?.store === 'manman-akihabara' ? { tokyo_source_discount_rates: Object.fromEntries(
+              // 下限減額率は買取表に出ないため画面では扱わない。保存済みの値を保ち、
+              // 「下限 >= 上限」の不変条件を満たさなくなる場合だけ上限に合わせる。
               TOKYO_PRICE_SOURCES.map(source => [source, {
                 high: tokyoSourceRates[source].high / 100,
-                low: tokyoSourceRates[source].low / 100,
+                low: Math.max(tokyoSourceRates[source].low, tokyoSourceRates[source].high) / 100,
               }]),
             ) } : {}),
             ...(config?.store === 'manman-akihabara'
@@ -238,26 +239,26 @@ export default function SettingsPage() {
           {config?.store === 'manman-akihabara' && <section>
             <h2 className="text-lg font-bold text-text-primary mb-2">東京比較価格の店舗別減額率</h2>
             <p className="text-sm text-text-secondary mb-6">
-              当日の元価格へ減額率を適用し、上限・下限それぞれ最も高い金額を採用します。
+              各店舗の元価格へ減額率を適用し、最も高くなった店舗の金額を採用します。
             </p>
             <div className="space-y-5">
-              {TOKYO_PRICE_SOURCES.map(source => <div key={source} className="grid gap-3 border-b border-border-card pb-5 last:border-b-0 sm:grid-cols-[1fr_140px_140px] sm:items-end">
+              {TOKYO_PRICE_SOURCES.map(source => <div key={source} className="grid gap-3 border-b border-border-card pb-5 last:border-b-0 sm:grid-cols-[1fr_140px] sm:items-end">
                 <p className="text-sm font-bold text-text-primary">{TOKYO_SOURCE_LABELS[source]}</p>
-                {(['high', 'low'] as const).map(key => <label key={key} className="block">
-                  <span className="mb-1 block text-xs font-semibold text-text-secondary">{key === 'high' ? '上限' : '下限'}減額率</span>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold text-text-secondary">減額率</span>
                   <span className="flex items-center gap-1">
                     <input
                       type="number"
                       min={0}
                       max={100}
                       step={1}
-                      value={tokyoSourceRates[source][key]}
-                      onChange={event => updateTokyoSourceRate(source, key, Number(event.target.value))}
+                      value={tokyoSourceRates[source].high}
+                      onChange={event => updateTokyoSourceRate(source, 'high', Number(event.target.value))}
                       className="w-full rounded-lg border border-border-card bg-transparent px-3 py-2 text-right font-bold text-text-primary focus:outline-none"
                     />
                     <span className="text-text-secondary">%</span>
                   </span>
-                </label>)}
+                </label>
               </div>)}
             </div>
             <h3 className="text-sm font-bold text-text-primary mt-8 mb-2">比較に使う価格の鮮度</h3>
