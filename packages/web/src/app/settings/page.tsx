@@ -322,7 +322,8 @@ export default function SettingsPage() {
             </div>
           </section>}
 
-          <section className="bg-warm-100 rounded-xl px-5 py-4">
+          {/* 以下は東京では公開価格に使われない。東京の価格は店舗別減額率だけで決まる。 */}
+          {config?.store !== 'manman-akihabara' && <section className="bg-warm-100 rounded-xl px-5 py-4">
             <h2 className="text-sm font-bold text-text-primary">
               割引後価格の端数処理（BOX上限を除く）
             </h2>
@@ -338,9 +339,9 @@ export default function SettingsPage() {
             <p className="text-xs text-text-secondary mt-3">
               例: 元価格 ¥105,000・10%引き → 割引後 ¥94,500 → 10万円未満のルールで ¥94,000
             </p>
-          </section>
+          </section>}
 
-          <section>
+          {config?.store !== 'manman-akihabara' && <section>
             <h2 className="text-lg font-bold text-text-primary mb-6">BOX 割引率</h2>
             <p className="text-sm text-text-secondary mb-6">シュリンク有りはシンソクのS価格に割引率を1回だけ適用し、1,000円未満を切り捨てます。</p>
 
@@ -429,9 +430,9 @@ export default function SettingsPage() {
                 );
               })}
             </div>
-          </section>
+          </section>}
 
-          <section className="border-t border-border-card pt-8">
+          {config?.store !== 'manman-akihabara' && <section className="border-t border-border-card pt-8">
             <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <h2 className="text-lg font-bold text-text-primary">商材別 減額率</h2>
               <label className="block sm:w-48">
@@ -493,7 +494,7 @@ export default function SettingsPage() {
                 );
               })}
             </div>
-          </section>
+          </section>}
 
           <button
             onClick={handleSave}
