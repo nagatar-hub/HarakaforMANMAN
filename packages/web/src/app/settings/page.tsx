@@ -187,8 +187,9 @@ export default function SettingsPage() {
           settings: {
             ...(config?.store === 'manman-akihabara' ? { box_price_low_enabled: boxPriceLowEnabled } : {}),
             ...(config?.store === 'manman-akihabara' ? { tokyo_source_discount_rates: Object.fromEntries(
-              // 下限減額率は買取表に出ないため画面では扱わない。保存済みの値を保ち、
-              // 「下限 >= 上限」の不変条件を満たさなくなる場合だけ上限に合わせる。
+              // 下限減額率は買取表に出ないため画面では扱わない。減額率は大きいほど価格が下がるので
+              // 「下限率 >= 上限率」が上限価格 >= 下限価格の条件。保存済みの値を保ち、
+              // 画面から触れない値で保存が弾かれないよう、満たさなくなる場合だけ上限率に合わせる。
               TOKYO_PRICE_SOURCES.map(source => [source, {
                 high: tokyoSourceRates[source].high / 100,
                 low: Math.max(tokyoSourceRates[source].low, tokyoSourceRates[source].high) / 100,
