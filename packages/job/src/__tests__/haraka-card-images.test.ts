@@ -39,7 +39,7 @@ test('Tokyo, franchise and grade boundaries reject other shops or single cards',
 
 test('single-card DB images are eligible for PSA display without changing target grade or price', () => {
   expect(findHarakaImage(product, [row({ grade: 'シングル' })]).status).toBe('matched');
-  const result = { snapshot: { store: 'manman-akihabara', business_date: '2026-09-07' }, products: [{ ...product, price_high: 9000 }] } as any;
+  const result = { snapshot: { store: 'manman-akihabara', business_date: '2026-09-07' }, products: [{ ...product, price_high: 9000, price_low: 9000 }] } as any;
   expect(buildTokyoPreparedCards('run', result, [], [row({ grade: 'シングル' })])[0])
     .toMatchObject({ image_url: url, grade: 'PSA10', tag: 'PSA10', price_high: 9000, price_low: 9000 });
 });
@@ -89,13 +89,13 @@ test('loader scopes and paginates beyond 1000 records, errors are not treated as
 });
 
 test('mapper chooses Haraka DB image and provenance without changing snapshot prices', () => {
-  const snapshot = { snapshot: { store: 'manman-akihabara', business_date: '2026-09-07' }, products: [{ ...product, price_high: 9000, image_url: 'https://example.com/slab.png' }] } as any;
+  const snapshot = { snapshot: { store: 'manman-akihabara', business_date: '2026-09-07' }, products: [{ ...product, price_high: 9000, price_low: 9000, image_url: 'https://example.com/slab.png' }] } as any;
   const [prepared] = buildTokyoPreparedCards('run', snapshot, [], [row()]);
   expect(prepared).toMatchObject({ db_card_id: 'db-1', image_url: url, alt_image_url: null, source_shinsoku_id: 'source-1', price_high: 9000, price_low: 9000, price_source: 'shinsoku' });
 });
 
 test('Tokyo inherits same-card tag consensus independently from image adoption and rejects review-only identity', () => {
-  const snapshot = { snapshot: { store: 'manman-akihabara', business_date: '2026-09-08' }, products: [{ ...product, price_high: 9000 }] } as any;
+  const snapshot = { snapshot: { store: 'manman-akihabara', business_date: '2026-09-08' }, products: [{ ...product, price_high: 9000, price_low: 9000 }] } as any;
   const prepare = (cards: DbCardRow[]) => buildTokyoPreparedCards('run', snapshot, [], cards)[0];
   expect(prepare([row({ tag: 'ピカチュウ/プロモ' })])).toMatchObject({ tag: 'ピカチュウ/プロモ', grade: 'PSA10', price_high: 9000, price_low: 9000 });
   const two = [row({ tag: 'ピカチュウ' }), row({ id: 'db-2', card_name: 'マリオピカチュウ（小）', tag: 'ピカチュウ', image_url: alternate })];
@@ -109,11 +109,11 @@ test('Tokyo inherits same-card tag consensus independently from image adoption a
 
 test('Tokyo reviewed Yugioh IDs use existing tags only, preserve fallback and BOX identity', () => {
   const snapshot = { snapshot: { store: 'manman-akihabara', business_date: '2026-09-08', settings: normalizeStorePricingSettings({}) }, products: [
-    { ...product, franchise: 'YU-GI-OH!', id: 'IAX2600000774', model_number: null, price_high: 9000 },
-    { ...product, franchise: 'YU-GI-OH!', id: 'IAX2600000407', model_number: null, price_high: 9000 },
-    { ...product, franchise: 'YU-GI-OH!', id: 'unknown', price_high: 9000 },
-    { ...product, franchise: 'Pokemon', id: 'IAX2600000407', price_high: 9000 },
-    { ...product, franchise: 'YU-GI-OH!', id: 'IAX2600000407', product_type: 'box', price_high: 9000, source_price: 10000 },
+    { ...product, franchise: 'YU-GI-OH!', id: 'IAX2600000774', model_number: null, price_high: 9000, price_low: 9000 },
+    { ...product, franchise: 'YU-GI-OH!', id: 'IAX2600000407', model_number: null, price_high: 9000, price_low: 9000 },
+    { ...product, franchise: 'YU-GI-OH!', id: 'unknown', price_high: 9000, price_low: 9000 },
+    { ...product, franchise: 'Pokemon', id: 'IAX2600000407', price_high: 9000, price_low: 9000 },
+    { ...product, franchise: 'YU-GI-OH!', id: 'IAX2600000407', product_type: 'box', price_high: 9000, price_low: 9000, source_price: 10000 },
   ] } as any;
   expect(buildTokyoPreparedCards('run', snapshot).map(p => p.tag)).toEqual(['モンスター', '青眼/他言語', 'PSA10', 'PSA10', 'BOX']);
 });

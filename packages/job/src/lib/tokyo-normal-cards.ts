@@ -1,4 +1,4 @@
-import { calculateBoxPrice, postalProductIdentity, type Franchise, type Database, type DbCardRow, type TokyoCardImageMappingRow } from '@haraka/shared';
+import { postalProductIdentity, type Database, type DbCardRow, type TokyoCardImageMappingRow } from '@haraka/shared';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { buildTokyoBuybackSnapshot } from '../jobs/tokyo-buyback-sync.js';
 import { findHarakaImage, harakaImageUrl } from './haraka-card-images.js';
@@ -79,19 +79,16 @@ export async function loadTokyoCardImageMappings(db: SupabaseClient<Database>, r
   return mappings;
 }
 
-/** Apply each configured BOX discount once to the selected source price. */
+/** Preserve the immutable high/low prices selected in the Tokyo snapshot. */
 export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, mappings: TokyoCardImageMappingRow[] = [], dbRows: DbCardRow[] = []): Database['public']['Tables']['prepared_card']['Insert'][] {
   if (result.snapshot.store !== 'manman-akihabara') throw new Error('Tokyo snapshot required');
   const images = new Map(mappings.map(mapping => [mapping.source_shinsoku_id, mapping]));
   if (images.size !== mappings.length) throw new Error('Duplicate Tokyo image mapping');
   return result.products.map(product => {
     if (!Number.isSafeInteger(product.price_high) || product.price_high <= 0
+      || !Number.isSafeInteger(product.price_low) || product.price_low < 0 || product.price_low > product.price_high
       || !['psa', 'box'].includes(product.product_type)) throw new Error('Invalid Tokyo prepared product');
     const box = product.product_type === 'box';
-    const noShrinkRate = box ? result.snapshot.settings?.box_discount_rates?.[product.franchise as Franchise]?.no_shrink : undefined;
-    if (box && (typeof noShrinkRate !== 'number' || !Number.isFinite(noShrinkRate) || noShrinkRate < 0 || noShrinkRate > 1)) {
-      throw new Error('Invalid Tokyo BOX no-shrink rate');
-    }
     const harakaImage = findHarakaImage(product, dbRows);
     const importedDbCardIds = !box && Array.isArray(product.origins)
       ? [...new Set(product.origins.flatMap(origin => origin.source === 'kecak' && 'dbCardId' in origin
@@ -156,7 +153,7 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
       db_card_id: dbCardId,
       rarity: null, rarity_icon_url: null, tag,
       price_high: product.price_high,
-      price_low: box ? Math.min(product.price_high, calculateBoxPrice(product.source_price, noShrinkRate!)) : product.price_high,
+      price_low: product.price_low,
       image_status: 'unchecked',
       source: 'shinsoku', price_source: 'shinsoku', price_source_date: result.snapshot.business_date,
     };

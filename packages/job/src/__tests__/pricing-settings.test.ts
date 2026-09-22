@@ -1,6 +1,7 @@
 import {
   DEFAULT_BOX_DISCOUNT_RATES,
   DEFAULT_PSA10_DISCOUNT_RATES,
+  DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
   mergeStorePricingSettings,
   normalizeStorePricingSettings,
 } from '@haraka/shared';
@@ -86,6 +87,7 @@ describe('normalizeStorePricingSettings', () => {
         'WEISS SCHWARZ': 0.06,
         'DRAGON BALL': 0.06,
       },
+      tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
     });
   });
 
@@ -168,6 +170,7 @@ describe('normalizeStorePricingSettings', () => {
         'WEISS SCHWARZ': 0.06,
         'DRAGON BALL': 0.06,
       },
+      tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
     });
   });
 

@@ -1,85 +1,124 @@
 import { normalizeStorePricingSettings } from '@haraka/shared';
-import { runTokyoBuybackSync, tokyoDisplayPrice, tokyoProductCandidates, tokyoMatchPostalProducts } from '../jobs/tokyo-buyback-sync';
+import {
+  compareTokyoSourceProducts, runTokyoBuybackSync, tokyoDisplayPrice, tokyoProductCandidates,
+} from '../jobs/tokyo-buyback-sync';
 import type { ShinsokuPostalProduct } from '@haraka/shared';
 
-test('lineup union includes only KECAK, Bank and Avirile candidates', () => {
+const SETTINGS = normalizeStorePricingSettings({});
+const OBSERVED_AT = '2026-09-09T05:00:00.000Z';
+const OFFICIAL: ShinsokuPostalProduct = { id: 'IAP1', franchise: 'Pokemon', name: 'カイ',
+  modelNumber: '236/172', productType: 'PSA10', price: 100000, imageUrl: 'official.jpg' };
+
+test('lineup union covers KECAK and the three checker shops, each carrying its own price', () => {
   const candidates = tokyoProductCandidates([
     { id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172', grade: 'PSA10', match_status: 'unmatched', source_price: 70000 },
     { id: 'k2', excel_product_id: 'k2', franchise: 'Pokemon', card_name: '素体', list_no: '1', grade: 'S', match_status: 'matched', source_price: 1 },
     { id: 'k3', excel_product_id: 'k3', franchise: 'WEISS SCHWARZ', card_name: '旧KECAKヴァイス', list_no: '1', grade: 'PSA10', match_status: 'matched', source_price: 80000 },
+    { id: 'ky', excel_product_id: 'ky', franchise: 'YU-GI-OH!', card_name: 'KECAK遊戯除外', list_no: 'Y/001', grade: 'PSA10', match_status: 'matched', source_price: 9000 },
   ], [
     { source_product_id: 2, category: 'pokemon', name: 'バンクのみ', full_name: null, model_number: '2' },
     { source_product_id: 3, category: 'one_piece', name: 'アヴィリールのみ', full_name: null, model_number: null },
   ], [
     { source_product_id: 2, shop_id: 3, condition_id: 1, edition_id: 0, buy_price: 9000 },
     { source_product_id: 3, shop_id: 13, condition_id: 2, edition_id: 0, buy_price: 8000 },
+    { source_product_id: 2, shop_id: 11, condition_id: 1, edition_id: 0, buy_price: 9500 },
     { source_product_id: 2, shop_id: 22, condition_id: 1, edition_id: 0 },
     { source_product_id: 2, shop_id: 3, condition_id: 1, edition_id: 0 },
   ]);
-  expect(candidates.map(row => row.source)).toEqual(['kecak', 'kecak', 'toreca_bank', 'avirile']);
-  expect(candidates.map(row => row.productType)).toEqual(['PSA10', 'PSA10', 'PSA10', 'BOX']);
-  expect(candidates[0]).toMatchObject({ source: 'kecak' });
-  expect(candidates[0].sourcePrice).toBeUndefined();
-  expect(candidates.slice(2).map(row => row.sourcePrice)).toEqual([9000, 8000]);
+  expect(candidates.map(row => row.source)).toEqual(['kecak', 'kecak', 'toreca_bank', 'avirile', 'blue_rocket']);
+  expect(candidates.map(row => row.productType)).toEqual(['PSA10', 'PSA10', 'PSA10', 'BOX', 'PSA10']);
+  // KECAK now carries its own price because it competes as a fifth source.
+  expect(candidates.map(row => row.sourcePrice)).toEqual([70000, 80000, 9000, 8000, 9500]);
+  expect(candidates.some(row => row.franchise === 'YU-GI-OH!')).toBe(false);
 });
 
-test('Shinsoku confirms candidate rows but never adds a Shinsoku-only lineup row', () => {
-  const product = (id: string, franchise: string, price: number | null = 10000): ShinsokuPostalProduct =>
-    ({ id, franchise, name: '同名', modelNumber: null, productType: 'PSA10', price, imageUrl: null });
+test('checker offers outside the Tokyo business date never enter the lineup', () => {
+  const products = [{ source_product_id: 2, category: 'pokemon', name: 'バンク', full_name: null, model_number: '2' }];
+  const candidates = tokyoProductCandidates([], products, [
+    { source_product_id: 2, shop_id: 3, condition_id: 1, edition_id: 0, buy_price: 9000, source_updated_at: '2026-09-23T00:30:00+09:00' },
+    { source_product_id: 2, shop_id: 11, condition_id: 1, edition_id: 0, buy_price: 9500, source_updated_at: '2026-09-22T23:30:00+09:00' },
+    { source_product_id: 2, shop_id: 13, condition_id: 1, edition_id: 0, buy_price: 9800, source_updated_at: null },
+  ], { businessDate: '2026-09-23' });
+  expect(candidates.map(row => row.source)).toEqual(['toreca_bank']);
+});
+
+test('the five sources compete on discounted price and KECAK can win over Shinsoku', () => {
   const candidates = tokyoProductCandidates([
-    { id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: '同名', list_no: '001/001', grade: 'PSA10', match_status: 'matched', source_price: 9000 },
-    { id: 'kw', excel_product_id: 'kw', franchise: 'WEISS SCHWARZ', card_name: '同名', list_no: 'W/001', grade: 'PSA10', match_status: 'matched', source_price: 9000 },
-    { id: 'kd', excel_product_id: 'kd', franchise: 'DRAGON BALL', card_name: '同名', list_no: 'D/001', grade: 'PSA10', match_status: 'matched', source_price: 9000 },
-    { id: 'kb', excel_product_id: 'kb', franchise: 'DRAGON BALL', card_name: '[1BOX]同名', list_no: null, grade: 'BOX', match_status: 'matched', source_price: 9000 },
-    { id: 'ky', excel_product_id: 'ky', franchise: 'YU-GI-OH!', card_name: 'KECAK遊戯除外', list_no: 'Y/001', grade: 'PSA10', match_status: 'matched', source_price: 9000 },
-  ], [], []);
-  const listedPokemon = { ...product('p1', 'Pokemon'), modelNumber: '001/001' };
-  const rows = [listedPokemon, product('p-unlisted', 'Pokemon'), product('op-unlisted', 'ONE PIECE'),
-    product('y1', 'YU-GI-OH!'), product('y2', 'YU-GI-OH!'), product('y1', 'YU-GI-OH!'),
-    { ...product('w1', 'WEISS SCHWARZ'), modelNumber: 'W/001' }, product('w-unlisted', 'WEISS SCHWARZ'),
-    { ...product('w-box-unlisted', 'WEISS SCHWARZ'), productType: 'BOX' as const },
-    { ...product('d-psa', 'DRAGON BALL'), modelNumber: 'D/001' }, product('d-psa-unlisted', 'DRAGON BALL'),
-    { ...product('d1', 'DRAGON BALL'), productType: 'BOX' as const },
-    product('zero', 'YU-GI-OH!', 0), product('null', 'YU-GI-OH!', null)];
-  const result = tokyoMatchPostalProducts(candidates, rows);
-  expect(result.matched.map(row => row.product.id)).toEqual(['p1', 'w1', 'd-psa', 'd1']);
-  expect(result.matched.find(row => row.product.id === 'd1')?.sources.map(row => row.source)).toEqual(['kecak', 'shinsoku']);
-  expect(result.matched.find(row => row.product.id === 'w1')?.sources.map(row => row.source)).toEqual(['kecak', 'shinsoku']);
-  expect(result.matched.find(row => row.product.id === 'd-psa')?.sources.map(row => row.source)).toEqual(['kecak', 'shinsoku']);
-  expect(candidates.some(row => row.franchise === 'YU-GI-OH!')).toBe(false);
-  expect(result.matched[0].sources[0].source).toBe('kecak');
-  expect(result.priceSources).toEqual({
-    p1: { source: 'shinsoku', source_id: 'p1', price: 10000 },
-    w1: { source: 'shinsoku', source_id: 'w1', price: 10000 },
-    'd-psa': { source: 'shinsoku', source_id: 'd-psa', price: 10000 },
-    d1: { source: 'shinsoku', source_id: 'd1', price: 10000 },
-  });
+    { id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172', grade: 'PSA10', match_status: 'matched', source_price: 110000 },
+  ], [
+    { source_product_id: 1, category: 'pokemon', name: 'カイ', full_name: null, model_number: '236/172' },
+  ], [
+    { source_product_id: 1, shop_id: 3, condition_id: 1, edition_id: 0, buy_price: 100000 },
+  ]);
+  const result = compareTokyoSourceProducts(candidates, [OFFICIAL], SETTINGS, OBSERVED_AT);
+  expect(result.products).toHaveLength(1);
+  expect(result.products[0]).toMatchObject({ id: 'IAP1', name: 'カイ', image_url: 'official.jpg',
+    source_price: 110000, price_high: 100000, price_low: 100000,
+    selected_high_source: 'kecak', selected_low_source: 'kecak' });
+  expect(result.products[0].origins.map(origin => [origin.source, origin.rawPrice, origin.highPrice, origin.lowPrice])).toEqual([
+    ['kecak', 110000, 100000, 100000],
+    ['toreca_bank', 100000, 90000, 90000],
+    ['shinsoku', 100000, 95000, 95000],
+  ]);
+  expect(result.priceSources).toEqual({ IAP1: { source: 'kecak', source_id: 'k1', price: 110000 } });
   expect(result.unmatched).toEqual([]);
 });
 
-test('checker lineup requires a current Shinsoku postal catalog match', () => {
-  const products = [{ source_product_id: 21461, category: 'pokemon', name: 'エーフィ☆', full_name: 'エーフィ☆ 025/PLAY',
-    model_number: '025/PLAY', image_url: 'checker.jpg' }];
-  const offers = [
-    { source_product_id: 21461, shop_id: 13, condition_id: 1, edition_id: 0, buy_price: 37000000 },
-    { source_product_id: 21461, shop_id: 22, condition_id: 1, edition_id: 0, buy_price: 15000000 },
-  ];
-  const candidates = tokyoProductCandidates([], products, offers);
-  expect(tokyoMatchPostalProducts(candidates, []).matched).toEqual([]);
-  expect(tokyoMatchPostalProducts(candidates, []).unmatched).toEqual([
-    { candidate: expect.objectContaining({ source: 'avirile', name: 'エーフィ☆', modelNumber: '025/PLAY' }), reason: 'not_found' },
-  ]);
-  const matched = tokyoMatchPostalProducts(candidates, [{ id: 'live', franchise: 'Pokemon', name: 'エーフィ☆', modelNumber: '025/PLAY',
-    productType: 'PSA10', price: 123000, imageUrl: 'live.jpg' }]);
-  expect(matched.matched[0].product.price).toBe(123000);
-  expect(matched.priceSources.live).toEqual({ source: 'shinsoku', source_id: 'live', price: 123000 });
+test('each source applies its own high and low rate independently', () => {
+  const settings = normalizeStorePricingSettings({ tokyo_source_discount_rates: {
+    kecak: { high: 0.05, low: 0.20 }, shinsoku: { high: 0.10, low: 0.10 } } });
+  const candidates = tokyoProductCandidates([
+    { id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172', grade: 'PSA10', match_status: 'matched', source_price: 100000 },
+  ], [], []);
+  const result = compareTokyoSourceProducts(candidates, [OFFICIAL], settings, OBSERVED_AT);
+  expect(result.products[0]).toMatchObject({ price_high: 95000, selected_high_source: 'kecak',
+    price_low: 90000, selected_low_source: 'shinsoku' });
 });
 
-test('Tokyo settings apply exactly once to the raw postal price', () => {
-  const settings = normalizeStorePricingSettings({ psa10_discount_rates: { Pokemon: 0.07 }, box_discount_rates: { Pokemon: { shrink: 0.07 } } });
-  expect(tokyoDisplayPrice(100000, 'Pokemon', 'PSA10', settings)).toBe(93000);
-  expect(tokyoDisplayPrice(100000, 'Pokemon', 'BOX', settings)).toBe(93000);
-  expect(tokyoDisplayPrice(10098, 'Pokemon', 'PSA10', normalizeStorePricingSettings({ psa10_discount_rates: { Pokemon: 0.05 } }))).toBe(9000);
+test('a source publishes on its own and only Shinsoku supplies the catalog id', () => {
+  const candidates = tokyoProductCandidates([], [
+    { source_product_id: 9, category: 'one_piece', name: 'ルフィ', full_name: null, model_number: 'OP01-001', image_url: 'checker.jpg' },
+  ], [
+    { source_product_id: 9, shop_id: 13, condition_id: 1, edition_id: 0, buy_price: 50000 },
+  ]);
+  const shinsokuOnly: ShinsokuPostalProduct = { id: 'IAY1', franchise: 'YU-GI-OH!', name: '青眼の白龍',
+    modelNumber: 'LB01-JP000', productType: 'PSA10', price: 80000, imageUrl: 'y.jpg' };
+  const result = compareTokyoSourceProducts(candidates, [shinsokuOnly], SETTINGS, OBSERVED_AT);
+  const byName = Object.fromEntries(result.products.map(product => [product.name, product]));
+  expect(byName['ルフィ']).toMatchObject({ id: expect.stringMatching(/^TOKYO_[0-9a-f]{64}$/),
+    price_high: 45000, price_low: 45000, selected_high_source: 'avirile', image_url: 'checker.jpg' });
+  expect(byName['青眼の白龍']).toMatchObject({ id: 'IAY1', price_high: 76000, price_low: 76000,
+    selected_high_source: 'shinsoku' });
+});
+
+test.each([null, 0, -1, 1.5, NaN, Infinity, 100000001])('an invalid price %s never reaches a published product', price => {
+  const result = compareTokyoSourceProducts([], [{ ...OFFICIAL, price }], SETTINGS, OBSERVED_AT);
+  expect(result.products).toEqual([]);
+  expect(result.priceSources).toEqual({});
+  expect(result.unmatched).toEqual([
+    { candidate: expect.objectContaining({ source: 'shinsoku', id: 'IAP1' }), reason: 'invalid_price' },
+  ]);
+});
+
+test('rows without a model number, with split source prices, or discounted to zero stay unpublished', () => {
+  const noModel = compareTokyoSourceProducts([], [{ ...OFFICIAL, id: 'no-model', modelNumber: '  ' }], SETTINGS, OBSERVED_AT);
+  expect(noModel.products).toEqual([]);
+  expect(noModel.unmatched.map(row => row.reason)).toEqual(['missing_model']);
+
+  const split = compareTokyoSourceProducts([], [{ ...OFFICIAL, id: 'a', price: 10000 },
+    { ...OFFICIAL, id: 'b', price: 20000 }], SETTINGS, OBSERVED_AT);
+  expect(split.products).toEqual([]);
+  expect(split.unmatched.map(row => row.reason)).toEqual(['ambiguous', 'ambiguous']);
+
+  const tiny = compareTokyoSourceProducts([], [{ ...OFFICIAL, id: 'tiny', price: 1 }], SETTINGS, OBSERVED_AT);
+  expect(tiny.products).toEqual([]);
+  expect(tiny.unmatched.map(row => row.reason)).toEqual(['zero_after_discount']);
+});
+
+test('the per-source discount rate applies exactly once to the raw source price', () => {
+  expect(tokyoDisplayPrice(100000, 'Pokemon', 'PSA10', 0.07)).toBe(93000);
+  expect(tokyoDisplayPrice(100000, 'Pokemon', 'BOX', 0.07)).toBe(93000);
+  expect(tokyoDisplayPrice(10098, 'Pokemon', 'PSA10', 0.05)).toBe(9000);
 });
 
 test('non-Tokyo jobs reject before accessing any DB or external source', async () => {

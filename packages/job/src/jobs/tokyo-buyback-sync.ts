@@ -1,10 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   calculateBoxPriceHigh, calculateBuyPriceHigh, isBuiltInOrderListExclusion,
-  normalizeStorePricingSettings, tokyoBusinessDate,
-  fetchShinsokuPostalProducts, matchShinsokuPostalProducts,
-  type PostalCandidate, type ShinsokuPostalProduct, type StorePricingSettings, type Franchise,
+  normalizeStorePricingSettings, postalProductIdentity, tokyoBusinessDate,
+  fetchShinsokuPostalProducts, TOKYO_PRICE_SOURCES, validateTokyoSourceDiscountRates,
+  type PostalCandidate, type ShinsokuPostalProduct, type StorePricingSettings, type Franchise, type TokyoPriceSource,
 } from '@haraka/shared';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { isBoxRow } from '../lib/box-row.js';
@@ -20,10 +20,31 @@ type OrderRow = { id: string; excel_product_id: string; franchise: string; card_
 type CheckerProduct = { source_product_id: number; category: string; name: string;
   full_name: string | null; model_number: string | null; image_url?: string | null };
 type CheckerOffer = { source_product_id: number; shop_id: number; condition_id: number; edition_id: number;
-  edition_name?: string | null; buy_price?: number };
-type TokyoCandidate = PostalCandidate & { sourceProductId?: number; conditionId?: number; sourcePrice?: number | null; dbCardId?: string | null };
+  edition_name?: string | null; buy_price?: number; source_updated_at?: string | null };
+export type TokyoCandidate = Omit<PostalCandidate, 'source'> & { source: TokyoPriceSource; sourceProductId?: number;
+  conditionId?: number; sourcePrice?: number | null; dbCardId?: string | null; imageUrl?: string | null;
+  observedAt?: string | null };
+type ComparedOrigin = TokyoCandidate & { rawPrice: number; highRate: number; highPrice: number;
+  lowRate: number; lowPrice: number };
 
-export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[]): TokyoCandidate[] {
+const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = {
+  11: 'blue_rocket', 3: 'toreca_bank', 13: 'avirile',
+};
+const SOURCE_LABELS: Record<TokyoPriceSource, string> = {
+  kecak: 'KECAK', blue_rocket: 'Blue Rocket', toreca_bank: 'トレカバンク',
+  avirile: 'アヴィリール', shinsoku: 'シンソク郵送買取',
+};
+const validPrice = (price: number | null | undefined): price is number =>
+  Number.isSafeInteger(price) && price! > 0 && price! <= 100_000_000;
+const currentTokyoDate = (value: string | null | undefined, businessDate?: string) => {
+  if (!businessDate) return true;
+  if (!value) return false;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && tokyoBusinessDate(date) === businessDate;
+};
+
+export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[],
+  options: { businessDate?: string; kecakObservedAt?: string | null } = {}): TokyoCandidate[] {
   const candidates: TokyoCandidate[] = [];
   for (const row of orderRows) {
     if (!KECAK_FRANCHISES.includes(row.franchise)) continue;
@@ -32,45 +53,98 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
     const productType = isBoxRow(row) ? 'BOX' : grade === 'PSA10' ? 'PSA10' : null;
     if (productType) candidates.push({ source: 'kecak', id: row.excel_product_id,
       franchise: row.franchise, name: row.card_name, modelNumber: row.list_no, productType,
-      dbCardId: row.db_card_id });
+      sourcePrice: row.source_price, dbCardId: row.db_card_id, observedAt: options.kecakObservedAt });
   }
   const productById = new Map(products.map(product => [product.source_product_id, product]));
   const seen = new Set<string>();
   for (const offer of offers) {
-    if (![3, 13].includes(offer.shop_id) || ![1, 2].includes(offer.condition_id)) continue;
+    const source = CHECKER_SOURCES[offer.shop_id];
+    if (!source || ![1, 2].includes(offer.condition_id)
+      || !currentTokyoDate(offer.source_updated_at, options.businessDate)) continue;
     const product = productById.get(offer.source_product_id);
     if (!product) throw new Error('買取チェッカーの商品・掲載一覧が一致しません');
     const franchise = ({ pokemon: 'Pokemon', one_piece: 'ONE PIECE' } as Record<string, string>)[product.category];
     if (!franchise) throw new Error(`未対応の買取チェッカーカテゴリ: ${product.category}`);
     // Different editions must not silently inherit the base product's price.
     const id = `${offer.source_product_id}:${offer.condition_id}:${offer.edition_id}`;
-    const source = offer.shop_id === 3 ? 'toreca_bank' : 'avirile';
     const key = `${source}:${id}`;
     if (seen.has(key)) continue;
     seen.add(key);
     candidates.push({ source, id, franchise, name: offer.edition_id ? `${product.name} [${offer.edition_name || `edition:${offer.edition_id}`}]` : product.name,
       modelNumber: product.model_number, productType: offer.condition_id === 1 ? 'PSA10' : 'BOX',
-      sourceProductId: offer.source_product_id, conditionId: offer.condition_id, sourcePrice: offer.buy_price });
+      sourceProductId: offer.source_product_id, conditionId: offer.condition_id, sourcePrice: offer.buy_price,
+      imageUrl: product.image_url, observedAt: offer.source_updated_at });
   }
   return candidates;
 }
 
-export function tokyoMatchPostalProducts(candidates: TokyoCandidate[], products: ShinsokuPostalProduct[]) {
-  const validPrice = (price: number | null | undefined): price is number => Number.isSafeInteger(price) && price! > 0 && price! <= 100_000_000;
-  const result = matchShinsokuPostalProducts(
-    candidates,
-    products.map(product => ({ ...product, price: validPrice(product.price) ? product.price : null })),
-  );
-  // Preserve official images for matched DB/Weiss rows; this evidence never creates a lineup row.
-  for (const { product, sources } of result.matched) {
-    if (['DRAGON BALL', 'WEISS SCHWARZ'].includes(product.franchise)) sources.push({
-      source: 'shinsoku', id: product.id, franchise: product.franchise, name: product.name,
-      modelNumber: product.modelNumber, productType: product.productType,
+export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsokuProducts: ShinsokuPostalProduct[],
+  settings: StorePricingSettings, observedAt: string) {
+  const all: TokyoCandidate[] = [...candidates, ...shinsokuProducts.map(product => ({
+    source: 'shinsoku' as const, id: product.id, franchise: product.franchise, name: product.name,
+    modelNumber: product.modelNumber, productType: product.productType, sourcePrice: product.price,
+    imageUrl: product.imageUrl, observedAt,
+  }))];
+  const groups = new Map<string, TokyoCandidate[]>();
+  const unmatched: { candidate: TokyoCandidate; reason: 'missing_model' | 'invalid_price' | 'ambiguous' | 'zero_after_discount' }[] = [];
+  for (const candidate of all) {
+    if (candidate.productType === 'PSA10' && !candidate.modelNumber?.trim()) {
+      unmatched.push({ candidate, reason: 'missing_model' });
+      continue;
+    }
+    if (!validPrice(candidate.sourcePrice)) {
+      unmatched.push({ candidate, reason: 'invalid_price' });
+      continue;
+    }
+    const identity = postalProductIdentity(candidate);
+    groups.set(identity, [...(groups.get(identity) ?? []), candidate]);
+  }
+
+  const products = [];
+  for (const [identity, group] of groups) {
+    const bySource = new Map<TokyoPriceSource, TokyoCandidate[]>();
+    for (const candidate of group) bySource.set(candidate.source, [...(bySource.get(candidate.source) ?? []), candidate]);
+    if ([...bySource.values()].some(rows => new Set(rows.map(row => `${row.id}:${row.sourcePrice}`)).size > 1)) {
+      unmatched.push(...group.map(candidate => ({ candidate, reason: 'ambiguous' as const })));
+      continue;
+    }
+    const origins: ComparedOrigin[] = TOKYO_PRICE_SOURCES.flatMap(source => {
+      const candidate = bySource.get(source)?.[0];
+      if (!candidate || !validPrice(candidate.sourcePrice)) return [];
+      const rates = settings.tokyo_source_discount_rates[source];
+      return [{ ...candidate, rawPrice: candidate.sourcePrice,
+        highRate: rates.high, highPrice: tokyoDisplayPrice(candidate.sourcePrice, candidate.franchise as Franchise, candidate.productType, rates.high),
+        lowRate: rates.low, lowPrice: tokyoDisplayPrice(candidate.sourcePrice, candidate.franchise as Franchise, candidate.productType, rates.low) }];
+    });
+    const eligible = origins.filter(origin => origin.highPrice > 0);
+    if (!eligible.length) {
+      unmatched.push(...group.map(candidate => ({ candidate, reason: 'zero_after_discount' as const })));
+      continue;
+    }
+    const high = eligible.reduce((winner, origin) => origin.highPrice > winner.highPrice ? origin : winner);
+    const low = origins.reduce((winner, origin) => origin.lowPrice > winner.lowPrice ? origin : winner);
+    const canonical = bySource.get('shinsoku')?.[0] ?? bySource.get('kecak')?.[0] ?? origins[0];
+    const shinsoku = bySource.get('shinsoku')?.[0];
+    products.push({
+      id: shinsoku?.id ?? `TOKYO_${createHash('sha256').update(identity).digest('hex')}`,
+      franchise: canonical.franchise,
+      product_type: canonical.productType === 'BOX' ? 'box' as const : 'psa' as const,
+      name: canonical.name,
+      model_number: canonical.modelNumber,
+      image_url: canonical.imageUrl ?? origins.find(origin => origin.imageUrl)?.imageUrl ?? null,
+      source_price: high.rawPrice,
+      price_high: high.highPrice,
+      price_low: low.lowPrice,
+      selected_high_source: high.source,
+      selected_low_source: low.source,
+      origins,
     });
   }
-  const priceSources = Object.fromEntries(result.matched.map(({ product }) => [product.id,
-    { source: 'shinsoku' as const, source_id: product.id, price: product.price! }]));
-  return { ...result, priceSources };
+  const priceSources = Object.fromEntries(products.map(product => [product.id, {
+    source: product.selected_high_source, source_id: product.origins.find(origin => origin.source === product.selected_high_source)?.id,
+    price: product.source_price,
+  }]));
+  return { products, unmatched, priceSources };
 }
 
 async function allRows<T>(db: SupabaseClient, table: string, filters: Record<string, string>, order: string, select = '*'): Promise<T[]> {
@@ -95,6 +169,8 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     || (claim ? order.id !== claim.claimedImportId || order.status !== 'processing' : order.status !== 'applied')) {
     throw new Error('東京満満の最新オーダーリストを反映してから価格を取得してください');
   }
+  const businessDate = tokyoBusinessDate(now);
+  if (order.business_date !== businessDate) throw new Error('KECAKの当日価格がありません');
   if (claim) {
     const { data: run, error } = await db.from('run').select('id,order_list_sync_request_id,order_list_sync_request_fingerprint')
       .eq('id', claim.runId).eq('store', TOKYO_BUYBACK_STORE).eq('order_list_import_id', order.id)
@@ -124,41 +200,37 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   ]);
   if (configError || !config) throw new Error('東京満満の減額設定がありません');
   const settings = normalizeStorePricingSettings(config.settings);
+  const tokyoRateError = validateTokyoSourceDiscountRates(settings.tokyo_source_discount_rates);
+  if (tokyoRateError) throw new Error(tokyoRateError);
   for (const rates of [Object.values(settings.psa10_discount_rates), Object.values(settings.box_discount_rates).flatMap(rate => [rate.shrink, rate.no_shrink])]) {
     if (rates.some(rate => !Number.isFinite(rate) || rate < 0 || rate > 1)) throw new Error('減額率は0〜100%で設定してください');
   }
   if (products.length !== checker.product_count || offers.length !== checker.offer_count) throw new Error('買取チェッカーの保存件数が完了記録と一致しません');
-  const candidates = tokyoProductCandidates(orderRows, products, offers);
-  const sourceCounts = Object.fromEntries(['kecak', 'toreca_bank', 'avirile'].map(source => [source, candidates.filter(row => row.source === source).length]));
-  if (Object.values(sourceCounts).some(count => count === 0)) throw new Error('3つの商品一覧のいずれかが空です');
+  const candidates = tokyoProductCandidates(orderRows, products, offers, {
+    businessDate, kecakObservedAt: order.created_at ?? `${businessDate}T00:00:00+09:00`,
+  });
   // Pull the public catalog first; Tokyo order-list names and model numbers never leave Haraka.
   const sourceProducts = await fetchShinsokuPostalProducts();
-  // KECAK/checker rows define the lineup; only matched Shinsoku postal prices are published.
-  const result = tokyoMatchPostalProducts(candidates, sourceProducts);
-  const pricedRows = result.matched.map(({ product, sources }) => {
-    const sourcePrice = product.price;
-    return { id: product.id, franchise: product.franchise, product_type: product.productType === 'BOX' ? 'box' : 'psa',
-      name: product.name, model_number: product.modelNumber, image_url: product.imageUrl,
-      source_price: sourcePrice ?? 0,
-      price_high: tokyoDisplayPrice(sourcePrice ?? 0, product.franchise as Franchise, product.productType, settings), origins: sources };
-  });
-  const rows = pricedRows.filter(row => row.price_high > 0);
-  const unmatched = [...result.unmatched, ...pricedRows.filter(row => row.price_high <= 0)
-    .flatMap(row => row.origins.map(candidate => ({ candidate, reason: 'zero_after_discount' as const })))];
-  if (!rows.length) throw new Error('シンソク郵送買取価格に一致する掲載商品がありません');
   const fetchedAt = now.toISOString();
+  const sourceCounts = Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, source === 'shinsoku'
+    ? sourceProducts.filter(product => validPrice(product.price)).length
+    : candidates.filter(row => row.source === source && validPrice(row.sourcePrice)).length]));
+  const missingSource = TOKYO_PRICE_SOURCES.find(source => sourceCounts[source] === 0);
+  if (missingSource) throw new Error(`${SOURCE_LABELS[missingSource]}の当日価格がありません`);
+  const result = compareTokyoSourceProducts(candidates, sourceProducts, settings, fetchedAt);
+  if (!result.products.length) throw new Error('5店舗の当日価格に掲載可能な商品がありません');
   return { snapshot: { id: randomUUID(), store: TOKYO_BUYBACK_STORE, order_list_import_id: order.id,
     checker_run_id: checker.id, checker_source_store: CHECKER_STORE, fetched_at: fetchedAt,
-    business_date: tokyoBusinessDate(new Date(fetchedAt)), settings,
-    report: { source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
+    business_date: businessDate, settings,
+    report: { pricing_version: 2, source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
       checker_completed_at: checker.completed_at, source_counts: sourceCounts, shinsoku_count: sourceProducts.length,
-      price_sources: Object.fromEntries(rows.map(row => [row.id, result.priceSources[row.id]])),
-      matched_count: rows.length, unmatched_count: unmatched.length, unmatched } }, products: rows };
+      price_sources: result.priceSources,
+      matched_count: result.products.length, unmatched_count: result.unmatched.length, unmatched: result.unmatched } }, products: result.products };
 }
 
-export function tokyoDisplayPrice(price: number, franchise: Franchise, type: 'PSA10' | 'BOX', settings: StorePricingSettings): number {
-  return type === 'BOX' ? calculateBoxPriceHigh(price, settings.box_discount_rates[franchise].shrink)
-    : Math.floor(calculateBuyPriceHigh(price, settings.psa10_discount_rates[franchise]) / 1_000) * 1_000;
+export function tokyoDisplayPrice(price: number, _franchise: Franchise, type: 'PSA10' | 'BOX', discountRate: number): number {
+  return type === 'BOX' ? calculateBoxPriceHigh(price, discountRate)
+    : Math.floor(calculateBuyPriceHigh(price, discountRate) / 1_000) * 1_000;
 }
 
 export async function runTokyoBuybackSync(options: { dryRun?: boolean } = {}) {

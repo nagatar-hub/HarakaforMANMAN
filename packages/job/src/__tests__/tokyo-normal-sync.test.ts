@@ -4,11 +4,11 @@ import type { buildTokyoBuybackSnapshot } from '../jobs/tokyo-buyback-sync';
 
 const snapshot = { snapshot: { id: 'snapshot-1', store: 'manman-akihabara', business_date: '2026-09-07', settings: normalizeStorePricingSettings({}) },
   products: [
-    { id: 'psa-1', franchise: 'Pokemon', product_type: 'psa', name: 'カイ', model_number: '236/172', image_url: 'https://example.com/psa.png', source_price: 10000, price_high: 9300 },
-    { id: 'box-1', franchise: 'ONE PIECE', product_type: 'box', name: '謀略の王国', model_number: null, image_url: 'https://example.com/box.png', source_price: 20000, price_high: 18600 },
+    { id: 'psa-1', franchise: 'Pokemon', product_type: 'psa', name: 'カイ', model_number: '236/172', image_url: 'https://example.com/psa.png', source_price: 10000, price_high: 9300, price_low: 9300 },
+    { id: 'box-1', franchise: 'ONE PIECE', product_type: 'box', name: '謀略の王国', model_number: null, image_url: 'https://example.com/box.png', source_price: 20000, price_high: 18600, price_low: 17000 },
   ] } as unknown as Awaited<ReturnType<typeof buildTokyoBuybackSnapshot>>;
 
-test('normal prepared cards apply BOX lower discount to the selected source price', () => {
+test('normal prepared cards carry the snapshot high/low prices unchanged', () => {
   const rows = buildTokyoPreparedCards('run-1', snapshot);
   expect(rows.map(row => [row.source_shinsoku_id,row.tag,row.price_high,row.price_low,row.source,row.price_source]))
     .toEqual([['psa-1','PSA10',9300,9300,'shinsoku','shinsoku'],['box-1','BOX',18600,17000,'shinsoku','shinsoku']]);
@@ -24,29 +24,32 @@ const mapping: TokyoCardImageMappingRow = {
   verified_at: '2026-09-07T00:00:00Z', evidence: { no_sample: true, no_slab: true, variant_confirmed: true, note: 'exact variant and image checked' },
 };
 
+// The BOX lower price is now selected per source in compareTokyoSourceProducts and frozen into the
+// snapshot; the prepared card must reproduce it byte for byte and never re-derive it from settings.
 test.each([
-  ['Pokemon', 20000, 0.15, 17000], ['ONE PIECE', 11000, 0.15, 9300],
-  ['YU-GI-OH!', 12000, 0.15, 10000], ['DRAGON BALL', 20000, 0.13, 17000],
-  ['WEISS SCHWARZ', 120000, 0.13, 100000], ['Pokemon', 20000, 0, 20000],
-  ['DRAGON BALL', 7000, 0.13, 6000], ['YU-GI-OH!', 6000, 0.15, 5100],
-  ['Pokemon', 20000, 1, 0],
-])('BOX %s lower price discounts selected source once (%s, %s)', (franchise, source, rate, expected) => {
-  const settings = normalizeStorePricingSettings({ box_discount_rates: { [franchise]: { shrink: 0.07, no_shrink: rate } } });
-  const priceHigh = Number(source);
-  const product = { ...snapshot.products[1], franchise: String(franchise), source_price: Number(source), price_high: priceHigh };
+  ['Pokemon', 20000, 17000], ['ONE PIECE', 11000, 9300],
+  ['YU-GI-OH!', 12000, 10000], ['DRAGON BALL', 20000, 17000],
+  ['WEISS SCHWARZ', 120000, 100000], ['Pokemon', 20000, 20000],
+  ['DRAGON BALL', 7000, 6000], ['YU-GI-OH!', 6000, 5100],
+  ['Pokemon', 20000, 0],
+])('BOX %s reproduces the snapshot lower price (%s, %s)', (franchise, priceHigh, priceLow) => {
+  // A settings change must not move the published price any more.
+  const settings = normalizeStorePricingSettings({ box_discount_rates: { [franchise]: { shrink: 0.07, no_shrink: 0.99 } } });
+  const product = { ...snapshot.products[1], franchise: String(franchise), source_price: Number(priceHigh),
+    price_high: Number(priceHigh), price_low: Number(priceLow) };
   const [row] = buildTokyoPreparedCards('run', { ...snapshot, snapshot: { ...snapshot.snapshot, settings }, products: [product] });
-  expect(row).toMatchObject({ price_high: priceHigh, price_low: expected, tag: 'BOX' });
+  expect(row).toMatchObject({ price_high: Number(priceHigh), price_low: Number(priceLow), tag: 'BOX' });
 });
 
-test('BOX fails closed without valid upper price or frozen no-shrink setting', () => {
-  const prepare = (upper: number, rate: number) => buildTokyoPreparedCards('run', {
-    ...snapshot, snapshot: { ...snapshot.snapshot, settings: { ...snapshot.snapshot.settings,
-      box_discount_rates: { ...snapshot.snapshot.settings.box_discount_rates, 'ONE PIECE': { shrink: 0.07, no_shrink: rate } } } },
-    products: [{ ...snapshot.products[1], price_high: upper }],
-  });
-  for (const value of [NaN, Infinity, 0, -1, 0.5]) expect(() => prepare(value, 0.15)).toThrow('Invalid Tokyo prepared');
-  for (const rate of [NaN, Infinity, -0.1, 1.1]) expect(() => prepare(20000, rate)).toThrow('Invalid Tokyo BOX');
-  expect(() => buildTokyoPreparedCards('run', { ...snapshot, snapshot: { ...snapshot.snapshot, settings: undefined } } as any)).toThrow('Invalid Tokyo BOX');
+test('prepared cards fail closed without a valid snapshot high/low pair', () => {
+  const prepare = (patch: object) => buildTokyoPreparedCards('run', {
+    ...snapshot, products: [{ ...snapshot.products[1], ...patch }],
+  } as any);
+  for (const value of [NaN, Infinity, 0, -1, 0.5]) expect(() => prepare({ price_high: value })).toThrow('Invalid Tokyo prepared');
+  for (const value of [NaN, Infinity, -1, 0.5, undefined, null, 20000]) {
+    expect(() => prepare({ price_high: 18600, price_low: value })).toThrow('Invalid Tokyo prepared');
+  }
+  expect(prepare({ price_high: 18600, price_low: 0 })[0]).toMatchObject({ price_high: 18600, price_low: 0 });
 });
 
 test('verified mappings change only their exact products and preserve snapshot values', () => {

@@ -7,7 +7,16 @@ import {
   calculateSteppedDiscountPreview,
   normalizePreviewBasePrice,
 } from '@/lib/settings-preview';
-import { FRANCHISES, FRANCHISE_JA, calculateBoxPriceHigh, calculatePelekaAlignedBuyPriceRange, type Franchise } from '@haraka/shared';
+import {
+  DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
+  FRANCHISES,
+  FRANCHISE_JA,
+  TOKYO_PRICE_SOURCES,
+  calculateBoxPriceHigh,
+  calculatePelekaAlignedBuyPriceRange,
+  type Franchise,
+  type TokyoPriceSource,
+} from '@haraka/shared';
 
 type Psa10Rates = Record<Franchise, number>;
 type BoxConditionRates = {
@@ -15,6 +24,7 @@ type BoxConditionRates = {
   no_shrink: number;
 };
 type BoxRates = Record<Franchise, BoxConditionRates>;
+type TokyoSourceRates = Record<TokyoPriceSource, { high: number; low: number }>;
 
 interface StoreConfig {
   store: string;
@@ -22,6 +32,7 @@ interface StoreConfig {
     box_price_low_enabled?: boolean;
     box_discount_rates?: Partial<Record<Franchise, Partial<BoxConditionRates>>>;
     psa10_discount_rates?: Partial<Record<Franchise, number>>;
+    tokyo_source_discount_rates?: Partial<Record<TokyoPriceSource, Partial<{ high: number; low: number }>>>;
   };
 }
 
@@ -47,6 +58,17 @@ const DEFAULT_BOX_RATES: BoxRates = {
   'WEISS SCHWARZ': { shrink: 6, no_shrink: 13 },
   'DRAGON BALL': { shrink: 6, no_shrink: 13 },
 };
+const TOKYO_SOURCE_LABELS: Record<TokyoPriceSource, string> = {
+  kecak: 'KECAK',
+  blue_rocket: 'Blue Rocket',
+  toreca_bank: 'トレカバンク',
+  avirile: 'アヴィリール',
+  shinsoku: 'シンソク郵送買取',
+};
+const DEFAULT_TOKYO_SOURCE_RATES = Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, {
+  high: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES[source].high * 100,
+  low: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES[source].low * 100,
+}])) as TokyoSourceRates;
 
 function clampRate(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -68,11 +90,19 @@ function normalizeBoxRates(savedBoxRates: StoreConfig['settings']['box_discount_
   }, {} as BoxRates);
 }
 
+function normalizeTokyoSourceRates(saved: StoreConfig['settings']['tokyo_source_discount_rates']): TokyoSourceRates {
+  return Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, {
+    high: (saved?.[source]?.high ?? DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES[source].high) * 100,
+    low: (saved?.[source]?.low ?? DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES[source].low) * 100,
+  }])) as TokyoSourceRates;
+}
+
 export default function SettingsPage() {
   const [config, setConfig] = useState<StoreConfig | null>(null);
   const [boxPriceLowEnabled, setBoxPriceLowEnabled] = useState(false);
   const [boxRates, setBoxRates] = useState<BoxRates>(DEFAULT_BOX_RATES);
   const [psa10Rates, setPsa10Rates] = useState<Psa10Rates>(DEFAULT_PSA10_RATES);
+  const [tokyoSourceRates, setTokyoSourceRates] = useState<TokyoSourceRates>(DEFAULT_TOKYO_SOURCE_RATES);
   const [psaPreviewBasePrice, setPsaPreviewBasePrice] = useState('30000');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -86,6 +116,7 @@ export default function SettingsPage() {
         setConfig(data);
         setBoxPriceLowEnabled(data.settings.box_price_low_enabled === true);
         setBoxRates(normalizeBoxRates(savedBoxRates));
+        setTokyoSourceRates(normalizeTokyoSourceRates(data.settings.tokyo_source_discount_rates));
         setPsa10Rates(Object.fromEntries(FRANCHISES.map((franchise) => [
           franchise,
           toPercent(savedPsa10Rates[franchise], DEFAULT_PSA10_RATES[franchise]),
@@ -111,16 +142,35 @@ export default function SettingsPage() {
     }));
   }
 
+  function updateTokyoSourceRate(source: TokyoPriceSource, key: 'high' | 'low', value: number) {
+    setTokyoSourceRates(current => ({ ...current, [source]: { ...current[source], [key]: value } }));
+  }
+
   async function handleSave() {
     setSaving(true);
     setError(null);
     setSaved(false);
     try {
+      if (config?.store === 'manman-akihabara') {
+        for (const source of TOKYO_PRICE_SOURCES) {
+          const rates = tokyoSourceRates[source];
+          if (![rates.high, rates.low].every(rate => Number.isFinite(rate) && rate >= 0 && rate <= 100)) {
+            throw new Error(`${TOKYO_SOURCE_LABELS[source]}の減額率は0〜100%で設定してください`);
+          }
+          if (rates.low < rates.high) throw new Error(`${TOKYO_SOURCE_LABELS[source]}の下限減額率は上限減額率以上に設定してください`);
+        }
+      }
       const updated = await apiFetch<StoreConfig>('/api/store-config', {
         method: 'PATCH',
         body: JSON.stringify({
           settings: {
             ...(config?.store === 'manman-akihabara' ? { box_price_low_enabled: boxPriceLowEnabled } : {}),
+            ...(config?.store === 'manman-akihabara' ? { tokyo_source_discount_rates: Object.fromEntries(
+              TOKYO_PRICE_SOURCES.map(source => [source, {
+                high: tokyoSourceRates[source].high / 100,
+                low: tokyoSourceRates[source].low / 100,
+              }]),
+            ) } : {}),
             box_discount_rates: Object.fromEntries(FRANCHISES.map((franchise) => [franchise, {
               shrink: boxRates[franchise].shrink / 100,
               ...(CONFIGURABLE_PRICING_FRANCHISES.some(item => item === franchise)
@@ -161,6 +211,33 @@ export default function SettingsPage() {
         )}
 
         <div className="space-y-10">
+          {config?.store === 'manman-akihabara' && <section>
+            <h2 className="text-lg font-bold text-text-primary mb-2">東京比較価格の店舗別減額率</h2>
+            <p className="text-sm text-text-secondary mb-6">
+              当日の元価格へ減額率を適用し、上限・下限それぞれ最も高い金額を採用します。
+            </p>
+            <div className="space-y-5">
+              {TOKYO_PRICE_SOURCES.map(source => <div key={source} className="grid gap-3 border-b border-border-card pb-5 last:border-b-0 sm:grid-cols-[1fr_140px_140px] sm:items-end">
+                <p className="text-sm font-bold text-text-primary">{TOKYO_SOURCE_LABELS[source]}</p>
+                {(['high', 'low'] as const).map(key => <label key={key} className="block">
+                  <span className="mb-1 block text-xs font-semibold text-text-secondary">{key === 'high' ? '上限' : '下限'}減額率</span>
+                  <span className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={tokyoSourceRates[source][key]}
+                      onChange={event => updateTokyoSourceRate(source, key, Number(event.target.value))}
+                      className="w-full rounded-lg border border-border-card bg-transparent px-3 py-2 text-right font-bold text-text-primary focus:outline-none"
+                    />
+                    <span className="text-text-secondary">%</span>
+                  </span>
+                </label>)}
+              </div>)}
+            </div>
+          </section>}
+
           <section className="bg-warm-100 rounded-xl px-5 py-4">
             <h2 className="text-sm font-bold text-text-primary">
               割引後価格の端数処理（BOX上限を除く）

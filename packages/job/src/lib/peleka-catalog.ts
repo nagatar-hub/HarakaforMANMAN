@@ -23,7 +23,8 @@ export function buildTokyoPelekaCatalog(params: {
   const products: PelekaCatalogProduct[] = params.cards.map(card => {
     const sourceId = card.source_shinsoku_id?.trim();
     const imageUrl = (card.image_url || card.alt_image_url)?.trim();
-    if (!sourceId || !imageUrl || !card.card_name.trim() || !card.price_high || !card.price_low) {
+    if (!sourceId || !imageUrl || !card.card_name.trim() || !card.price_high
+      || card.price_low === null || card.price_low === undefined || card.price_low < 0 || card.price_low > card.price_high) {
       throw new Error(`Peleka掲載商品データが不完全です: prepared_card=${card.id}`);
     }
     return {

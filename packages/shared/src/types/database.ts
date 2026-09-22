@@ -70,6 +70,10 @@ export type StoreConfigRow = {
       no_shrink?: number;
     }>>;
     psa10_discount_rates?: Partial<Record<Franchise, number>>;
+    tokyo_source_discount_rates?: Partial<Record<'kecak' | 'blue_rocket' | 'toreca_bank' | 'avirile' | 'shinsoku', {
+      high?: number;
+      low?: number;
+    }>>;
     [key: string]: unknown;
   };
   updated_at: string;
@@ -574,7 +578,10 @@ export type TokyoBuybackSnapshotRow = {
 export type TokyoBuybackProductRow = {
   snapshot_id: string; id: string; franchise: CustomBuybackFranchise;
   product_type: CustomBuybackProductType; name: string; model_number: string | null;
-  image_url: string | null; source_price: number; price_high: number; origins: unknown;
+  image_url: string | null; source_price: number; price_high: number; price_low: number | null;
+  selected_high_source: 'kecak' | 'blue_rocket' | 'toreca_bank' | 'avirile' | 'shinsoku' | null;
+  selected_low_source: 'kecak' | 'blue_rocket' | 'toreca_bank' | 'avirile' | 'shinsoku' | null;
+  origins: unknown;
 };
 
 export type TokyoCardImageMappingRow = {

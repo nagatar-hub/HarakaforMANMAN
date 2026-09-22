@@ -4,16 +4,26 @@ import { tokyoBusinessDate } from '@haraka/shared';
 export type GalleryCardPricing = {
   listings: { store: string; price: number | null }[];
   adopted: { store: string | null; price: number | null } | null;
+  comparison?: {
+    rows: { store: string; rawPrice: number; highRate: number; highPrice: number;
+      lowRate: number; lowPrice: number; selectedHigh: boolean; selectedLow: boolean }[];
+    high: { store: string; price: number };
+    low: { store: string; price: number };
+  };
 };
 type Card = { id: string; run_id: string; source_shinsoku_id: string | null };
-type Origin = { source?: string; id?: string; sourcePrice?: unknown };
+type Origin = { source?: string; id?: string; sourcePrice?: unknown; rawPrice?: unknown;
+  highRate?: unknown; highPrice?: unknown; lowRate?: unknown; lowPrice?: unknown };
 const labels: Record<string, string> = {
-  kecak: 'KECAK', avirile: 'アヴィリール', toreca_bank: 'トレカバンク', shinsoku: 'シンソク郵送買取',
+  kecak: 'KECAK', blue_rocket: 'Blue Rocket', avirile: 'アヴィリール',
+  toreca_bank: 'トレカバンク', shinsoku: 'シンソク郵送買取',
 };
 const price = (value: unknown): number | null => typeof value === 'number'
   && Number.isSafeInteger(value) && value > 0 && value <= 100_000_000 ? value : null;
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
+const rate = (value: unknown): number | null => typeof value === 'number'
+  && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 const isTokyoBusinessDate = (value: unknown, businessDate: unknown): boolean => {
   if (typeof value !== 'string' || typeof businessDate !== 'string') return false;
   const date = new Date(value);
@@ -40,7 +50,8 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
     const ids = [...new Set(snapshotCards.map(card => card.source_shinsoku_id).filter(Boolean))];
     if (!ids.length) continue;
     const { data: products, error: productError } = await db.from('tokyo_buyback_product')
-      .select('id,source_price,origins').eq('snapshot_id', snapshot.id).in('id', ids);
+      .select('id,source_price,price_high,price_low,selected_high_source,selected_low_source,origins')
+      .eq('snapshot_id', snapshot.id).in('id', ids);
     if (productError) throw new Error(productError.message);
     const origins = (row: { origins: unknown }): Origin[] => Array.isArray(row.origins)
       ? row.origins.map(value => object(value) as Origin) : [];
@@ -96,6 +107,31 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
     for (const product of products ?? []) {
       const provenance = object(priceSources[product.id]);
       const productOrigins = origins(product);
+      const comparisonRows = productOrigins.flatMap(origin => {
+        const store = labels[origin.source ?? ''];
+        const rawPrice = price(origin.rawPrice);
+        const highRate = rate(origin.highRate);
+        const highPrice = price(origin.highPrice);
+        const lowRate = rate(origin.lowRate);
+        const lowPrice = typeof origin.lowPrice === 'number' && Number.isSafeInteger(origin.lowPrice)
+          && origin.lowPrice >= 0 && origin.lowPrice <= 100_000_000 ? origin.lowPrice : null;
+        return store && rawPrice !== null && highRate !== null && highPrice !== null && lowRate !== null && lowPrice !== null
+          ? [{ store, rawPrice, highRate, highPrice, lowRate, lowPrice,
+            selectedHigh: origin.source === product.selected_high_source,
+            selectedLow: origin.source === product.selected_low_source }] : [];
+      });
+      if (comparisonRows.length && comparisonRows.some(row => row.selectedHigh) && comparisonRows.some(row => row.selectedLow)) {
+        const high = comparisonRows.find(row => row.selectedHigh)!;
+        const low = comparisonRows.find(row => row.selectedLow)!;
+        const pricing: GalleryCardPricing = {
+          listings: comparisonRows.map(row => ({ store: row.store, price: row.rawPrice })),
+          adopted: { store: high.store, price: high.rawPrice },
+          comparison: { rows: comparisonRows, high: { store: high.store, price: high.highPrice },
+            low: { store: low.store, price: low.lowPrice } },
+        };
+        for (const card of snapshotCards.filter(card => card.source_shinsoku_id === product.id)) result.set(card.id, pricing);
+        continue;
+      }
       const adoptedPrice = price(product.source_price);
       const provenSource = (provenance.source === 'kecak' || provenance.source === 'shinsoku')
         && price(provenance.price) === adoptedPrice && adoptedPrice !== null ? String(provenance.source) : null;

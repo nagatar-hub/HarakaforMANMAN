@@ -41,16 +41,18 @@ jest.mock('../lib/image-composer', () => {
 const runId = '10000000-0000-4000-8000-000000000001';
 const token = '10000000-0000-4000-8000-000000000002';
 
-test('independent BOX lower price applies the configured rate to the selected source price', () => {
+test('independent BOX lower price is taken from the snapshot and never exceeds the upper price', () => {
   const sourcePrice = 8500;
   const settings = normalizeStorePricingSettings({ box_discount_rates: { 'DRAGON BALL': { shrink: 0.07, no_shrink: 0.13 } } });
   const high = calculateBoxPriceHigh(sourcePrice, settings.box_discount_rates['DRAGON BALL'].shrink);
-  const [row] = buildTokyoPreparedCards(runId, { snapshot: { store: 'manman-akihabara', business_date: '2026-09-07', settings }, products: [{
+  const prepare = (price_low: number) => buildTokyoPreparedCards(runId, { snapshot: { store: 'manman-akihabara', business_date: '2026-09-07', settings }, products: [{
     id: 'independent-cap', franchise: 'DRAGON BALL', product_type: 'box', name: 'fixture BOX', model_number: null,
-    image_url: null, source_price: sourcePrice, price_high: high,
+    image_url: null, source_price: sourcePrice, price_high: high, price_low,
   }] } as any);
   expect(high).toBe(7000);
-  expect(row.price_low).toBe(7000);
+  expect(prepare(7000)[0].price_low).toBe(7000);
+  expect(prepare(6000)[0].price_low).toBe(6000);
+  expect(() => prepare(7001)).toThrow('Invalid Tokyo prepared');
 });
 
 function database(tables: Record<string, any[]>) {
@@ -148,6 +150,8 @@ test.each([
   const products = FRANCHISES.flatMap((franchise, n) => ['psa', 'box'].map((product_type, m) => ({
     id: `source-${n}-${m}`, franchise, product_type, name: `${franchise}-${product_type}`, model_number: m ? null : `000/${n}`,
     image_url: 'https://local.invalid/card.png', source_price: 80000, price_high: m ? calculateBoxPriceHigh(80000, 0.07) : 12300 + n * 100,
+    // The snapshot now carries the selected lower price; generation must reproduce it untouched.
+    price_low: m ? (['DRAGON BALL', 'WEISS SCHWARZ'].includes(franchise) ? 69000 : 68000) : 12300 + n * 100,
   })));
   const prepared = buildTokyoPreparedCards(runId, { snapshot: { store: 'manman-akihabara', business_date: '2026-09-07', settings: normalizeStorePricingSettings({}) }, products } as any)
     .map((row, n) => ({ id: `card-${n}`, ...row }));

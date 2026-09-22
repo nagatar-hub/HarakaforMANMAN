@@ -37,8 +37,8 @@ test('local prepared mapping keeps assistant provenance and exact null-model ide
   expect(row).toMatchObject({ provider: 'cardrush', model_number: null, tcgmp_product_id: null,
     evidence: { verified_by: 'assistant', user_approved: false, no_sample: true, no_slab: true, source_sha256_equal: true } });
   const snapshot: any = { snapshot: { store: 'manman-akihabara', business_date: '2026-09-08', settings: normalizeStorePricingSettings({}) }, products: [
-    { ...product, price_high: 9300, image_url: 'https://example.com/slab.jpg' },
-    { ...product, id: 'box', product_type: 'box', source_price: 20000, price_high: 18600, image_url: 'https://example.com/box.jpg' },
+    { ...product, price_high: 9300, price_low: 9300, image_url: 'https://example.com/slab.jpg' },
+    { ...product, id: 'box', product_type: 'box', source_price: 20000, price_high: 18600, price_low: 18600, image_url: 'https://example.com/box.jpg' },
   ] };
   const before = buildTokyoPreparedCards('run', snapshot);
   expect(buildTokyoPreparedCards('run', snapshot, [row])).toEqual([{ ...before[0], image_url: row.image_url }, before[1]]);
@@ -92,7 +92,7 @@ test('reviewed ONE PIECE Cardrush BOX mapping is accepted and preferred only for
   }] };
   const [{ row }] = await prepareTokyoCardrushImages(boxManifest, directory, [box]);
   expect(row).toMatchObject({ franchise: 'ONE PIECE', product_type: 'box', provider: 'cardrush', model_number: null });
-  const source = { ...box, source_price: 20000, price_high: 18600, image_url: null };
+  const source = { ...box, source_price: 20000, price_high: 18600, price_low: 18600, image_url: null };
   const snapshot: any = { snapshot: { store: 'manman-akihabara', business_date: '2026-09-08', settings: normalizeStorePricingSettings({}) }, products: [source] };
   expect(buildTokyoPreparedCards('run', snapshot, [row])[0]).toMatchObject({ image_url: row.image_url, tag: 'BOX' });
   for (const patch of [{ name: '別BOX' }, { product_type: 'psa' }, { franchise: 'Pokemon' }]) {
@@ -109,12 +109,12 @@ test('reviewed ONE PIECE image tag splits pages without changing price or other 
   }] };
   const [{ row }] = await prepareTokyoCardrushImages(onePieceManifest, directory, [onePieceProduct]);
   const onePieceSnapshot: any = { snapshot: { store: 'manman-akihabara', business_date: '2026-09-08', settings: normalizeStorePricingSettings({}) },
-    products: [{ ...onePieceProduct, price_high: 12300, source_price: 13000, image_url: 'https://example.com/slab.jpg' }] };
+    products: [{ ...onePieceProduct, price_high: 12300, price_low: 12300, source_price: 13000, image_url: 'https://example.com/slab.jpg' }] };
   expect(buildTokyoPreparedCards('run', onePieceSnapshot, [row])[0]).toMatchObject({ tag: 'コミパラ', price_high: 12300, price_low: 12300 });
   expect(buildTokyoPreparedCards('run', onePieceSnapshot, [{ ...row,
-    evidence: { ...row.evidence, source_title: '' } }])[0]).toMatchObject({ tag: 'PSA10', price_high: 12300 });
+    evidence: { ...row.evidence, source_title: '' } }])[0]).toMatchObject({ tag: 'PSA10', price_high: 12300, price_low: 12300 });
   expect(buildTokyoPreparedCards('run', { ...onePieceSnapshot, products: [{ ...onePieceSnapshot.products[0], franchise: 'Pokemon' }] },
-    [{ ...row, franchise: 'Pokemon' } as any])[0]).toMatchObject({ tag: 'PSA10', price_high: 12300 });
+    [{ ...row, franchise: 'Pokemon' } as any])[0]).toMatchObject({ tag: 'PSA10', price_high: 12300, price_low: 12300 });
 });
 
 test('accepts only a Tokyo ONE PIECE Cardrush BOX tagged BOX without PSA classification evidence', async () => {

@@ -355,19 +355,23 @@ async function latestTokyoSnapshot(supabase: DbClient): Promise<LatestPriceSnaps
   const { data, error } = await supabase.from('tokyo_buyback_snapshot').select('*')
     .eq('store', 'manman-akihabara').order('fetched_at', { ascending: false }).limit(1)
     .maybeSingle<TokyoBuybackSnapshotRow>();
-  if (error) throw new Error(`シンソク価格取得失敗: ${error.message}`);
+  if (error) throw new Error(`東京比較価格取得失敗: ${error.message}`);
   return data ? { runId: data.id, businessDate: data.business_date,
     isCurrent: data.business_date === tokyoBusinessDate(), fetchedAt: data.fetched_at, report: data.report } : null;
 }
 
 export function mapTokyoCatalogCard(row: TokyoBuybackProductRow, priceDate: string): CustomBuybackCatalogCard {
+  const shopName = ({
+    kecak: 'KECAK', blue_rocket: 'Blue Rocket', toreca_bank: 'トレカバンク',
+    avirile: 'アヴィリール', shinsoku: 'シンソク郵送買取',
+  } as const)[row.selected_high_source ?? 'shinsoku'];
   return {
     id: row.id, source: 'shinsoku', source_product_id: null, db_card_id: null, excel_product_id: null,
     franchise: row.franchise, card_name: row.name, grade: row.product_type === 'psa' ? 'PSA10' : '未開封BOX',
     list_no: row.model_number, rarity: null, rarity_icon_url: null, tag: row.product_type === 'box' ? 'BOX' : null,
     image_url: row.image_url, alt_image_url: null, image_status: row.image_url ? 'ok' : 'unchecked',
     price_high: row.price_high, price_low: null, price_source: 'shinsoku', price_source_date: priceDate,
-    condition_name: row.product_type === 'psa' ? 'PSA10' : '未開封BOX', shop_name: 'シンソク郵送買取',
+    condition_name: row.product_type === 'psa' ? 'PSA10' : '未開封BOX', shop_name: shopName,
   };
 }
 

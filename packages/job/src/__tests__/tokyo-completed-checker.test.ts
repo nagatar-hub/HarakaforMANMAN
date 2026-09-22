@@ -8,9 +8,20 @@ jest.mock('@haraka/shared', () => ({
 
 const now = new Date('2026-09-09T03:30:00Z');
 const completed = { id: 'complete', store: 'oripark', status: 'applied',
-  created_at: '2026-09-08T22:06:00Z', completed_at: '2026-09-08T23:40:00Z', product_count: 2, offer_count: 3 };
+  created_at: '2026-09-08T22:06:00Z', completed_at: '2026-09-08T23:40:00Z', product_count: 2, offer_count: 5 };
+const SAME_DAY = '2026-09-09T02:00:00Z';
+const PREVIOUS_DAY = '2026-09-08T02:00:00Z';
 
-function database(checkerRows: object[]) {
+// shop 3 = トレカバンク / 11 = Blue Rocket / 13 = アヴィリール / 22 = 対象外
+const OFFERS = [
+  { source_product_id: 1, shop_id: 3, buy_price: 120000, source_updated_at: SAME_DAY },
+  { source_product_id: 1, shop_id: 11, buy_price: 125000, source_updated_at: SAME_DAY },
+  { source_product_id: 21461, shop_id: 13, buy_price: 40000, source_updated_at: SAME_DAY },
+  { source_product_id: 21461, shop_id: 22, buy_price: 15000000, source_updated_at: SAME_DAY },
+  { source_product_id: 21461, shop_id: 3, buy_price: 90000000, source_updated_at: PREVIOUS_DAY },
+];
+
+function database(checkerRows: object[], offers = OFFERS) {
   const tables: Record<string, any[]> = {
     order_list_import: [{ id: 'order', store: 'manman-akihabara', business_date: '2026-09-09',
       structural_valid: true, persistence_complete: true, status: 'applied' }],
@@ -22,11 +33,7 @@ function database(checkerRows: object[]) {
       { source_product_id: 1, category: 'pokemon', name: 'カイ', model_number: '236/172' },
       { source_product_id: 21461, category: 'pokemon', name: 'エーフィ☆', model_number: '025/PLAY' },
     ].map(row => ({ ...row, run_id: 'complete', store: 'oripark' })),
-    kaitori_checker_offer_snapshot: [
-      { source_product_id: 1, shop_id: 3, buy_price: 99999999 },
-      { source_product_id: 21461, shop_id: 13, buy_price: 37000000 },
-      { source_product_id: 21461, shop_id: 22, buy_price: 15000000 },
-    ].map(row => ({ ...row, run_id: 'complete', store: 'oripark', condition_id: 1, edition_id: 0 })),
+    kaitori_checker_offer_snapshot: offers.map(row => ({ ...row, run_id: 'complete', store: 'oripark', condition_id: 1, edition_id: 0 })),
   };
   return { from: jest.fn((table: string) => {
     let rows = [...tables[table]];
@@ -53,17 +60,27 @@ beforeEach(() => {
   ]);
 });
 
-test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied checker while the newest is %s, and the lower eligible price', async status => {
+test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied checker while the newest is %s, and compares all five sources', async status => {
   const db = database([completed, { ...completed, id: 'newest', status, created_at: '2026-09-09T02:59:00Z', completed_at: null }]);
   const result = await buildTokyoBuybackSnapshot(db, now);
   expect(result.snapshot.checker_run_id).toBe('complete');
   expect(result.snapshot.business_date).toBe('2026-09-09');
-  expect(result.products).toHaveLength(1);
-  expect(result.products[0]).toMatchObject({ id: 'IAP1', source_price: 123000, price_high: 110000 });
-  expect(result.snapshot.report.unmatched).toEqual([
-    { candidate: expect.objectContaining({ source: 'avirile', name: 'エーフィ☆' }), reason: 'not_found' },
+  expect(result.snapshot.report.source_counts).toEqual({
+    kecak: 1, blue_rocket: 1, toreca_bank: 1, avirile: 1, shinsoku: 1 });
+  // KECAK 130,000 @5% beats Blue Rocket 125,000 @10%, Shinsoku 123,000 @5% and the bank's 120,000 @10%.
+  expect(result.products.map(product => [product.id, product.source_price, product.price_high, product.selected_high_source])).toEqual([
+    ['IAP1', 130000, 120000, 'kecak'],
+    [expect.stringMatching(/^TOKYO_[0-9a-f]{64}$/), 40000, 36000, 'avirile'],
   ]);
+  // The 90,000,000 bank row carries the previous business date and never reaches a published price.
+  expect(result.snapshot.report.unmatched).toEqual([]);
   expect(fetchShinsokuPostalProducts).toHaveBeenCalledWith();
+});
+
+test('Tokyo fails closed when any of the five sources has no same-day price', async () => {
+  const offers = OFFERS.filter(offer => offer.shop_id !== 11);
+  const db = database([{ ...completed, offer_count: offers.length }], offers);
+  await expect(buildTokyoBuybackSnapshot(db, now)).rejects.toThrow('Blue Rocketの当日価格がありません');
 });
 
 test.each([
