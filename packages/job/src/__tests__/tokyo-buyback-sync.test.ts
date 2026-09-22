@@ -115,6 +115,61 @@ test('rows without a model number, with split source prices, or discounted to ze
   expect(tiny.unmatched.map(row => row.reason)).toEqual(['zero_after_discount']);
 });
 
+test('a single absurd source price is excluded from the comparison instead of becoming the price', () => {
+  const candidates = tokyoProductCandidates([
+    { id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172', grade: 'PSA10', match_status: 'matched', source_price: 130000 },
+  ], [
+    { source_product_id: 1, category: 'pokemon', name: 'カイ', full_name: null, model_number: '236/172' },
+  ], [
+    { source_product_id: 1, shop_id: 3, condition_id: 1, edition_id: 0, buy_price: 99999999 },
+    { source_product_id: 1, shop_id: 11, condition_id: 1, edition_id: 0, buy_price: 125000 },
+  ]);
+  const result = compareTokyoSourceProducts(candidates, [{ ...OFFICIAL, price: 123000 }], SETTINGS, OBSERVED_AT);
+  expect(result.products).toHaveLength(1);
+  // 99,999,999 は他3社の中央値 125,000 の 800 倍。除外して KECAK 130,000 @5% を採用する。
+  expect(result.products[0]).toMatchObject({ source_price: 130000, price_high: 120000,
+    selected_high_source: 'kecak', selected_low_source: 'kecak' });
+  expect(result.products[0].origins.map(origin => [origin.source, origin.rawPrice, origin.excluded ?? false])).toEqual([
+    ['kecak', 130000, false], ['blue_rocket', 125000, false],
+    ['toreca_bank', 99999999, true], ['shinsoku', 123000, false],
+  ]);
+});
+
+test('the outlier guard is configurable and keeps legitimate price gaps', () => {
+  const group = (bankPrice: number, guard: { max_median_ratio: number; max_source_price: number }) => {
+    const settings = normalizeStorePricingSettings({ tokyo_outlier_guard: guard });
+    const candidates = tokyoProductCandidates([
+      { id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172', grade: 'PSA10', match_status: 'matched', source_price: 50000 },
+    ], [
+      { source_product_id: 1, category: 'pokemon', name: 'カイ', full_name: null, model_number: '236/172' },
+    ], [
+      { source_product_id: 1, shop_id: 3, condition_id: 1, edition_id: 0, buy_price: bankPrice },
+    ]);
+    return compareTokyoSourceProducts(candidates, [{ ...OFFICIAL, price: 50000 }], settings, OBSERVED_AT);
+  };
+  const lenient = { max_median_ratio: 10, max_source_price: 10_000_000 };
+  // 200,000 / 50,000 = 4倍。正常な価格差なので除外しない。
+  expect(group(200000, lenient).products[0]).toMatchObject({ selected_high_source: 'toreca_bank', source_price: 200000 });
+  // 同じ値でも倍率を 3 に絞れば除外される。
+  expect(group(200000, { ...lenient, max_median_ratio: 3 }).products[0]).toMatchObject({ selected_high_source: 'kecak', source_price: 50000 });
+  // 倍率では届かない単独の高値も、元価格上限で切れる。
+  expect(group(200000, { ...lenient, max_source_price: 150000 }).products[0]).toMatchObject({ selected_high_source: 'kecak', source_price: 50000 });
+});
+
+test('a lone source is judged by the absolute ceiling only, and an over-ceiling product stays unpublished', () => {
+  const guard = normalizeStorePricingSettings({ tokyo_outlier_guard: { max_median_ratio: 10, max_source_price: 1_000_000 } });
+  const lone = (price: number) => compareTokyoSourceProducts(tokyoProductCandidates([], [
+    { source_product_id: 9, category: 'one_piece', name: 'ルフィ', full_name: null, model_number: 'OP01-001' },
+  ], [
+    { source_product_id: 9, shop_id: 13, condition_id: 1, edition_id: 0, buy_price: price },
+  ]), [], guard, OBSERVED_AT);
+  // 比較相手が居なくても上限以下なら公開する。
+  expect(lone(900000).products[0]).toMatchObject({ source_price: 900000, selected_high_source: 'avirile' });
+  const over = lone(9000000);
+  expect(over.products).toEqual([]);
+  expect(over.unmatched.map(row => row.reason)).toEqual(['outlier_price']);
+});
+
 test('the per-source discount rate applies exactly once to the raw source price', () => {
   expect(tokyoDisplayPrice(100000, 'Pokemon', 'PSA10', 0.07)).toBe(93000);
   expect(tokyoDisplayPrice(100000, 'Pokemon', 'BOX', 0.07)).toBe(93000);

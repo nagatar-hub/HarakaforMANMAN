@@ -3,8 +3,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   calculateBoxPriceHigh, calculateBuyPriceHigh, isBuiltInOrderListExclusion,
   normalizeStorePricingSettings, postalProductIdentity, tokyoBusinessDate,
-  fetchShinsokuPostalProducts, TOKYO_PRICE_SOURCES, validateTokyoSourceDiscountRates,
-  type PostalCandidate, type ShinsokuPostalProduct, type StorePricingSettings, type Franchise, type TokyoPriceSource,
+  fetchShinsokuPostalProducts, TOKYO_PRICE_SOURCES, validateTokyoSourceDiscountRates, validateTokyoOutlierGuard,
+  type PostalCandidate, type ShinsokuPostalProduct, type StorePricingSettings, type Franchise, type TokyoPriceSource, type TokyoOutlierGuard,
 } from '@haraka/shared';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { isBoxRow } from '../lib/box-row.js';
@@ -25,7 +25,26 @@ export type TokyoCandidate = Omit<PostalCandidate, 'source'> & { source: TokyoPr
   conditionId?: number; sourcePrice?: number | null; dbCardId?: string | null; imageUrl?: string | null;
   observedAt?: string | null };
 type ComparedOrigin = TokyoCandidate & { rawPrice: number; highRate: number; highPrice: number;
-  lowRate: number; lowPrice: number };
+  lowRate: number; lowPrice: number; excluded?: true };
+
+const median = (values: number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+};
+
+/**
+ * 1店舗だけの異常な元価格を採用対象から落とす。
+ * 先に絶対上限で切り、残った相手との中央値比で相対的な外れ値を落とす。
+ * 比較相手が居ない単独ソースは絶対上限だけで判定する。
+ */
+export function tokyoComparableOrigins(origins: ComparedOrigin[], guard: TokyoOutlierGuard): ComparedOrigin[] {
+  const withinCap = origins.filter(origin => origin.rawPrice <= guard.max_source_price);
+  return withinCap.filter(origin => {
+    const others = withinCap.filter(row => row !== origin).map(row => row.rawPrice);
+    return !others.length || origin.rawPrice <= median(others) * guard.max_median_ratio;
+  });
+}
 
 const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = {
   11: 'blue_rocket', 3: 'toreca_bank', 13: 'avirile',
@@ -86,7 +105,7 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
     imageUrl: product.imageUrl, observedAt,
   }))];
   const groups = new Map<string, TokyoCandidate[]>();
-  const unmatched: { candidate: TokyoCandidate; reason: 'missing_model' | 'invalid_price' | 'ambiguous' | 'zero_after_discount' }[] = [];
+  const unmatched: { candidate: TokyoCandidate; reason: 'missing_model' | 'invalid_price' | 'ambiguous' | 'zero_after_discount' | 'outlier_price' }[] = [];
   for (const candidate of all) {
     if (candidate.productType === 'PSA10' && !candidate.modelNumber?.trim()) {
       unmatched.push({ candidate, reason: 'missing_model' });
@@ -116,14 +135,21 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
         highRate: rates.high, highPrice: tokyoDisplayPrice(candidate.sourcePrice, candidate.franchise as Franchise, candidate.productType, rates.high),
         lowRate: rates.low, lowPrice: tokyoDisplayPrice(candidate.sourcePrice, candidate.franchise as Franchise, candidate.productType, rates.low) }];
     });
-    const eligible = origins.filter(origin => origin.highPrice > 0);
+    const compared = tokyoComparableOrigins(origins, settings.tokyo_outlier_guard);
+    if (!compared.length) {
+      unmatched.push(...group.map(candidate => ({ candidate, reason: 'outlier_price' as const })));
+      continue;
+    }
+    const excluded = new Set(origins.filter(origin => !compared.includes(origin)).map(origin => origin.source));
+    for (const origin of origins) if (excluded.has(origin.source)) origin.excluded = true;
+    const eligible = compared.filter(origin => origin.highPrice > 0);
     if (!eligible.length) {
       unmatched.push(...group.map(candidate => ({ candidate, reason: 'zero_after_discount' as const })));
       continue;
     }
     const high = eligible.reduce((winner, origin) => origin.highPrice > winner.highPrice ? origin : winner);
-    const low = origins.reduce((winner, origin) => origin.lowPrice > winner.lowPrice ? origin : winner);
-    const canonical = bySource.get('shinsoku')?.[0] ?? bySource.get('kecak')?.[0] ?? origins[0];
+    const low = compared.reduce((winner, origin) => origin.lowPrice > winner.lowPrice ? origin : winner);
+    const canonical = bySource.get('shinsoku')?.[0] ?? bySource.get('kecak')?.[0] ?? compared[0];
     const shinsoku = bySource.get('shinsoku')?.[0];
     products.push({
       id: shinsoku?.id ?? `TOKYO_${createHash('sha256').update(identity).digest('hex')}`,
@@ -200,7 +226,8 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   ]);
   if (configError || !config) throw new Error('東京満満の減額設定がありません');
   const settings = normalizeStorePricingSettings(config.settings);
-  const tokyoRateError = validateTokyoSourceDiscountRates(settings.tokyo_source_discount_rates);
+  const tokyoRateError = validateTokyoSourceDiscountRates(settings.tokyo_source_discount_rates)
+    ?? validateTokyoOutlierGuard(settings.tokyo_outlier_guard);
   if (tokyoRateError) throw new Error(tokyoRateError);
   for (const rates of [Object.values(settings.psa10_discount_rates), Object.values(settings.box_discount_rates).flatMap(rate => [rate.shrink, rate.no_shrink])]) {
     if (rates.some(rate => !Number.isFinite(rate) || rate < 0 || rate > 1)) throw new Error('減額率は0〜100%で設定してください');

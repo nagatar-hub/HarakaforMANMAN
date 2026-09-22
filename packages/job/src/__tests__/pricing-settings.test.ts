@@ -1,6 +1,7 @@
 import {
   DEFAULT_BOX_DISCOUNT_RATES,
   DEFAULT_PSA10_DISCOUNT_RATES,
+  DEFAULT_TOKYO_OUTLIER_GUARD,
   DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
   mergeStorePricingSettings,
   normalizeStorePricingSettings,
@@ -88,6 +89,7 @@ describe('normalizeStorePricingSettings', () => {
         'DRAGON BALL': 0.06,
       },
       tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
+      tokyo_outlier_guard: DEFAULT_TOKYO_OUTLIER_GUARD,
     });
   });
 
@@ -171,6 +173,7 @@ describe('normalizeStorePricingSettings', () => {
         'DRAGON BALL': 0.06,
       },
       tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
+      tokyo_outlier_guard: DEFAULT_TOKYO_OUTLIER_GUARD,
     });
   });
 

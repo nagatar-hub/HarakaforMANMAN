@@ -10,11 +10,19 @@ export const TOKYO_PRICE_SOURCES = ['kecak', 'blue_rocket', 'toreca_bank', 'avir
 export type TokyoPriceSource = typeof TOKYO_PRICE_SOURCES[number];
 export type TokyoSourceDiscountRate = { high: number; low: number };
 export type TokyoSourceDiscountRates = Record<TokyoPriceSource, TokyoSourceDiscountRate>;
+/** 1店舗だけの異常な元価格が5ソース比較の採用値になるのを防ぐ。 */
+export type TokyoOutlierGuard = {
+  /** 同一商品の他ソース元価格の中央値に対する倍率。超えたソースは比較から除外する。 */
+  max_median_ratio: number;
+  /** 比較相手が無い商品でも効く元価格の上限。 */
+  max_source_price: number;
+};
 export type StorePricingSettings = {
   box_price_low_enabled?: boolean;
   box_discount_rates: BoxDiscountRates;
   psa10_discount_rates: Record<Franchise, number>;
   tokyo_source_discount_rates: TokyoSourceDiscountRates;
+  tokyo_outlier_guard: TokyoOutlierGuard;
 };
 
 export const DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE = 0.15;
@@ -44,10 +52,15 @@ export const DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES: TokyoSourceDiscountRates = {
   avirile: { high: 0.10, low: 0.10 },
   shinsoku: { high: 0.05, low: 0.05 },
 };
+export const DEFAULT_TOKYO_OUTLIER_GUARD: TokyoOutlierGuard = {
+  max_median_ratio: 10,
+  max_source_price: 10_000_000,
+};
 export const DEFAULT_STORE_PRICING_SETTINGS: StorePricingSettings = {
   box_discount_rates: DEFAULT_BOX_DISCOUNT_RATES,
   psa10_discount_rates: DEFAULT_PSA10_DISCOUNT_RATES,
   tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
+  tokyo_outlier_guard: DEFAULT_TOKYO_OUTLIER_GUARD,
 };
 
 const PELEKA_TREKAMAN_POKEMON_UPPER_PERCENT = 94;
@@ -102,6 +115,25 @@ function normalizeTokyoSourceDiscountRates(source: unknown): TokyoSourceDiscount
   })) as TokyoSourceDiscountRates;
 }
 
+function normalizeTokyoOutlierGuard(source: unknown): TokyoOutlierGuard {
+  const record = isRecord(source) ? source : {};
+  return {
+    max_median_ratio: numberOrDefault(record.max_median_ratio, DEFAULT_TOKYO_OUTLIER_GUARD.max_median_ratio),
+    max_source_price: numberOrDefault(record.max_source_price, DEFAULT_TOKYO_OUTLIER_GUARD.max_source_price),
+  };
+}
+
+export function validateTokyoOutlierGuard(guard: TokyoOutlierGuard): string | null {
+  // 1倍以下だと中央値を上回る全ソースが落ちるため、2倍を下限にする。
+  if (!Number.isFinite(guard.max_median_ratio) || guard.max_median_ratio < 2 || guard.max_median_ratio > 1000) {
+    return '外れ値の倍率は2〜1000倍で設定してください';
+  }
+  if (!Number.isSafeInteger(guard.max_source_price) || guard.max_source_price < 1000 || guard.max_source_price > 100_000_000) {
+    return '外れ値の元価格上限は1,000〜100,000,000円で設定してください';
+  }
+  return null;
+}
+
 export function validateTokyoSourceDiscountRates(rates: TokyoSourceDiscountRates): string | null {
   for (const source of TOKYO_PRICE_SOURCES) {
     const { high, low } = rates[source];
@@ -142,6 +174,7 @@ export function normalizeStorePricingSettings(settings: unknown): StorePricingSe
     box_discount_rates: normalizedBoxRates,
     psa10_discount_rates: normalizedPsa10Rates,
     tokyo_source_discount_rates: normalizeTokyoSourceDiscountRates(source.tokyo_source_discount_rates),
+    tokyo_outlier_guard: normalizeTokyoOutlierGuard(source.tokyo_outlier_guard),
   };
 }
 
@@ -187,6 +220,10 @@ export function mergeStorePricingSettings(base: unknown, overrides: unknown): St
       ...normalizedBase.tokyo_source_discount_rates[source],
       ...(isRecord(tokyoOverrides[source]) ? tokyoOverrides[source] : {}),
     }])),
+    tokyo_outlier_guard: {
+      ...normalizedBase.tokyo_outlier_guard,
+      ...(isRecord(overrideRecord.tokyo_outlier_guard) ? overrideRecord.tokyo_outlier_guard : {}),
+    },
   });
 }
 

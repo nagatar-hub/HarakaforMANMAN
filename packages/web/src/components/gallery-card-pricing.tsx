@@ -3,7 +3,7 @@ type GalleryPricing = {
   adopted: { store: string | null; price: number | null } | null;
   comparison?: {
     rows: { store: string; rawPrice: number; highRate: number; highPrice: number;
-      lowRate: number; lowPrice: number; selectedHigh: boolean; selectedLow: boolean }[];
+      lowRate: number; lowPrice: number; selectedHigh: boolean; selectedLow: boolean; excluded?: boolean }[];
     high: { store: string; price: number };
     low: { store: string; price: number };
   };
@@ -23,8 +23,8 @@ export function GalleryCardPricing({ pricing }: { pricing?: GalleryPricing }) {
           <th className="px-2 font-medium">上限率</th><th className="px-2 font-medium">上限結果</th>
           <th className="px-2 font-medium">下限率</th><th className="pl-2 font-medium">下限結果</th>
         </tr></thead>
-        <tbody>{pricing.comparison.rows.map(row => <tr key={row.store}>
-          <th className="pr-3 font-medium text-text-primary">{row.store}</th>
+        <tbody>{pricing.comparison.rows.map(row => <tr key={row.store} className={row.excluded ? 'opacity-60' : undefined}>
+          <th className="pr-3 font-medium text-text-primary">{row.store}{row.excluded ? '（外れ値で除外）' : ''}</th>
           <td className="px-2 tabular-nums">{priceText(row.rawPrice)}</td>
           <td className="px-2 tabular-nums">{row.highRate * 100}%</td>
           <td className="px-2 tabular-nums">{priceText(row.highPrice)}{row.selectedHigh ? '（採用）' : ''}</td>

@@ -6,12 +6,14 @@ export {
   DEFAULT_BOX_DISCOUNT_RATES,
   DEFAULT_PSA10_DISCOUNT_RATES,
   DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
+  DEFAULT_TOKYO_OUTLIER_GUARD,
   DEFAULT_STORE_PRICING_SETTINGS,
   TOKYO_PRICE_SOURCES,
   niceLowerBound,
   normalizeStorePricingSettings,
   mergeStorePricingSettings,
   validateTokyoSourceDiscountRates,
+  validateTokyoOutlierGuard,
   floorDiscountedPriceByTier,
   calculateBuyPriceHigh,
   calculateBuyPriceLow,
@@ -22,7 +24,7 @@ export {
 } from './price.js';
 export type {
   BoxConditionDiscountRates, BoxDiscountRates, Psa10DiscountRates, StorePricingSettings,
-  TokyoPriceSource, TokyoSourceDiscountRate, TokyoSourceDiscountRates,
+  TokyoPriceSource, TokyoSourceDiscountRate, TokyoSourceDiscountRates, TokyoOutlierGuard,
 } from './price.js';
 export { normalizeText } from './normalize.js';
 export { isBuiltInOrderListExclusion } from './order-list-exclusion.js';

@@ -8,6 +8,7 @@ import {
   normalizePreviewBasePrice,
 } from '@/lib/settings-preview';
 import {
+  DEFAULT_TOKYO_OUTLIER_GUARD,
   DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
   FRANCHISES,
   FRANCHISE_JA,
@@ -15,6 +16,7 @@ import {
   calculateBoxPriceHigh,
   calculatePelekaAlignedBuyPriceRange,
   type Franchise,
+  type TokyoOutlierGuard,
   type TokyoPriceSource,
 } from '@haraka/shared';
 
@@ -33,6 +35,7 @@ interface StoreConfig {
     box_discount_rates?: Partial<Record<Franchise, Partial<BoxConditionRates>>>;
     psa10_discount_rates?: Partial<Record<Franchise, number>>;
     tokyo_source_discount_rates?: Partial<Record<TokyoPriceSource, Partial<{ high: number; low: number }>>>;
+    tokyo_outlier_guard?: Partial<TokyoOutlierGuard>;
   };
 }
 
@@ -103,6 +106,7 @@ export default function SettingsPage() {
   const [boxRates, setBoxRates] = useState<BoxRates>(DEFAULT_BOX_RATES);
   const [psa10Rates, setPsa10Rates] = useState<Psa10Rates>(DEFAULT_PSA10_RATES);
   const [tokyoSourceRates, setTokyoSourceRates] = useState<TokyoSourceRates>(DEFAULT_TOKYO_SOURCE_RATES);
+  const [outlierGuard, setOutlierGuard] = useState<TokyoOutlierGuard>(DEFAULT_TOKYO_OUTLIER_GUARD);
   const [psaPreviewBasePrice, setPsaPreviewBasePrice] = useState('30000');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -117,6 +121,10 @@ export default function SettingsPage() {
         setBoxPriceLowEnabled(data.settings.box_price_low_enabled === true);
         setBoxRates(normalizeBoxRates(savedBoxRates));
         setTokyoSourceRates(normalizeTokyoSourceRates(data.settings.tokyo_source_discount_rates));
+        setOutlierGuard({
+          max_median_ratio: data.settings.tokyo_outlier_guard?.max_median_ratio ?? DEFAULT_TOKYO_OUTLIER_GUARD.max_median_ratio,
+          max_source_price: data.settings.tokyo_outlier_guard?.max_source_price ?? DEFAULT_TOKYO_OUTLIER_GUARD.max_source_price,
+        });
         setPsa10Rates(Object.fromEntries(FRANCHISES.map((franchise) => [
           franchise,
           toPercent(savedPsa10Rates[franchise], DEFAULT_PSA10_RATES[franchise]),
@@ -159,6 +167,13 @@ export default function SettingsPage() {
           }
           if (rates.low < rates.high) throw new Error(`${TOKYO_SOURCE_LABELS[source]}の下限減額率は上限減額率以上に設定してください`);
         }
+        if (!Number.isFinite(outlierGuard.max_median_ratio) || outlierGuard.max_median_ratio < 2 || outlierGuard.max_median_ratio > 1000) {
+          throw new Error('外れ値の倍率は2〜1000倍で設定してください');
+        }
+        if (!Number.isSafeInteger(outlierGuard.max_source_price)
+          || outlierGuard.max_source_price < 1000 || outlierGuard.max_source_price > 100000000) {
+          throw new Error('外れ値の元価格上限は1,000〜100,000,000円で設定してください');
+        }
       }
       const updated = await apiFetch<StoreConfig>('/api/store-config', {
         method: 'PATCH',
@@ -171,6 +186,7 @@ export default function SettingsPage() {
                 low: tokyoSourceRates[source].low / 100,
               }]),
             ) } : {}),
+            ...(config?.store === 'manman-akihabara' ? { tokyo_outlier_guard: outlierGuard } : {}),
             box_discount_rates: Object.fromEntries(FRANCHISES.map((franchise) => [franchise, {
               shrink: boxRates[franchise].shrink / 100,
               ...(CONFIGURABLE_PRICING_FRANCHISES.some(item => item === franchise)
@@ -235,6 +251,43 @@ export default function SettingsPage() {
                   </span>
                 </label>)}
               </div>)}
+            </div>
+            <h3 className="text-sm font-bold text-text-primary mt-8 mb-2">外れ値の除外</h3>
+            <p className="text-sm text-text-secondary mb-4">
+              1店舗だけが異常な元価格を出していた場合に、その店舗を比較から除外します。
+              倍率は同一商品の他店舗の元価格の中央値に対する比で判定し、比較相手が無い商品は元価格上限だけで判定します。
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold text-text-secondary">他店舗中央値に対する上限倍率</span>
+                <span className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={2}
+                    max={1000}
+                    step={1}
+                    value={outlierGuard.max_median_ratio}
+                    onChange={event => setOutlierGuard(current => ({ ...current, max_median_ratio: Number(event.target.value) }))}
+                    className="w-full rounded-lg border border-border-card bg-transparent px-3 py-2 text-right font-bold text-text-primary focus:outline-none"
+                  />
+                  <span className="text-text-secondary">倍</span>
+                </span>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold text-text-secondary">元価格の上限</span>
+                <span className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={1000}
+                    max={100000000}
+                    step={1000}
+                    value={outlierGuard.max_source_price}
+                    onChange={event => setOutlierGuard(current => ({ ...current, max_source_price: Number(event.target.value) }))}
+                    className="w-full rounded-lg border border-border-card bg-transparent px-3 py-2 text-right font-bold text-text-primary focus:outline-none"
+                  />
+                  <span className="text-text-secondary">円</span>
+                </span>
+              </label>
             </div>
           </section>}
 

@@ -6,14 +6,14 @@ export type GalleryCardPricing = {
   adopted: { store: string | null; price: number | null } | null;
   comparison?: {
     rows: { store: string; rawPrice: number; highRate: number; highPrice: number;
-      lowRate: number; lowPrice: number; selectedHigh: boolean; selectedLow: boolean }[];
+      lowRate: number; lowPrice: number; selectedHigh: boolean; selectedLow: boolean; excluded: boolean }[];
     high: { store: string; price: number };
     low: { store: string; price: number };
   };
 };
 type Card = { id: string; run_id: string; source_shinsoku_id: string | null };
 type Origin = { source?: string; id?: string; sourcePrice?: unknown; rawPrice?: unknown;
-  highRate?: unknown; highPrice?: unknown; lowRate?: unknown; lowPrice?: unknown };
+  highRate?: unknown; highPrice?: unknown; lowRate?: unknown; lowPrice?: unknown; excluded?: unknown };
 const labels: Record<string, string> = {
   kecak: 'KECAK', blue_rocket: 'Blue Rocket', avirile: 'アヴィリール',
   toreca_bank: 'トレカバンク', shinsoku: 'シンソク郵送買取',
@@ -118,7 +118,8 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
         return store && rawPrice !== null && highRate !== null && highPrice !== null && lowRate !== null && lowPrice !== null
           ? [{ store, rawPrice, highRate, highPrice, lowRate, lowPrice,
             selectedHigh: origin.source === product.selected_high_source,
-            selectedLow: origin.source === product.selected_low_source }] : [];
+            selectedLow: origin.source === product.selected_low_source,
+            excluded: origin.excluded === true }] : [];
       });
       if (comparisonRows.length && comparisonRows.some(row => row.selectedHigh) && comparisonRows.some(row => row.selectedLow)) {
         const high = comparisonRows.find(row => row.selectedHigh)!;

@@ -7,6 +7,7 @@ import {
   floorDiscountedPriceByTier,
   mergeStorePricingSettings,
   normalizeStorePricingSettings,
+  validateTokyoOutlierGuard,
   validateTokyoSourceDiscountRates,
 } from '../utils/price';
 
@@ -30,6 +31,25 @@ describe('Tokyo source discount settings', () => {
       kecak: { high: -0.01, low: 0.05 } })).toContain('0〜100%');
     expect(validateTokyoSourceDiscountRates({ ...settings.tokyo_source_discount_rates,
       shinsoku: { high: 0.10, low: 0.05 } })).toContain('下限減額率');
+  });
+});
+
+describe('Tokyo outlier guard settings', () => {
+  it('defaults to 10x the other sources and a 10,000,000 yen source ceiling', () => {
+    const defaults = normalizeStorePricingSettings({});
+    expect(defaults.tokyo_outlier_guard).toEqual({ max_median_ratio: 10, max_source_price: 10_000_000 });
+    expect(validateTokyoOutlierGuard(defaults.tokyo_outlier_guard)).toBeNull();
+    const merged = mergeStorePricingSettings(defaults, { tokyo_outlier_guard: { max_median_ratio: 5 } });
+    expect(merged.tokyo_outlier_guard).toEqual({ max_median_ratio: 5, max_source_price: 10_000_000 });
+  });
+
+  it('rejects a ratio that would exclude every source and a non-integer or out-of-range ceiling', () => {
+    for (const ratio of [1, 1.9, 0, -1, NaN, Infinity, 1001]) {
+      expect(validateTokyoOutlierGuard({ max_median_ratio: ratio, max_source_price: 10_000_000 })).toContain('倍率');
+    }
+    for (const price of [999, 0, -1, 1000.5, NaN, Infinity, 100_000_001]) {
+      expect(validateTokyoOutlierGuard({ max_median_ratio: 10, max_source_price: price })).toContain('元価格上限');
+    }
   });
 });
 
