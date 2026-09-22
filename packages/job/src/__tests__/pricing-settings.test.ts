@@ -2,6 +2,7 @@ import {
   DEFAULT_BOX_DISCOUNT_RATES,
   DEFAULT_PSA10_DISCOUNT_RATES,
   DEFAULT_TOKYO_OUTLIER_GUARD,
+  DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS,
   DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
   mergeStorePricingSettings,
   normalizeStorePricingSettings,
@@ -90,6 +91,7 @@ describe('normalizeStorePricingSettings', () => {
       },
       tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
       tokyo_outlier_guard: DEFAULT_TOKYO_OUTLIER_GUARD,
+      tokyo_price_max_age_days: DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS,
     });
   });
 
@@ -174,6 +176,7 @@ describe('normalizeStorePricingSettings', () => {
       },
       tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
       tokyo_outlier_guard: DEFAULT_TOKYO_OUTLIER_GUARD,
+      tokyo_price_max_age_days: DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS,
     });
   });
 

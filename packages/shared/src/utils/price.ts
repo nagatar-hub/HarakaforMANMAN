@@ -23,6 +23,8 @@ export type StorePricingSettings = {
   psa10_discount_rates: Record<Franchise, number>;
   tokyo_source_discount_rates: TokyoSourceDiscountRates;
   tokyo_outlier_guard: TokyoOutlierGuard;
+  /** 各ソースの元価格を何日前まで比較に入れるか。0 は当日のみ。 */
+  tokyo_price_max_age_days: number;
 };
 
 export const DEFAULT_BUY_PRICE_HIGH_DISCOUNT_RATE = 0.15;
@@ -52,6 +54,9 @@ export const DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES: TokyoSourceDiscountRates = {
   avirile: { high: 0.10, low: 0.10 },
   shinsoku: { high: 0.05, low: 0.05 },
 };
+// 2026-09-22 の実データ検証: 当日のみ 1293 件に対し、1日前まで許すと掲載 +33 件、
+// 上限が上がる商品は 23 件・最大 +200,000 円。3日前まで広げると 74 件・最大 +700,000 円。
+export const DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS = 1;
 export const DEFAULT_TOKYO_OUTLIER_GUARD: TokyoOutlierGuard = {
   max_median_ratio: 10,
   // 2026-09-22 の実データで確認した最高元価格は 31,000,000 円（neo 拡張パック第4弾 BOX）。
@@ -63,6 +68,7 @@ export const DEFAULT_STORE_PRICING_SETTINGS: StorePricingSettings = {
   psa10_discount_rates: DEFAULT_PSA10_DISCOUNT_RATES,
   tokyo_source_discount_rates: DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
   tokyo_outlier_guard: DEFAULT_TOKYO_OUTLIER_GUARD,
+  tokyo_price_max_age_days: DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS,
 };
 
 const PELEKA_TREKAMAN_POKEMON_UPPER_PERCENT = 94;
@@ -136,6 +142,13 @@ export function validateTokyoOutlierGuard(guard: TokyoOutlierGuard): string | nu
   return null;
 }
 
+export function validateTokyoPriceMaxAgeDays(days: number): string | null {
+  if (!Number.isSafeInteger(days) || days < 0 || days > 30) {
+    return '価格の許容経過日数は0〜30日で設定してください';
+  }
+  return null;
+}
+
 export function validateTokyoSourceDiscountRates(rates: TokyoSourceDiscountRates): string | null {
   for (const source of TOKYO_PRICE_SOURCES) {
     const { high, low } = rates[source];
@@ -177,6 +190,7 @@ export function normalizeStorePricingSettings(settings: unknown): StorePricingSe
     psa10_discount_rates: normalizedPsa10Rates,
     tokyo_source_discount_rates: normalizeTokyoSourceDiscountRates(source.tokyo_source_discount_rates),
     tokyo_outlier_guard: normalizeTokyoOutlierGuard(source.tokyo_outlier_guard),
+    tokyo_price_max_age_days: numberOrDefault(source.tokyo_price_max_age_days, DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS),
   };
 }
 
@@ -226,6 +240,8 @@ export function mergeStorePricingSettings(base: unknown, overrides: unknown): St
       ...normalizedBase.tokyo_outlier_guard,
       ...(isRecord(overrideRecord.tokyo_outlier_guard) ? overrideRecord.tokyo_outlier_guard : {}),
     },
+    tokyo_price_max_age_days: numberOrDefault(overrideRecord.tokyo_price_max_age_days,
+      normalizedBase.tokyo_price_max_age_days),
   });
 }
 

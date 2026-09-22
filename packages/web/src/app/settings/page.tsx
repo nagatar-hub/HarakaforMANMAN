@@ -9,6 +9,7 @@ import {
 } from '@/lib/settings-preview';
 import {
   DEFAULT_TOKYO_OUTLIER_GUARD,
+  DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS,
   DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES,
   FRANCHISES,
   FRANCHISE_JA,
@@ -36,6 +37,7 @@ interface StoreConfig {
     psa10_discount_rates?: Partial<Record<Franchise, number>>;
     tokyo_source_discount_rates?: Partial<Record<TokyoPriceSource, Partial<{ high: number; low: number }>>>;
     tokyo_outlier_guard?: Partial<TokyoOutlierGuard>;
+    tokyo_price_max_age_days?: number;
   };
 }
 
@@ -107,6 +109,7 @@ export default function SettingsPage() {
   const [psa10Rates, setPsa10Rates] = useState<Psa10Rates>(DEFAULT_PSA10_RATES);
   const [tokyoSourceRates, setTokyoSourceRates] = useState<TokyoSourceRates>(DEFAULT_TOKYO_SOURCE_RATES);
   const [outlierGuard, setOutlierGuard] = useState<TokyoOutlierGuard>(DEFAULT_TOKYO_OUTLIER_GUARD);
+  const [priceMaxAgeDays, setPriceMaxAgeDays] = useState(DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS);
   const [psaPreviewBasePrice, setPsaPreviewBasePrice] = useState('30000');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -125,6 +128,7 @@ export default function SettingsPage() {
           max_median_ratio: data.settings.tokyo_outlier_guard?.max_median_ratio ?? DEFAULT_TOKYO_OUTLIER_GUARD.max_median_ratio,
           max_source_price: data.settings.tokyo_outlier_guard?.max_source_price ?? DEFAULT_TOKYO_OUTLIER_GUARD.max_source_price,
         });
+        setPriceMaxAgeDays(data.settings.tokyo_price_max_age_days ?? DEFAULT_TOKYO_PRICE_MAX_AGE_DAYS);
         setPsa10Rates(Object.fromEntries(FRANCHISES.map((franchise) => [
           franchise,
           toPercent(savedPsa10Rates[franchise], DEFAULT_PSA10_RATES[franchise]),
@@ -174,6 +178,9 @@ export default function SettingsPage() {
           || outlierGuard.max_source_price < 1000 || outlierGuard.max_source_price > 100000000) {
           throw new Error('外れ値の元価格上限は1,000〜100,000,000円で設定してください');
         }
+        if (!Number.isSafeInteger(priceMaxAgeDays) || priceMaxAgeDays < 0 || priceMaxAgeDays > 30) {
+          throw new Error('価格の許容経過日数は0〜30日で設定してください');
+        }
       }
       const updated = await apiFetch<StoreConfig>('/api/store-config', {
         method: 'PATCH',
@@ -186,7 +193,8 @@ export default function SettingsPage() {
                 low: tokyoSourceRates[source].low / 100,
               }]),
             ) } : {}),
-            ...(config?.store === 'manman-akihabara' ? { tokyo_outlier_guard: outlierGuard } : {}),
+            ...(config?.store === 'manman-akihabara'
+              ? { tokyo_outlier_guard: outlierGuard, tokyo_price_max_age_days: priceMaxAgeDays } : {}),
             box_discount_rates: Object.fromEntries(FRANCHISES.map((franchise) => [franchise, {
               shrink: boxRates[franchise].shrink / 100,
               ...(CONFIGURABLE_PRICING_FRANCHISES.some(item => item === franchise)
@@ -252,6 +260,27 @@ export default function SettingsPage() {
                 </label>)}
               </div>)}
             </div>
+            <h3 className="text-sm font-bold text-text-primary mt-8 mb-2">比較に使う価格の鮮度</h3>
+            <p className="text-sm text-text-secondary mb-4">
+              各店舗が最後に価格を更新した日から何日前までを比較に入れるかです。0 にすると当日更新分だけを使います。
+              広げるほど比較できる商品は増えますが、すでに終了している価格を採用する可能性も上がります。
+            </p>
+            <label className="block max-w-xs">
+              <span className="mb-1 block text-xs font-semibold text-text-secondary">許容する経過日数</span>
+              <span className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  max={30}
+                  step={1}
+                  value={priceMaxAgeDays}
+                  onChange={event => setPriceMaxAgeDays(Number(event.target.value))}
+                  className="w-full rounded-lg border border-border-card bg-transparent px-3 py-2 text-right font-bold text-text-primary focus:outline-none"
+                />
+                <span className="text-text-secondary">日前まで</span>
+              </span>
+            </label>
+
             <h3 className="text-sm font-bold text-text-primary mt-8 mb-2">外れ値の除外</h3>
             <p className="text-sm text-text-secondary mb-4">
               1店舗だけが異常な元価格を出していた場合に、その店舗を比較から除外します。

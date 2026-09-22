@@ -21,12 +21,13 @@ const OFFERS = [
   { source_product_id: 21461, shop_id: 3, buy_price: 90000000, source_updated_at: PREVIOUS_DAY },
 ];
 
-function database(checkerRows: object[], offers = OFFERS) {
+function database(checkerRows: object[], offers = OFFERS, extraSettings: object = {}) {
   const tables: Record<string, any[]> = {
     order_list_import: [{ id: 'order', store: 'manman-akihabara', business_date: '2026-09-09',
       structural_valid: true, persistence_complete: true, status: 'applied' }],
     kaitori_checker_sync_run: checkerRows,
-    store_config: [{ store: 'manman-akihabara', settings: { psa10_discount_rates: { Pokemon: 0.04 } } }],
+    store_config: [{ store: 'manman-akihabara',
+      settings: { psa10_discount_rates: { Pokemon: 0.04 }, ...extraSettings } }],
     order_list_item: [{ id: 'k', import_id: 'order', excel_product_id: 'k', franchise: 'Pokemon', card_name: 'カイ',
       list_no: '236/172', grade: 'PSA10', match_status: 'matched', source_price: 130000 }],
     kaitori_checker_product_snapshot: [
@@ -65,14 +66,19 @@ test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied check
   const result = await buildTokyoBuybackSnapshot(db, now);
   expect(result.snapshot.checker_run_id).toBe('complete');
   expect(result.snapshot.business_date).toBe('2026-09-09');
+  // 既定は1日前まで許容するため、前日のトレカバンク行も比較へ入る。
   expect(result.snapshot.report.source_counts).toEqual({
-    kecak: 1, blue_rocket: 1, toreca_bank: 1, avirile: 1, shinsoku: 1 });
+    kecak: 1, blue_rocket: 1, toreca_bank: 2, avirile: 1, shinsoku: 1 });
   // KECAK 130,000 @5% beats Blue Rocket 125,000 @10%, Shinsoku 123,000 @5% and the bank's 120,000 @10%.
   expect(result.products.map(product => [product.id, product.source_price, product.price_high, product.selected_high_source])).toEqual([
     ['IAP1', 130000, 120000, 'kecak'],
     [expect.stringMatching(/^TOKYO_[0-9a-f]{64}$/), 40000, 36000, 'avirile'],
   ]);
-  // The 90,000,000 bank row carries the previous business date and never reaches a published price.
+  // 前日の 90,000,000 円は比較に入るが、外れ値ガードの元価格上限で除外され採用されない。
+  const efi = result.products[1];
+  expect(efi.origins.map(origin => [origin.source, origin.rawPrice, origin.excluded ?? false])).toEqual([
+    ['toreca_bank', 90000000, true], ['avirile', 40000, false],
+  ]);
   expect(result.snapshot.report.unmatched).toEqual([]);
   expect(fetchShinsokuPostalProducts).toHaveBeenCalledWith();
 });
@@ -84,7 +90,7 @@ test('a source with no same-day price simply sits out the comparison', async () 
   const db = database([{ ...completed, offer_count: offers.length }], offers);
   const result = await buildTokyoBuybackSnapshot(db, now);
   expect(result.snapshot.report.source_counts).toEqual({
-    kecak: 1, blue_rocket: 0, toreca_bank: 1, avirile: 1, shinsoku: 1 });
+    kecak: 1, blue_rocket: 0, toreca_bank: 2, avirile: 1, shinsoku: 1 });
   expect(result.products.map(product => [product.id, product.selected_high_source])).toEqual([
     ['IAP1', 'kecak'],
     [expect.stringMatching(/^TOKYO_[0-9a-f]{64}$/), 'avirile'],
@@ -93,11 +99,19 @@ test('a source with no same-day price simply sits out the comparison', async () 
 });
 
 // 翌日になり KECAK のオーダーリストも買取チェッカーも前日のまま、という実運用で起きる状況。
-// 前日の金額は一切採用せず、当日価格を持つシンソクだけで掲載を続ける。
-test('a previous-day KECAK order list never prices as today, and publishing continues on Shinsoku alone', async () => {
-  const nextDay = new Date('2026-09-09T20:00:00Z'); // JST 2026-09-10 05:00
+const nextDay = new Date('2026-09-09T20:00:00Z'); // JST 2026-09-10 05:00
+
+test('the approved 1-day window lets previous-day prices keep competing', async () => {
   const result = await buildTokyoBuybackSnapshot(database([completed]), nextDay);
   expect(result.snapshot.business_date).toBe('2026-09-10');
+  expect(result.snapshot.report.source_counts).toEqual({
+    kecak: 1, blue_rocket: 1, toreca_bank: 1, avirile: 1, shinsoku: 1 });
+  expect(result.products[0]).toMatchObject({ id: 'IAP1', source_price: 130000, selected_high_source: 'kecak' });
+});
+
+test('setting the window back to same-day only drops every previous-day price', async () => {
+  const db = database([completed], OFFERS, { tokyo_price_max_age_days: 0 });
+  const result = await buildTokyoBuybackSnapshot(db, nextDay);
   expect(result.snapshot.report.source_counts).toEqual({
     kecak: 0, blue_rocket: 0, toreca_bank: 0, avirile: 0, shinsoku: 1 });
   expect(result.products.map(product => [product.id, product.source_price, product.selected_high_source])).toEqual([
@@ -105,6 +119,11 @@ test('a previous-day KECAK order list never prices as today, and publishing cont
   ]);
   // KECAK 130,000 は前日の金額なので、どの商品の採用元にもならない。
   expect(result.products.every(product => product.origins.every(origin => origin.source === 'shinsoku'))).toBe(true);
+});
+
+test('an out-of-range window fails closed before any price is computed', async () => {
+  const db = database([completed], OFFERS, { tokyo_price_max_age_days: 31 });
+  await expect(buildTokyoBuybackSnapshot(db, now)).rejects.toThrow('許容経過日数は0〜30日');
 });
 
 test.each([

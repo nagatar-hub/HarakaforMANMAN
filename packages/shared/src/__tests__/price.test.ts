@@ -8,6 +8,7 @@ import {
   mergeStorePricingSettings,
   normalizeStorePricingSettings,
   validateTokyoOutlierGuard,
+  validateTokyoPriceMaxAgeDays,
   validateTokyoSourceDiscountRates,
 } from '../utils/price';
 
@@ -49,6 +50,23 @@ describe('Tokyo outlier guard settings', () => {
     }
     for (const price of [999, 0, -1, 1000.5, NaN, Infinity, 100_000_001]) {
       expect(validateTokyoOutlierGuard({ max_median_ratio: 10, max_source_price: price })).toContain('元価格上限');
+    }
+  });
+});
+
+describe('Tokyo price age window', () => {
+  it('defaults to allowing yesterday and keeps a partial update', () => {
+    expect(normalizeStorePricingSettings({}).tokyo_price_max_age_days).toBe(1);
+    expect(normalizeStorePricingSettings({ tokyo_price_max_age_days: 3 }).tokyo_price_max_age_days).toBe(3);
+    expect(mergeStorePricingSettings({ tokyo_price_max_age_days: 3 }, {}).tokyo_price_max_age_days).toBe(3);
+    expect(mergeStorePricingSettings({ tokyo_price_max_age_days: 3 },
+      { tokyo_price_max_age_days: 0 }).tokyo_price_max_age_days).toBe(0);
+  });
+
+  it('accepts 0-30 whole days and rejects anything else', () => {
+    for (const days of [0, 1, 3, 30]) expect(validateTokyoPriceMaxAgeDays(days)).toBeNull();
+    for (const days of [-1, 31, 1.5, NaN, Infinity]) {
+      expect(validateTokyoPriceMaxAgeDays(days)).toContain('許容経過日数');
     }
   });
 });

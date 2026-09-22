@@ -4,6 +4,7 @@ import {
   calculateBoxPriceHigh, calculateBuyPriceHigh, isBuiltInOrderListExclusion,
   normalizeStorePricingSettings, postalProductIdentity, tokyoBusinessDate,
   fetchShinsokuPostalProducts, TOKYO_PRICE_SOURCES, validateTokyoSourceDiscountRates, validateTokyoOutlierGuard,
+  validateTokyoPriceMaxAgeDays,
   type PostalCandidate, type ShinsokuPostalProduct, type StorePricingSettings, type Franchise, type TokyoPriceSource, type TokyoOutlierGuard,
 } from '@haraka/shared';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
@@ -51,19 +52,31 @@ const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = {
 };
 const validPrice = (price: number | null | undefined): price is number =>
   Number.isSafeInteger(price) && price! > 0 && price! <= 100_000_000;
-const currentTokyoDate = (value: string | null | undefined, businessDate?: string) => {
-  if (!businessDate) return true;
-  if (!value) return false;
+/** 業務日から見た元価格の経過日数。未来日や解釈不能な値は null。 */
+const priceAgeDays = (value: string | null | undefined, businessDate: string): number | null => {
+  if (!value) return null;
   const date = new Date(value);
-  return Number.isFinite(date.getTime()) && tokyoBusinessDate(date) === businessDate;
+  if (!Number.isFinite(date.getTime())) return null;
+  const observed = Date.parse(`${tokyoBusinessDate(date)}T00:00:00+09:00`);
+  const base = Date.parse(`${businessDate}T00:00:00+09:00`);
+  if (!Number.isFinite(observed) || !Number.isFinite(base)) return null;
+  const age = Math.round((base - observed) / 86_400_000);
+  return age < 0 ? null : age;
+};
+const withinPriceAge = (value: string | null | undefined, businessDate?: string, maxAgeDays = 0) => {
+  if (!businessDate) return true;
+  const age = priceAgeDays(value, businessDate);
+  return age !== null && age <= maxAgeDays;
 };
 
 export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[],
-  options: { businessDate?: string; kecakObservedAt?: string | null; kecakBusinessDate?: string } = {}): TokyoCandidate[] {
+  options: { businessDate?: string; kecakObservedAt?: string | null; kecakBusinessDate?: string;
+    maxPriceAgeDays?: number } = {}): TokyoCandidate[] {
   const candidates: TokyoCandidate[] = [];
-  // 前日のオーダーリストでも商品自体はラインアップに残すが、金額は当日のものだけを比較へ出す。
+  // 古いオーダーリストでも商品自体はラインアップに残すが、金額は許容経過日数内のものだけを比較へ出す。
   // 鮮度は取込時刻ではなくオーダーリスト自身の業務日で判定する。
-  const kecakPriceIsCurrent = !options.businessDate || options.kecakBusinessDate === options.businessDate;
+  const kecakPriceIsCurrent = withinPriceAge(options.kecakBusinessDate
+    ? `${options.kecakBusinessDate}T00:00:00+09:00` : null, options.businessDate, options.maxPriceAgeDays ?? 0);
   for (const row of orderRows) {
     if (!KECAK_FRANCHISES.includes(row.franchise)) continue;
     if (['excluded', 'invalid'].includes(row.match_status) || isBuiltInOrderListExclusion(row.card_name)) continue;
@@ -79,7 +92,7 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
   for (const offer of offers) {
     const source = CHECKER_SOURCES[offer.shop_id];
     if (!source || ![1, 2].includes(offer.condition_id)
-      || !currentTokyoDate(offer.source_updated_at, options.businessDate)) continue;
+      || !withinPriceAge(offer.source_updated_at, options.businessDate, options.maxPriceAgeDays ?? 0)) continue;
     const product = productById.get(offer.source_product_id);
     if (!product) throw new Error('買取チェッカーの商品・掲載一覧が一致しません');
     const franchise = ({ pokemon: 'Pokemon', one_piece: 'ONE PIECE' } as Record<string, string>)[product.category];
@@ -227,7 +240,8 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   if (configError || !config) throw new Error('東京満満の減額設定がありません');
   const settings = normalizeStorePricingSettings(config.settings);
   const tokyoRateError = validateTokyoSourceDiscountRates(settings.tokyo_source_discount_rates)
-    ?? validateTokyoOutlierGuard(settings.tokyo_outlier_guard);
+    ?? validateTokyoOutlierGuard(settings.tokyo_outlier_guard)
+    ?? validateTokyoPriceMaxAgeDays(settings.tokyo_price_max_age_days);
   if (tokyoRateError) throw new Error(tokyoRateError);
   for (const rates of [Object.values(settings.psa10_discount_rates), Object.values(settings.box_discount_rates).flatMap(rate => [rate.shrink, rate.no_shrink])]) {
     if (rates.some(rate => !Number.isFinite(rate) || rate < 0 || rate > 1)) throw new Error('減額率は0〜100%で設定してください');
@@ -236,12 +250,13 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   const candidates = tokyoProductCandidates(orderRows, products, offers, {
     businessDate, kecakBusinessDate: order.business_date,
     kecakObservedAt: order.created_at ?? `${order.business_date}T00:00:00+09:00`,
+    maxPriceAgeDays: settings.tokyo_price_max_age_days,
   });
   // Pull the public catalog first; Tokyo order-list names and model numbers never leave Haraka.
   const sourceProducts = await fetchShinsokuPostalProducts();
   const fetchedAt = now.toISOString();
-  // ラインアップは5ソースの和集合で、金額は比較候補でしかない。当日価格が無いソースは
-  // その日の比較に参加しないだけで、掲載全体を止める理由にはしない。件数は報告に残す。
+  // ラインアップは5ソースの和集合で、金額は比較候補でしかない。許容経過日数内の価格を
+  // 持たないソースはその日の比較に参加しないだけで、掲載全体を止める理由にはしない。
   const sourceCounts = Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, source === 'shinsoku'
     ? sourceProducts.filter(product => validPrice(product.price)).length
     : candidates.filter(row => row.source === source && validPrice(row.sourcePrice)).length]));
