@@ -54,7 +54,9 @@ export const DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES: TokyoSourceDiscountRates = {
 };
 export const DEFAULT_TOKYO_OUTLIER_GUARD: TokyoOutlierGuard = {
   max_median_ratio: 10,
-  max_source_price: 10_000_000,
+  // 2026-09-22 の実データで確認した最高元価格は 31,000,000 円（neo 拡張パック第4弾 BOX）。
+  // 実在の超高額商品を落とさず、99,999,999 円のような異常値は落とせる水準にする。
+  max_source_price: 50_000_000,
 };
 export const DEFAULT_STORE_PRICING_SETTINGS: StorePricingSettings = {
   box_discount_rates: DEFAULT_BOX_DISCOUNT_RATES,
