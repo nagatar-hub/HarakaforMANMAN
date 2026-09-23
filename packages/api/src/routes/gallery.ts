@@ -574,3 +574,116 @@ galleryRoutes.post('/gallery/pages/:pageId/regenerate', async (c) => {
 
   return c.json({ status: 'triggered', pageId, pid: child.pid });
 });
+
+const PRICE_HISTORY_LIMIT = 200;
+
+type PriceHistoryEntry = {
+  kind: 'regular' | 'custom';
+  id: string;
+  published_at: string;
+  franchise: string;
+  card_name: string;
+  grade: string | null;
+  list_no: string | null;
+  tag: string | null;
+  price_high: number | null;
+  price_low: number | null;
+  pricing?: Awaited<ReturnType<typeof loadTokyoGalleryPricing>> extends Map<string, infer P> ? P : never;
+  custom?: {
+    sheet_name: string;
+    display_date: string;
+    rendered_by: string | null;
+    sheet_created_by: string | null;
+    source_shop_name: string | null;
+    override_reason: string | null;
+    backfilled: boolean;
+  };
+};
+
+/** 商品名・型番の部分一致（PostgREST or フィルタ用に引用符付きでエスケープ） */
+export function buildPriceHistoryOrFilter(query: string, fields: string[]): string {
+  const escaped = query.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return fields.map(field => `${field}.ilike."%${escaped}%"`).join(',');
+}
+
+/** 掲載履歴: 通常生成で画像に載ったカードと、カスタム買取表の画像生成記録を新しい順に返す */
+galleryRoutes.get('/gallery/price-history', async (c) => {
+  if (STORE_NAME !== 'manman-akihabara') return c.json({ error: 'Not found' }, 404);
+  const auth = authorizeInternalApiRequest(c.req.header('authorization'));
+  if (auth === 'misconfigured') return c.json({ error: 'API authentication is not configured' }, 503);
+  if (auth !== 'authorized') return c.json({ error: 'Unauthorized' }, 401);
+  const q = (c.req.query('q') ?? '').normalize('NFKC').trim();
+  if (!q || q.length > 100) return c.json({ error: '検索語は1〜100文字で指定してください' }, 400);
+
+  const supabase = createSupabaseClient();
+  // ponytail: prepared_card を ILIKE で走査。遅くなったら pg_trgm インデックスを追加する
+  const { data: cardRows, error: cardError } = await supabase
+    .from('prepared_card')
+    .select('id, run_id, franchise, card_name, grade, list_no, tag, price_high, price_low, source_shinsoku_id, run:run_id!inner(started_at)')
+    .eq('run.store', STORE_NAME)
+    .eq('run.status', 'completed')
+    .not('run.generate_done_at', 'is', null)
+    .or(buildPriceHistoryOrFilter(q, ['card_name', 'list_no']))
+    .order('created_at', { ascending: false })
+    .limit(PRICE_HISTORY_LIMIT);
+  if (cardError) return c.json({ error: cardError.message }, 500);
+  const cards = (cardRows ?? []) as unknown as Array<{
+    id: string; run_id: string; franchise: string; card_name: string; grade: string | null; list_no: string | null;
+    tag: string | null; price_high: number | null; price_low: number | null; source_shinsoku_id: string | null;
+    run: { started_at: string };
+  }>;
+
+  // 画像に実際に載ったカードだけを掲載扱いにする
+  // URL 長を抑えるため 50 件ずつ、対象カードを含むページだけを引く
+  const publishedIds = new Set<string>();
+  for (let i = 0; i < cards.length; i += 50) {
+    const chunk = cards.slice(i, i + 50);
+    const { data, error } = await supabase.from('generated_page').select('card_ids')
+      .in('run_id', [...new Set(chunk.map(card => card.run_id))]).eq('status', 'generated')
+      .overlaps('card_ids', chunk.map(card => card.id));
+    if (error) return c.json({ error: error.message }, 500);
+    for (const page of data ?? []) for (const id of page.card_ids ?? []) publishedIds.add(id);
+  }
+  const published = cards.filter(card => publishedIds.has(card.id));
+  let pricing: Awaited<ReturnType<typeof loadTokyoGalleryPricing>>;
+  try {
+    pricing = await loadTokyoGalleryPricing(supabase, published);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : '掲載価格の読込に失敗しました' }, 500);
+  }
+
+  // カスタム買取表は画像生成ごとの掲載記録から引く（シートは上書き保存のため）
+  const { data: logRows, error: logError } = await supabase
+    .from('custom_buyback_render_log')
+    .select('id, rendered_at, rendered_by, sheet_name, sheet_created_by, franchise, display_date, card_name, grade, list_no, tag, final_price_high, source_shop_name, override_reason, backfilled')
+    .eq('store', STORE_NAME)
+    .or(buildPriceHistoryOrFilter(q, ['card_name', 'list_no']))
+    .order('rendered_at', { ascending: false })
+    .limit(PRICE_HISTORY_LIMIT);
+  if (logError) return c.json({ error: logError.message }, 500);
+  const logs = logRows ?? [];
+
+  const entries: PriceHistoryEntry[] = [
+    ...published.map(card => ({
+      kind: 'regular' as const, id: card.id, published_at: card.run.started_at, franchise: card.franchise,
+      card_name: card.card_name, grade: card.grade, list_no: card.list_no, tag: card.tag,
+      price_high: card.price_high, price_low: card.price_low, pricing: pricing.get(card.id),
+    })),
+    ...logs.map(log => ({
+      kind: 'custom' as const, id: log.id, published_at: log.rendered_at, franchise: log.franchise,
+      card_name: log.card_name, grade: log.grade, list_no: log.list_no, tag: log.tag,
+      // カスタム画像は1価格表示（下限は描画しない）
+      price_high: log.final_price_high, price_low: null,
+      custom: {
+        sheet_name: log.sheet_name, display_date: log.display_date, rendered_by: log.rendered_by,
+        sheet_created_by: log.sheet_created_by, source_shop_name: log.source_shop_name,
+        override_reason: log.override_reason, backfilled: log.backfilled,
+      },
+    })),
+  ].sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at));
+
+  return c.json({
+    entries,
+    truncated: cards.length >= PRICE_HISTORY_LIMIT || logs.length >= PRICE_HISTORY_LIMIT,
+  });
+});

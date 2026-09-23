@@ -1174,6 +1174,7 @@ customBuybackRoutes.post('/custom-buyback/sheets/:sheetId/render', async (c) => 
         status: 'rendering',
         revision,
         error_message: null,
+        render_requested_by: c.req.header('x-haraka-operator-email')?.trim().toLowerCase() || null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', sheet.id)

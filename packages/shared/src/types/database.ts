@@ -246,8 +246,35 @@ export type CustomBuybackSheetRow = {
   last_rendered_revision: number | null;
   error_message: string | null;
   created_by: string | null;
+  render_requested_by?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type CustomBuybackRenderLogRow = {
+  id: string;
+  store: string;
+  sheet_id: string;
+  revision: number;
+  sheet_name: string;
+  franchise: string;
+  product_type: string;
+  display_date: string;
+  sheet_created_by: string | null;
+  rendered_by: string | null;
+  rendered_at: string;
+  item_id: string;
+  card_name: string;
+  grade: string | null;
+  list_no: string | null;
+  tag: string | null;
+  final_price_high: number | null;
+  final_price_low: number | null;
+  source_price_high: number | null;
+  source_shop_name: string | null;
+  override_reason: string | null;
+  backfilled: boolean;
+  created_at: string;
 };
 
 export type RarityIconRow = {
@@ -751,6 +778,16 @@ export type Database = {
           updated_at?: string;
         };
         Update: Partial<Omit<CustomBuybackItemRow, 'id' | 'sheet_id' | 'created_at'>>;
+        Relationships: [];
+      };
+      custom_buyback_render_log: {
+        Row: CustomBuybackRenderLogRow;
+        Insert: Omit<CustomBuybackRenderLogRow, 'id' | 'created_at' | 'backfilled'> & {
+          id?: string;
+          created_at?: string;
+          backfilled?: boolean;
+        };
+        Update: never;
         Relationships: [];
       };
       custom_buyback_page: {

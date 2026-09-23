@@ -35,6 +35,7 @@ export type {
   CustomBuybackSheetRow,
   CustomBuybackItemRow,
   CustomBuybackPageRow,
+  CustomBuybackRenderLogRow,
   TokyoBuybackSnapshotRow,
   TokyoBuybackProductRow,
   TokyoCardImageMappingRow,
