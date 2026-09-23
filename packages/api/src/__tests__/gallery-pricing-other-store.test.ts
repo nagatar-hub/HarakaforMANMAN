@@ -24,3 +24,9 @@ test('non-Tokyo gallery has identical response and no pricing queries even when 
     assert.deepEqual((await response.json() as { cards: unknown[] }).cards, [{ id: 'card', run_id: 'run', price_high: 100 }]);
   } finally { globalThis.fetch = saved; }
 });
+
+test('price history is Tokyo-only', async () => {
+  const { galleryRoutes } = await import('../routes/gallery.js');
+  const response = await galleryRoutes.request('/gallery/price-history?q=x', { headers: { Authorization: `Bearer ${'t'.repeat(32)}` } });
+  assert.equal(response.status, 404);
+});

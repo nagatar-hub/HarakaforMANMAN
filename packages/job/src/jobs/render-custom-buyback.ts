@@ -11,6 +11,7 @@ import type {
   CustomBuybackItemRow,
   CustomBuybackPageRow,
   CustomBuybackSheetRow,
+  Database,
   LayoutTemplateRow,
   PreparedCardRow,
   RarityIconRow,
@@ -54,6 +55,37 @@ export function customItemToPreparedCard(
     price_source_date: item.price_source_date,
     created_at: item.created_at,
   };
+}
+
+/** 画像に載せた商品と価格を、誰がいつ生成したかと一緒に写す */
+export function buildCustomBuybackRenderLog(
+  sheet: CustomBuybackSheetRow,
+  revision: number,
+  items: CustomBuybackItemRow[],
+  renderedAt: string,
+): Database['public']['Tables']['custom_buyback_render_log']['Insert'][] {
+  return items.map((item) => ({
+    store: sheet.store,
+    sheet_id: sheet.id,
+    revision,
+    sheet_name: sheet.name,
+    franchise: sheet.franchise,
+    product_type: sheet.product_type,
+    display_date: sheet.display_date,
+    sheet_created_by: sheet.created_by,
+    rendered_by: sheet.render_requested_by ?? null,
+    rendered_at: renderedAt,
+    item_id: item.id,
+    card_name: item.card_name,
+    grade: item.grade,
+    list_no: item.list_no,
+    tag: item.tag,
+    final_price_high: item.final_price_high,
+    final_price_low: item.final_price_low,
+    source_price_high: item.source_price_high,
+    source_shop_name: item.source_shop_name,
+    override_reason: item.override_reason,
+  }));
 }
 
 export function customBuybackDisplayDateText(displayDate: string): string {
@@ -157,6 +189,12 @@ async function renderSheet(supabase: Supabase, sheet: CustomBuybackSheetRow, rev
   const { error: stalePageError } = await supabase.from('custom_buyback_page').delete()
     .eq('sheet_id', sheet.id).gte('page_index', plans.length);
   if (stalePageError) throw new Error(`旧ページ整理失敗: ${stalePageError.message}`);
+
+  // 掲載記録が残せない生成は完了させない（再実行時の重複は無視）
+  const { error: logError } = await supabase.from('custom_buyback_render_log')
+    .upsert(buildCustomBuybackRenderLog(sheet, revision, items, new Date().toISOString()),
+      { onConflict: 'sheet_id,revision,item_id', ignoreDuplicates: true });
+  if (logError) throw new Error(`掲載記録の保存失敗: ${logError.message}`);
 
   const { data: completed, error: completeError } = await supabase
     .from('custom_buyback_sheet')

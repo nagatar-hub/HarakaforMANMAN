@@ -1,5 +1,5 @@
 import type { CustomBuybackItemRow, CustomBuybackSheetRow } from '@haraka/shared';
-import { customBuybackDisplayDateText, customItemToPreparedCard } from '../jobs/render-custom-buyback.js';
+import { buildCustomBuybackRenderLog, customBuybackDisplayDateText, customItemToPreparedCard } from '../jobs/render-custom-buyback.js';
 
 const sheet = {
   id: 'sheet-1', store: 'oripark', name: 'custom', franchise: 'Pokemon', product_type: 'psa', kind: 'store',
@@ -58,4 +58,14 @@ test('Tokyo renderer keeps the direct postal snapshot and the already discounted
   expect(prepared.price_high).toBe(93000);
   expect(prepared.price_low).toBeNull();
   expect(prepared.price_source).toBe('manual');
+});
+
+test('render log records who rendered which price for every item on the sheet', () => {
+  const rows = buildCustomBuybackRenderLog({ ...sheet, render_requested_by: 'staff@example.com' }, 4, [item], '2026-09-24T01:00:00.000Z');
+  expect(rows).toEqual([expect.objectContaining({
+    store: 'oripark', sheet_id: 'sheet-1', revision: 4, sheet_name: 'custom', rendered_by: 'staff@example.com',
+    rendered_at: '2026-09-24T01:00:00.000Z', item_id: 'item-1', card_name: 'ピカチュウ', list_no: '001',
+    final_price_high: 12500, override_reason: '強化',
+  })]);
+  expect(buildCustomBuybackRenderLog(sheet, 1, [item], 'x')[0].rendered_by).toBeNull();
 });
