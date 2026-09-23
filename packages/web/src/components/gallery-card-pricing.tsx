@@ -16,7 +16,7 @@ export function GalleryCardPricing({ pricing }: { pricing?: GalleryPricing }) {
   if (pricing.comparison) return <div className="mt-2 space-y-2 text-xs text-text-secondary break-words">
     <p className="font-medium">生成時の店舗別価格比較</p>
     <div className="overflow-x-auto">
-      <table className="min-w-[420px] border-separate border-spacing-y-1 text-left">
+      <table className="border-separate border-spacing-y-1 text-left">
         <thead><tr>
           <th className="pr-3 font-medium">店舗</th><th className="px-2 font-medium">元価格</th>
           <th className="px-2 font-medium">減額率</th><th className="pl-2 font-medium">減額後</th>
