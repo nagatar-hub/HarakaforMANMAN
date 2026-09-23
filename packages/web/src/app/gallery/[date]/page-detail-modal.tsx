@@ -894,12 +894,14 @@ export function PageDetailModal({
   }
 
   const editingCard = editingCardId ? cards.find(c => c.id === editingCardId) : null;
+  // 東京の店舗別比較表は列が多いので、横スクロールなしで収まるよう広げる。他店舗の見た目は変えない。
+  const wide = cards.some(card => card.pricing?.comparison);
 
   return (
     <>
       <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" onClick={onClose}>
         <div
-          className="relative bg-page-bg sm:rounded-2xl border-t sm:border border-border-card shadow-2xl max-w-5xl w-full max-h-[95vh] sm:max-h-[90vh] overflow-hidden flex flex-col rounded-t-2xl"
+          className={`relative bg-page-bg sm:rounded-2xl border-t sm:border border-border-card shadow-2xl ${wide ? 'max-w-7xl' : 'max-w-5xl'} w-full max-h-[95vh] sm:max-h-[90vh] overflow-hidden flex flex-col rounded-t-2xl`}
           onClick={e => e.stopPropagation()}
         >
           {/* Header */}
@@ -971,7 +973,7 @@ export function PageDetailModal({
               <div className="flex flex-col sm:flex-row gap-4 sm:gap-6">
                 {/* Left: Page preview (hidden on mobile, shown on desktop) */}
                 {page?.image_url && (
-                  <div className="hidden sm:block flex-shrink-0 w-64">
+                  <div className={`hidden sm:block flex-shrink-0 ${wide ? 'w-72 xl:w-[26rem]' : 'w-64'}`}>
                     <img
                       src={`${page.image_url}?t=${Date.now()}`}
                       alt={page.page_label || ''}
