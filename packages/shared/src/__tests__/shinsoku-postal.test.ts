@@ -1,4 +1,4 @@
-import { fetchShinsokuPostalProducts, matchShinsokuPostalProducts, type PostalCandidate, type ShinsokuPostalProduct } from '../lib/shinsoku-postal';
+import { fetchShinsokuPostalProducts, matchShinsokuPostalProducts, postalProductIdentity, type PostalCandidate, type ShinsokuPostalProduct } from '../lib/shinsoku-postal';
 
 const candidate: PostalCandidate = { source: 'kecak', id: 'k1', franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10' };
 const product: ShinsokuPostalProduct = { id: 's1', franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10', price: 13900, imageUrl: null };
@@ -42,6 +42,22 @@ test('BOX normalization preserves deluxe variants', () => {
   expect(matchShinsokuPostalProducts([{ ...box, name: '拡張パック『熱風のアリーナ』' }], [
     { ...regular, name: '強化拡張パック「熱風のアリーナ」(SV9a)' },
   ]).matched).toHaveLength(1);
+});
+
+test('BOX identity absorbs source spelling variants that listed one product twice (Tokyo 2026-09-25)', () => {
+  const box = (franchise: string, name: string) => postalProductIdentity({ franchise, name, modelNumber: null, productType: 'BOX' });
+  const same = (franchise: string, a: string, b: string) => expect(box(franchise, a)).toBe(box(franchise, b));
+  same('Pokemon', '拡張パックデラックス 「ブラックボルト」', '拡張パックデラックス「ブラックボルト」(SV11B)');
+  same('Pokemon', '拡張パックデラックス 「ホワイトフレア」', '拡張パックデラックス「ホワイトフレア」(SV11W)');
+  same('Pokemon', '拡張パック『25th ANNIVERSARY COLLECTION』', '拡張パック「25th ANNIVERSARY COLLECTION BOX」(S8a)');
+  same('Pokemon', 'MEGA 拡張パック 30th CELEBRATION', '拡張パック「30th CELEBRATION」(M6a)');
+  same('Pokemon', 'MEGA 拡張パック アビスアイ', '[1BOX]アビスアイ');
+  same('Pokemon', 'MEGA 拡張パック ストームエメラルダ', '拡張パック「ストームエメラルダ」(M6)');
+  same('ONE PIECE', 'ブースターパック 500年後の未来', 'OP07 500年後の未来');
+  // 別商品は別のまま
+  expect(box('Pokemon', '拡張パックデラックス「ブラックボルト」(SV11B)')).not.toBe(box('Pokemon', '拡張パック「ブラックボルト」(SV11B)'));
+  expect(box('Pokemon', '25th ANNIVERSARY GOLDEN BOX')).not.toBe(box('Pokemon', '拡張パック「25th ANNIVERSARY COLLECTION BOX」(S8a)'));
+  expect(box('Pokemon', '[1BOX]30th CELEBRATION FUTURISTIC BOX')).not.toBe(box('Pokemon', '拡張パック「30th CELEBRATION」(M6a)'));
 });
 
 test('known PSA display suffixes use the same model while substantive parentheses remain distinct', () => {
