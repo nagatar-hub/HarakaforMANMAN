@@ -25,18 +25,21 @@ const BRANDS: Record<string, string> = {
 const normalize = (value: string) => value.normalize('NFKC').toLowerCase().replace(/\s+/g, '');
 
 function nameKey(value: string, type: PostalCandidate['productType'], franchise: string): string {
-  let name = normalize(value).replace(/^[【\[]?psa10[】\]]?/, '').replace(/[【\[]psa10[】\]]$/, '');
+  // 空白を消す前に外す。"OP07 500年後の未来" は空白が無いと型番の終わりが分からない。
+  const raw = type === 'BOX' && franchise === 'ONE PIECE' ? value.normalize('NFKC').replace(/^\s*(?:op|eb|prb)\d{2}\s+/i, '') : value;
+  let name = normalize(raw).replace(/^[【\[]?psa10[】\]]?/, '').replace(/[【\[]psa10[】\]]$/, '');
   if (type === 'PSA10') name = name.replace(/\((?:sa|フラッグシップ)\)$/, '');
   if (type === 'BOX') {
+    // 仕入れ元ごとの表記揺れ（MEGA 接頭辞・末尾の型番・カギ括弧の種類・末尾の BOX）を同一商品に寄せる。
     name = name.replace(/^[【\[]1?box[】\]]/, '')
-      .replace(/^(?:ポケモンカードゲーム)?(?:スカーレット&バイオレット|ソード&シールド)?(?:強化拡張パック|拡張パック|ハイクラスパック)/, '')
+      .replace(/^(?:ポケモンカードゲーム)?(?:mega)?(?:スカーレット&バイオレット|ソード&シールド)?(?:強化拡張パック|拡張パック|ハイクラスパック)/, '')
       .replace(/^(?:ブースターパック|エクストラブースター|プレミアムブースター)/, '')
-      .replace(/^「(.+)」(?:\([a-z0-9+&/\-]+\))?$/, '$1')
-      .replace(/^『(.+)』(?:\([a-z0-9+&/\-]+\))?$/, '$1');
+      .replace(/\([a-z0-9+&/\-]+\)$/, '')
+      .replace(/[「」『』]/g, '');
     if (franchise === 'ONE PIECE') name = name.replace(/^(?:op|eb|prb)\d{2}(?!\d)/, '');
     if (franchise === 'DRAGON BALL') name = name.replace(/(?:fb|sb)\d{2}$/, '');
-    if (franchise === 'WEISS SCHWARZ') name = name.replace(/\(初版再販問わず\)$/, '').replace(/[「」]/g, '');
-    name = name.replace(/未開封box$/, '');
+    if (franchise === 'WEISS SCHWARZ') name = name.replace(/\(初版再販問わず\)$/, '');
+    name = name.replace(/未開封box$/, '').replace(/(.)box$/, '$1');
   }
   return name;
 }
