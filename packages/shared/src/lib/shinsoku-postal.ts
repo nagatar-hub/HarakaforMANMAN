@@ -28,7 +28,8 @@ function nameKey(value: string, type: PostalCandidate['productType'], franchise:
   // 空白を消す前に外す。"OP07 500年後の未来" は空白が無いと型番の終わりが分からない。
   const raw = type === 'BOX' && franchise === 'ONE PIECE' ? value.normalize('NFKC').replace(/^\s*(?:op|eb|prb)\d{2}\s+/i, '') : value;
   let name = normalize(raw).replace(/^[【\[]?psa10[】\]]?/, '').replace(/[【\[]psa10[】\]]$/, '');
-  if (type === 'PSA10') name = name.replace(/\((?:sa|フラッグシップ)\)$/, '');
+  // 型番で1枚に決まるカードに付く表示ラベルだけを外す。パラレル・言語違い・エラー版・マスボ等は別カードのまま。
+  if (type === 'PSA10') name = name.replace(/\((?:sa|フラッグシップ|yunagaba|25th|ar仕様|sar仕様|sr仕様|rr仕様|rrr仕様|hr仕様|mur仕様|r仕様|classicキラ)\)$/, '');
   if (type === 'BOX') {
     // 仕入れ元ごとの表記揺れ（MEGA 接頭辞・末尾の型番・カギ括弧の種類・末尾の BOX）を同一商品に寄せる。
     name = name.replace(/^[【\[]1?box[】\]]/, '')
