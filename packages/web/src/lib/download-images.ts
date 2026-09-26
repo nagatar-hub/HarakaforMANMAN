@@ -5,6 +5,22 @@ export type DownloadableImage = {
   filename: string;
 };
 
+/**
+ * ギャラリーページの保存用ファイル名。同名ページ（東京の「その他」が2枚など）は
+ * ZIP内で上書きされるため連番を付け、「AR/SAR」の / はフォルダ区切りにならないよう置き換える。
+ */
+export function galleryDownloadList(
+  pages: { franchise: string; page_label: string | null; page_index: number; image_url: string | null }[],
+): DownloadableImage[] {
+  const used = new Map<string, number>();
+  return pages.filter(p => p.image_url).map(p => {
+    const base = `${p.franchise}_${p.page_label || `page-${p.page_index}`}`.replace(/[\\/]/g, '-');
+    const count = (used.get(base) ?? 0) + 1;
+    used.set(base, count);
+    return { image_url: p.image_url!, filename: `${base}${count > 1 ? `_${count}` : ''}.png` };
+  });
+}
+
 export function latestRunImages<T extends { run_id: string; run_started_at: string }>(images: T[]): T[] {
   if (images.length === 0) return [];
   const latest = images.reduce((current, image) =>

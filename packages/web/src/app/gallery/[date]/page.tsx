@@ -8,7 +8,7 @@ import { FranchiseTabs } from '@/components/franchise-tabs';
 import { ImageModal } from '@/components/image-modal';
 import { PageDetailModal } from './page-detail-modal';
 import { GalleryTabs } from '../gallery-tabs';
-import { fetchImagesAsFiles, shareFiles, downloadFilesAsZip, isShareSupported, latestRunImages } from '@/lib/download-images';
+import { fetchImagesAsFiles, shareFiles, downloadFilesAsZip, isShareSupported, latestRunImages, galleryDownloadList } from '@/lib/download-images';
 import type { DownloadableImage } from '@/lib/download-images';
 import { FRANCHISE_JA as SHARED_FRANCHISE_JA } from '@haraka/shared';
 
@@ -115,12 +115,7 @@ export default function GalleryDatePage() {
   const indexById = new Map(allFiltered.map((p, i) => [p.id, i]));
 
   function buildDownloadList(pages: PageImage[]): DownloadableImage[] {
-    return pages
-      .filter(p => p.image_url)
-      .map(p => ({
-        image_url: p.image_url!,
-        filename: `${p.franchise}_${p.page_label || `page-${p.page_index}`}.png`,
-      }));
+    return galleryDownloadList(pages);
   }
 
   async function handleBulkDownload() {
