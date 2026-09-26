@@ -20,7 +20,7 @@ const YUGIOH_TAGS: Record<string, string> = {
 const ADDITIONAL_TAGS: Record<string, readonly [string, string, string, string]> = {
   IAP2300022856: ['Pokemon', 'ナギ', '088/078', 'サポート'],
   IAP2300023198: ['Pokemon', 'ブースターEX', '006/032', 'イーブイ'],
-  IAP2500005877: ['Pokemon', 'メガカイリューex', '250/193', 'メガシンカex'],
+  IAP2500005877: ['Pokemon', 'メガカイリューex', '250/193', 'メガシンカex/MUR'],
   IAP2300023611: ['Pokemon', 'メガヤミラミ＆バンギラスGX(SA)', '102/094', 'TAG'],
   IAP2300023390: ['Pokemon', 'ポッチャマ', '052/049', 'CHR'],
   IAP2300023795: ['Pokemon', 'リザードン', '005/032', 'リザードン'],
@@ -33,7 +33,7 @@ const ADDITIONAL_TAGS: Record<string, readonly [string, string, string, string]>
   IAP2400003183: ['Pokemon', 'ピカチュウex', '132/106', 'ピカチュウ'],
   IAP2500000336: ['Pokemon', 'リザードンex', '125/108', 'リザードン'],
   IAP2600003975: ['Pokemon', 'メガリザードンXex', '223/193', 'リザードン'],
-  IAP2500002595: ['Pokemon', 'メガサーナイトex', '092/063', 'メガシンカex'],
+  IAP2500002595: ['Pokemon', 'メガサーナイトex', '092/063', 'メガシンカex/MUR'],
   IAP2300023079: ['Pokemon', 'ピカチュウ＆ゼクロムGX', '100/095', 'TAG'],
   IAP2500002563: ['Pokemon', 'メガルカリオex', '092/063', 'メガシンカex'],
   IAP2600003417: ['Pokemon', 'メガジガルデex', '117/080', 'メガシンカex'],
