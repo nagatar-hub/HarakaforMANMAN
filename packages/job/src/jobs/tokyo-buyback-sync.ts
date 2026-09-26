@@ -9,6 +9,7 @@ import {
 } from '@haraka/shared';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { isBoxRow } from '../lib/box-row.js';
+import { BLUE_ROCKET_PSA_SHEET_URL, blueRocketPsaCandidates, fetchBlueRocketPsaSheet } from '../lib/blue-rocket-sheet.js';
 
 export const TOKYO_BUYBACK_STORE = 'manman-akihabara';
 const CHECKER_STORE = 'oripark';
@@ -47,9 +48,10 @@ export function tokyoComparableOrigins(origins: ComparedOrigin[], guard: TokyoOu
   });
 }
 
-const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = {
-  11: 'blue_rocket', 3: 'toreca_bank', 13: 'avirile',
-};
+// 買取チェッカーからはブルーロケットの BOX だけを取る（PSA10 はブルーロケット自身の買取表シート）。
+// トレカバンク・アヴィリールはラインアップにも価格比較にも使わない（2026-09-26 決定）。
+const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = { 11: 'blue_rocket' };
+const CHECKER_BOX_CONDITION_ID = 2;
 const validPrice = (price: number | null | undefined): price is number =>
   Number.isSafeInteger(price) && price! > 0 && price! <= 100_000_000;
 /** 業務日から見た元価格の経過日数。未来日や解釈不能な値は null。 */
@@ -91,7 +93,7 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
   const seen = new Set<string>();
   for (const offer of offers) {
     const source = CHECKER_SOURCES[offer.shop_id];
-    if (!source || ![1, 2].includes(offer.condition_id)
+    if (!source || offer.condition_id !== CHECKER_BOX_CONDITION_ID
       || !withinPriceAge(offer.source_updated_at, options.businessDate, options.maxPriceAgeDays ?? 0)) continue;
     const product = productById.get(offer.source_product_id);
     if (!product) throw new Error('買取チェッカーの商品・掲載一覧が一致しません');
@@ -103,7 +105,7 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
     if (seen.has(key)) continue;
     seen.add(key);
     candidates.push({ source, id, franchise, name: offer.edition_id ? `${product.name} [${offer.edition_name || `edition:${offer.edition_id}`}]` : product.name,
-      modelNumber: product.model_number, productType: offer.condition_id === 1 ? 'PSA10' : 'BOX',
+      modelNumber: product.model_number, productType: 'BOX',
       sourceProductId: offer.source_product_id, conditionId: offer.condition_id, sourcePrice: offer.buy_price,
       imageUrl: product.image_url, observedAt: offer.source_updated_at });
   }
@@ -161,8 +163,10 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
       unmatched.push(...group.map(candidate => ({ candidate, reason: 'zero_after_discount' as const })));
       continue;
     }
-    const high = eligible.reduce((winner, origin) => origin.highPrice > winner.highPrice ? origin : winner);
-    const low = compared.reduce((winner, origin) => origin.lowPrice > winner.lowPrice ? origin : winner);
+    // 元価格が一番高い仕入れ元を選び、その店の減額率で上限・下限を出す（同額なら減額後が高い方）。
+    const high = eligible.reduce((winner, origin) => origin.rawPrice > winner.rawPrice
+      || (origin.rawPrice === winner.rawPrice && origin.highPrice > winner.highPrice) ? origin : winner);
+    const low = high;
     const canonical = bySource.get('shinsoku')?.[0] ?? bySource.get('kecak')?.[0] ?? compared[0];
     const shinsoku = bySource.get('shinsoku')?.[0];
     products.push({
@@ -255,6 +259,22 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   // Pull the public catalog first; Tokyo order-list names and model numbers never leave Haraka.
   const sourceProducts = await fetchShinsokuPostalProducts();
   const fetchedAt = now.toISOString();
+  // ブルーロケットの PSA10 は自社の公開買取表から取る。取れない日はブルーロケット PSA が比較に参加しないだけにする。
+  let blueRocketPsa: ReturnType<typeof blueRocketPsaCandidates> = { used: [], skipped: [] };
+  let blueRocketPsaError: string | null = null;
+  try {
+    blueRocketPsa = blueRocketPsaCandidates(await fetchBlueRocketPsaSheet(), [
+      ...candidates.filter(row => row.source === 'kecak'),
+      ...sourceProducts,
+    ]);
+  } catch (error) {
+    blueRocketPsaError = error instanceof Error ? error.message : String(error);
+    console.warn(`[tokyo-buyback] ${blueRocketPsaError}`);
+  }
+  candidates.push(...blueRocketPsa.used.map(row => ({
+    source: 'blue_rocket' as const, id: row.id, franchise: 'Pokemon', name: row.name, modelNumber: row.modelNumber,
+    productType: 'PSA10' as const, sourcePrice: row.price, imageUrl: row.imageUrl, observedAt: fetchedAt,
+  })));
   // ラインアップは5ソースの和集合で、金額は比較候補でしかない。許容経過日数内の価格を
   // 持たないソースはその日の比較に参加しないだけで、掲載全体を止める理由にはしない。
   const sourceCounts = Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, source === 'shinsoku'
@@ -267,6 +287,7 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     business_date: businessDate, settings,
     report: { pricing_version: 2, source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
       checker_completed_at: checker.completed_at, source_counts: sourceCounts, shinsoku_count: sourceProducts.length,
+      blue_rocket_psa: { url: BLUE_ROCKET_PSA_SHEET_URL, used: blueRocketPsa.used.length, skipped: blueRocketPsa.skipped, error: blueRocketPsaError },
       price_sources: result.priceSources,
       matched_count: result.products.length, unmatched_count: result.unmatched.length, unmatched: result.unmatched } }, products: result.products };
 }

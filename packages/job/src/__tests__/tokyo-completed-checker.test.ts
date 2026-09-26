@@ -1,24 +1,30 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fetchShinsokuPostalProducts } from '@haraka/shared';
 import { buildTokyoBuybackSnapshot } from '../jobs/tokyo-buyback-sync';
+import { fetchBlueRocketPsaSheet } from '../lib/blue-rocket-sheet';
 
 jest.mock('@haraka/shared', () => ({
   ...jest.requireActual('@haraka/shared'), fetchShinsokuPostalProducts: jest.fn(),
 }));
+jest.mock('../lib/blue-rocket-sheet', () => ({
+  ...jest.requireActual('../lib/blue-rocket-sheet'), fetchBlueRocketPsaSheet: jest.fn(),
+}));
 
 const now = new Date('2026-09-09T03:30:00Z');
 const completed = { id: 'complete', store: 'oripark', status: 'applied',
-  created_at: '2026-09-08T22:06:00Z', completed_at: '2026-09-08T23:40:00Z', product_count: 2, offer_count: 5 };
+  created_at: '2026-09-08T22:06:00Z', completed_at: '2026-09-08T23:40:00Z', product_count: 2, offer_count: 6 };
 const SAME_DAY = '2026-09-09T02:00:00Z';
 const PREVIOUS_DAY = '2026-09-08T02:00:00Z';
 
-// shop 3 = トレカバンク / 11 = Blue Rocket / 13 = アヴィリール / 22 = 対象外
+// shop 3 = トレカバンク / 11 = Blue Rocket / 13 = アヴィリール / 22 = 対象外。condition 1 = PSA10 / 2 = BOX
+// 東京満満は買取チェッカーからブルーロケットの BOX だけを使う（PSA10 はブルーロケット自社シート）。
 const OFFERS = [
-  { source_product_id: 1, shop_id: 3, buy_price: 120000, source_updated_at: SAME_DAY },
-  { source_product_id: 1, shop_id: 11, buy_price: 125000, source_updated_at: SAME_DAY },
-  { source_product_id: 21461, shop_id: 13, buy_price: 40000, source_updated_at: SAME_DAY },
-  { source_product_id: 21461, shop_id: 22, buy_price: 15000000, source_updated_at: SAME_DAY },
-  { source_product_id: 21461, shop_id: 3, buy_price: 90000000, source_updated_at: PREVIOUS_DAY },
+  { source_product_id: 1, shop_id: 3, condition_id: 1, buy_price: 120000, source_updated_at: SAME_DAY },
+  { source_product_id: 1, shop_id: 11, condition_id: 1, buy_price: 999000, source_updated_at: SAME_DAY },
+  { source_product_id: 21461, shop_id: 11, condition_id: 2, buy_price: 40000, source_updated_at: SAME_DAY },
+  { source_product_id: 21461, shop_id: 13, condition_id: 2, buy_price: 50000, source_updated_at: SAME_DAY },
+  { source_product_id: 21461, shop_id: 22, condition_id: 2, buy_price: 15000000, source_updated_at: SAME_DAY },
+  { source_product_id: 21461, shop_id: 3, condition_id: 2, buy_price: 90000000, source_updated_at: PREVIOUS_DAY },
 ];
 
 function database(checkerRows: object[], offers = OFFERS, extraSettings: object = {}) {
@@ -32,9 +38,9 @@ function database(checkerRows: object[], offers = OFFERS, extraSettings: object 
       list_no: '236/172', grade: 'PSA10', match_status: 'matched', source_price: 130000 }],
     kaitori_checker_product_snapshot: [
       { source_product_id: 1, category: 'pokemon', name: 'カイ', model_number: '236/172' },
-      { source_product_id: 21461, category: 'pokemon', name: 'エーフィ☆', model_number: '025/PLAY' },
+      { source_product_id: 21461, category: 'pokemon', name: 'テラスタルフェスex', model_number: null },
     ].map(row => ({ ...row, run_id: 'complete', store: 'oripark' })),
-    kaitori_checker_offer_snapshot: offers.map(row => ({ ...row, run_id: 'complete', store: 'oripark', condition_id: 1, edition_id: 0 })),
+    kaitori_checker_offer_snapshot: offers.map(row => ({ ...row, run_id: 'complete', store: 'oripark', edition_id: 0 })),
   };
   return { from: jest.fn((table: string) => {
     let rows = [...tables[table]];
@@ -59,43 +65,41 @@ beforeEach(() => {
   jest.mocked(fetchShinsokuPostalProducts).mockReset().mockResolvedValue([
     { id: 'IAP1', franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10', price: 123000, imageUrl: null },
   ]);
+  jest.mocked(fetchBlueRocketPsaSheet).mockReset().mockResolvedValue([
+    { id: 'sheet:2', name: 'カイ', modelNumber: '236/172', price: 125000, imageUrl: null },
+  ]);
 });
 
-test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied checker while the newest is %s, and compares all five sources', async status => {
+test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied checker while the newest is %s, and compares KECAK, Shinsoku and Blue Rocket', async status => {
   const db = database([completed, { ...completed, id: 'newest', status, created_at: '2026-09-09T02:59:00Z', completed_at: null }]);
   const result = await buildTokyoBuybackSnapshot(db, now);
   expect(result.snapshot.checker_run_id).toBe('complete');
   expect(result.snapshot.business_date).toBe('2026-09-09');
-  // 既定は1日前まで許容するため、前日のトレカバンク行も比較へ入る。
+  // ブルーロケットはシートの PSA10 1件 + 買取チェッカーの BOX 1件。トレカバンク・アヴィリールは使わない。
   expect(result.snapshot.report.source_counts).toEqual({
-    kecak: 1, blue_rocket: 1, toreca_bank: 2, avirile: 1, shinsoku: 1 });
-  // KECAK 130,000 @5% beats Blue Rocket 125,000 @10%, Shinsoku 123,000 @5% and the bank's 120,000 @10%.
-  expect(result.products.map(product => [product.id, product.source_price, product.price_high, product.selected_high_source])).toEqual([
-    ['IAP1', 130000, 120000, 'kecak'],
-    [expect.stringMatching(/^TOKYO_[0-9a-f]{64}$/), 40000, 36000, 'avirile'],
+    kecak: 1, blue_rocket: 2, toreca_bank: 0, avirile: 0, shinsoku: 1 });
+  // 元価格が一番高い KECAK 130,000 を採用。買取チェッカー経由のブルロケ PSA 999,000 は使わない。
+  expect(result.products.map(product => [product.id, product.source_price, product.selected_high_source, product.product_type])).toEqual([
+    ['IAP1', 130000, 'kecak', 'psa'],
+    [expect.stringMatching(/^TOKYO_[0-9a-f]{64}$/), 40000, 'blue_rocket', 'box'],
   ]);
-  // 前日の 90,000,000 円は比較に入るが、外れ値ガードの元価格上限で除外され採用されない。
-  const efi = result.products[1];
-  expect(efi.origins.map(origin => [origin.source, origin.rawPrice, origin.excluded ?? false])).toEqual([
-    ['toreca_bank', 90000000, true], ['avirile', 40000, false],
-  ]);
+  expect(result.products[0].price_high).toBe(120000);
+  expect(result.products[0].origins.map(origin => [origin.source, origin.rawPrice])).toEqual([
+    ['kecak', 130000], ['blue_rocket', 125000], ['shinsoku', 123000]]);
+  expect(result.products[1].origins.map(origin => origin.source)).toEqual(['blue_rocket']);
+  expect(result.snapshot.report.blue_rocket_psa).toMatchObject({ used: 1, skipped: [], error: null });
   expect(result.snapshot.report.unmatched).toEqual([]);
   expect(fetchShinsokuPostalProducts).toHaveBeenCalledWith();
+  expect(fetchBlueRocketPsaSheet).toHaveBeenCalledTimes(1);
 });
 
-// ラインアップは和集合で金額は比較候補でしかないため、当日価格が無いソースは
-// その日の比較に参加しないだけで、掲載全体は止めない。
-test('a source with no same-day price simply sits out the comparison', async () => {
-  const offers = OFFERS.filter(offer => offer.shop_id !== 11);
-  const db = database([{ ...completed, offer_count: offers.length }], offers);
-  const result = await buildTokyoBuybackSnapshot(db, now);
-  expect(result.snapshot.report.source_counts).toEqual({
-    kecak: 1, blue_rocket: 0, toreca_bank: 2, avirile: 1, shinsoku: 1 });
-  expect(result.products.map(product => [product.id, product.selected_high_source])).toEqual([
-    ['IAP1', 'kecak'],
-    [expect.stringMatching(/^TOKYO_[0-9a-f]{64}$/), 'avirile'],
-  ]);
-  expect(result.products[0].origins.map(origin => origin.source)).toEqual(['kecak', 'toreca_bank', 'shinsoku']);
+// ブルーロケットのシートが取れない日は、ブルーロケット PSA が比較に参加しないだけで掲載全体は止めない。
+test('a Blue Rocket sheet failure only removes Blue Rocket PSA from the comparison', async () => {
+  jest.mocked(fetchBlueRocketPsaSheet).mockRejectedValue(new Error('ブルーロケット買取表の取得失敗: HTTP 401'));
+  const result = await buildTokyoBuybackSnapshot(database([completed]), now);
+  expect(result.snapshot.report.source_counts).toMatchObject({ kecak: 1, blue_rocket: 1, shinsoku: 1 });
+  expect(result.snapshot.report.blue_rocket_psa).toMatchObject({ used: 0, error: 'ブルーロケット買取表の取得失敗: HTTP 401' });
+  expect(result.products[0].origins.map(origin => origin.source)).toEqual(['kecak', 'shinsoku']);
 });
 
 // 翌日になり KECAK のオーダーリストも買取チェッカーも前日のまま、という実運用で起きる状況。
@@ -105,20 +109,20 @@ test('the approved 1-day window lets previous-day prices keep competing', async 
   const result = await buildTokyoBuybackSnapshot(database([completed]), nextDay);
   expect(result.snapshot.business_date).toBe('2026-09-10');
   expect(result.snapshot.report.source_counts).toEqual({
-    kecak: 1, blue_rocket: 1, toreca_bank: 1, avirile: 1, shinsoku: 1 });
+    kecak: 1, blue_rocket: 2, toreca_bank: 0, avirile: 0, shinsoku: 1 });
   expect(result.products[0]).toMatchObject({ id: 'IAP1', source_price: 130000, selected_high_source: 'kecak' });
 });
 
 test('setting the window back to same-day only drops every previous-day price', async () => {
   const db = database([completed], OFFERS, { tokyo_price_max_age_days: 0 });
   const result = await buildTokyoBuybackSnapshot(db, nextDay);
+  // シートは同期時に取るので当日扱い。前日の KECAK と買取チェッカーは外れる。
   expect(result.snapshot.report.source_counts).toEqual({
-    kecak: 0, blue_rocket: 0, toreca_bank: 0, avirile: 0, shinsoku: 1 });
+    kecak: 0, blue_rocket: 1, toreca_bank: 0, avirile: 0, shinsoku: 1 });
   expect(result.products.map(product => [product.id, product.source_price, product.selected_high_source])).toEqual([
-    ['IAP1', 123000, 'shinsoku'],
+    ['IAP1', 125000, 'blue_rocket'],
   ]);
-  // KECAK 130,000 は前日の金額なので、どの商品の採用元にもならない。
-  expect(result.products.every(product => product.origins.every(origin => origin.source === 'shinsoku'))).toBe(true);
+  expect(result.products[0].origins.map(origin => origin.source)).toEqual(['blue_rocket', 'shinsoku']);
 });
 
 test('an out-of-range window fails closed before any price is computed', async () => {
@@ -134,4 +138,5 @@ test.each([
 ])('Tokyo still rejects absent, stale, or incomplete checker data', async (rows, message) => {
   await expect(buildTokyoBuybackSnapshot(database(rows), now)).rejects.toThrow(message);
   expect(fetchShinsokuPostalProducts).not.toHaveBeenCalled();
+  expect(fetchBlueRocketPsaSheet).not.toHaveBeenCalled();
 });
