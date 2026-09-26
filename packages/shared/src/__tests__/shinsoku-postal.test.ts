@@ -60,6 +60,12 @@ test('BOX identity absorbs source spelling variants that listed one product twic
   expect(box('Pokemon', '[1BOX]30th CELEBRATION FUTURISTIC BOX')).not.toBe(box('Pokemon', '拡張パック「30th CELEBRATION」(M6a)'));
 });
 
+test('Weiss Shinsoku ゲーム版 label is the same BOX as the plain title, not The Animation', () => {
+  const box = (name: string) => postalProductIdentity({ franchise: 'WEISS SCHWARZ', name, modelNumber: null, productType: 'BOX' });
+  expect(box('ブルーアーカイブ　ゲーム版')).toBe(box('[1BOX]ブルーアーカイブ(初版再販問わず)'));
+  expect(box('ブルーアーカイブ The Animation')).not.toBe(box('[1BOX]ブルーアーカイブ(初版再販問わず)'));
+});
+
 test('PSA display labels do not split one card into two listings (Tokyo 2026-09-26)', () => {
   const psa = (name: string, modelNumber: string) => postalProductIdentity({ franchise: 'Pokemon', name, modelNumber, productType: 'PSA10' });
   for (const label of ['YU NAGABA', '25th', 'AR仕様', 'SAR仕様', 'SR仕様', 'RR仕様', 'RRR仕様', 'HR仕様', 'MUR仕様', 'R仕様', 'Classicキラ']) {
