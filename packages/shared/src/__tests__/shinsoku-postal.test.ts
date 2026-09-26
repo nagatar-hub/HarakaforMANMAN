@@ -60,6 +60,16 @@ test('BOX identity absorbs source spelling variants that listed one product twic
   expect(box('Pokemon', '[1BOX]30th CELEBRATION FUTURISTIC BOX')).not.toBe(box('Pokemon', '拡張パック「30th CELEBRATION」(M6a)'));
 });
 
+test('PSA display labels do not split one card into two listings (Tokyo 2026-09-26)', () => {
+  const psa = (name: string, modelNumber: string) => postalProductIdentity({ franchise: 'Pokemon', name, modelNumber, productType: 'PSA10' });
+  for (const label of ['YU NAGABA', '25th', 'AR仕様', 'SAR仕様', 'SR仕様', 'RR仕様', 'RRR仕様', 'HR仕様', 'MUR仕様', 'R仕様', 'Classicキラ']) {
+    expect(psa(`シャワーズ(${label})`, '063/SV-P')).toBe(psa('シャワーズ', '063/SV-P'));
+  }
+  for (const label of ['マスターボールミラー', '中国語版', 'エラー版', '白黒版', '1ED', 'パラレル/漫画背景']) {
+    expect(psa(`シャワーズ(${label})`, '030/187')).not.toBe(psa('シャワーズ', '030/187'));
+  }
+});
+
 test('known PSA display suffixes use the same model while substantive parentheses remain distinct', () => {
   const card = { ...candidate, name: 'エーフィ＆デオキシスGX', modelNumber: '177/173' };
   const listed = { ...product, name: 'エーフィ＆デオキシスGX(SA)', modelNumber: '177/173' };
