@@ -39,7 +39,8 @@ function nameKey(value: string, type: PostalCandidate['productType'], franchise:
       .replace(/[「」『』]/g, '');
     if (franchise === 'ONE PIECE') name = name.replace(/^(?:op|eb|prb)\d{2}(?!\d)/, '');
     if (franchise === 'DRAGON BALL') name = name.replace(/(?:fb|sb)\d{2}$/, '');
-    if (franchise === 'WEISS SCHWARZ') name = name.replace(/\(初版再販問わず\)$/, '');
+    // シンソクはアニメ版と区別するため「ゲーム版」を付ける（ブルーアーカイブ）。The Animation は別商品のまま。
+    if (franchise === 'WEISS SCHWARZ') name = name.replace(/\(初版再販問わず\)$/, '').replace(/ゲーム版$/, '');
     name = name.replace(/未開封box$/, '').replace(/(.)box$/, '$1');
   }
   return name;
