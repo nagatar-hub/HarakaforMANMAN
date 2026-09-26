@@ -39,11 +39,15 @@ function parseCsv(text: string): string[][] {
  * 最初の空白より前を名前とする（カードの特定は型番と合わせて行う）。
  */
 export function blueRocketCardName(label: string): string {
-  return label.normalize('NFKC').split('[')[0]
+  const text = label.normalize('NFKC');
+  const name = text.split('[')[0]
     .replace(/\s*:.*$/, '')
     .replace(/\s*\([^)]*[^\x00-\x7f][^)]*\)\s*$/, match => (/^\s*\((?:25th|sa|フラッグシップ)\)/i.test(match) ? match : ''))
     .trim()
     .split(/\s+/)[0];
+  // 言語違い・1ED・エラー版は別カード。名前に残さないと日本語版・通常版として掲載されてしまう。
+  const variants = [/【中国語版】/.test(text) && '(中国語版)', /:\s*1ED\b/i.test(text) && '(1ED)', /エラー版/.test(text) && '(エラー版)'];
+  return name && name + variants.filter(Boolean).join('');
 }
 
 /** 「062/SV/P」を「062/SV-P」にそろえ、「085」「0307/07」のような型番として成り立たない値は捨てる。 */

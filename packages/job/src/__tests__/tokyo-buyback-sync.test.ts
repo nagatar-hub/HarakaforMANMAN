@@ -181,6 +181,10 @@ test('Blue Rocket sheet rows keep only the card name and a usable model number',
   expect(blueRocketCardName('R団のサンダー(25th): プロモ[025 008](プロモ)')).toBe('R団のサンダー(25th)');
   expect(blueRocketCardName('ピカチュウVMAX（バンザイピカチュウ）[S-P 123/S-P]')).toBe('ピカチュウVMAX');
   expect(blueRocketCardName('ミュウ ふしぎなしっぽ[CP5 030/028]')).toBe('ミュウ');
+  // 言語違い・1ED・エラー版は名前に残す（日本語版・通常版として掲載しない）。
+  expect(blueRocketCardName('ピカチュウ AR [151C 173/151]【中国語版】(スカーレット&バイオレット)')).toBe('ピカチュウ(中国語版)');
+  expect(blueRocketCardName('ミュウツー R :1ED [CP6 049/087](コンセプトパック)')).toBe('ミュウツー(1ED)');
+  expect(blueRocketCardName('ニンフィアEX RR :1ED [CP3 026/032](x) エラー版')).toBe('ニンフィアEX(1ED)(エラー版)');
   expect(blueRocketModelNumber('062/SV/P')).toBe('062/SV-P');
   expect(blueRocketModelNumber(' 242/193 ')).toBe('242/193');
   expect(blueRocketModelNumber('085')).toBeNull();

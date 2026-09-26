@@ -275,7 +275,7 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     source: 'blue_rocket' as const, id: row.id, franchise: 'Pokemon', name: row.name, modelNumber: row.modelNumber,
     productType: 'PSA10' as const, sourcePrice: row.price, imageUrl: row.imageUrl, observedAt: fetchedAt,
   })));
-  // ラインアップは5ソースの和集合で、金額は比較候補でしかない。許容経過日数内の価格を
+  // ラインアップは3ソース（KECAK・シンソク・ブルーロケット）の和集合で、金額は比較候補でしかない。許容経過日数内の価格を
   // 持たないソースはその日の比較に参加しないだけで、掲載全体を止める理由にはしない。
   const sourceCounts = Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, source === 'shinsoku'
     ? sourceProducts.filter(product => validPrice(product.price)).length
