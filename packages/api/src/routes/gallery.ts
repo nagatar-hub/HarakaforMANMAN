@@ -15,6 +15,43 @@ import {
 export const galleryRoutes = new Hono();
 
 const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
+const TOKYO_STORE = 'manman-akihabara';
+
+export function runCatalogSyncJob(runId: string, forkJob = fork): Promise<void> {
+  const jobEntry = path.resolve(__dirname, '..', '..', '..', 'job', 'dist', 'index.js');
+  return new Promise((resolve, reject) => {
+    const child = forkJob(jobEntry, [], {
+      stdio: 'inherit',
+      env: { ...process.env, JOB_NAME: 'publish-peleka-catalog', RUN_ID: runId, STORE_NAME },
+    });
+    child.once('error', reject);
+    child.once('exit', (code, signal) => code === 0
+      ? resolve()
+      : reject(new Error(`Pelekaカタログ同期ジョブ失敗: ${signal ?? code ?? 'unknown'}`)));
+  });
+}
+
+async function syncPublishedTokyoCatalog(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  runId: string,
+): Promise<void> {
+  if (STORE_NAME !== TOKYO_STORE) return;
+  const { data: run, error } = await supabase.from('run')
+    .select('status, generate_done_at, tokyo_snapshot_id')
+    .eq('id', runId)
+    .eq('store', STORE_NAME)
+    .maybeSingle<{ status: string; generate_done_at: string | null; tokyo_snapshot_id: string | null }>();
+  if (error) throw new Error(`Peleka同期対象run確認失敗: ${error.message}`);
+  if (run?.status !== 'completed' || !run.generate_done_at || !run.tokyo_snapshot_id) return;
+  await runCatalogSyncJob(runId);
+}
+
+function catalogSyncError(error: unknown) {
+  return {
+    error: `変更は保存されましたがPelekaカタログ同期に失敗しました。再生成で再試行してください: ${error instanceof Error ? error.message : String(error)}`,
+    mutationApplied: true,
+  };
+}
 
 type StoreOwnership = { runId: string | null; error: string | null };
 
@@ -319,6 +356,9 @@ galleryRoutes.patch('/gallery/pages/:pageId/cards/:cardId', async (c) => {
 
   if (error) return c.json({ error: error.message }, 500);
 
+  try { await syncPublishedTokyoCatalog(supabase, ownership.runId); }
+  catch (syncError) { return c.json(catalogSyncError(syncError), 502); }
+
   return c.json(updated);
 });
 
@@ -494,6 +534,9 @@ galleryRoutes.post('/gallery/pages/:pageId/cards', async (c) => {
 
   if (error) return c.json({ error: error.message }, 500);
 
+  try { await syncPublishedTokyoCatalog(supabase, ownership.runId); }
+  catch (syncError) { return c.json(catalogSyncError(syncError), 502); }
+
   // 追加したカードのデータを返す
   const { data: card } = await supabase
     .from('prepared_card')
@@ -534,6 +577,9 @@ galleryRoutes.delete('/gallery/pages/:pageId/cards/:cardId', async (c) => {
     .eq('run_id', ownership.runId);
 
   if (error) return c.json({ error: error.message }, 500);
+
+  try { await syncPublishedTokyoCatalog(supabase, ownership.runId); }
+  catch (syncError) { return c.json(catalogSyncError(syncError), 502); }
 
   return c.json({ status: 'ok', remaining: newIds.length });
 });

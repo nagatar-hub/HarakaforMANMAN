@@ -27,8 +27,7 @@ jest.mock('../lib/env', () => ({
     ? 'https://peleka.invalid/catalog' : 'local-token'),
 }));
 jest.mock('../lib/peleka-catalog', () => ({
-  buildTokyoPelekaCatalog: jest.fn((params: any) => ({ count: params.cards.length, productsSha256: 'local' })),
-  publishTokyoPelekaCatalog: jest.fn(),
+  publishCurrentTokyoPelekaCatalog: jest.fn(async () => ({ count: 10, revision: 1, productsSha256: 'local' })),
 }));
 jest.mock('../lib/progress', () => ({ updateProgress: jest.fn(), clearProgress: jest.fn() }));
 jest.mock('../lib/buyback-sheet', () => ({ isBuybackSheetPublishDisabled: () => mockSheetDisabled, publishManmanBuybackSheet: jest.fn(async () => ({ status: 'completed', rowCount: 10 })) }));
@@ -196,7 +195,7 @@ test.each([
     expect(prices.applyCurrentShinsokuBoxPrices.mock.calls.length).toBe(tokyo ? 0 : FRANCHISES.length);
     expect(require('../lib/auth').getAccessToken.mock.calls.length).toBe(tokyo ? 0 : 1);
     expect(require('../lib/pricing-settings').loadStorePricingSettings).toHaveBeenCalledTimes(1);
-    expect(require('../lib/peleka-catalog').publishTokyoPelekaCatalog.mock.calls.length).toBe(tokyo ? 1 : 0);
+    expect(require('../lib/peleka-catalog').publishCurrentTokyoPelekaCatalog.mock.calls.length).toBe(tokyo ? 1 : 0);
     expect(sheetPublisher).toHaveBeenCalledTimes(sheetDisabled ? 0 : 1);
     if (!sheetDisabled) expect(sheetPublisher).toHaveBeenCalledWith(expect.objectContaining({ runId, supabase: mockDb }));
     expect(require('../lib/auth').getBuybackSheetAccessToken).toHaveBeenCalledTimes(sheetDisabled ? 0 : 1);
@@ -205,9 +204,8 @@ test.each([
         { name: 'Google Sheet', value: 'sheet test failure', inline: false },
       ]) }),
     );
-    if (tokyo) expect(require('../lib/peleka-catalog').buildTokyoPelekaCatalog).toHaveBeenCalledWith(
-      expect.objectContaining({ businessDate: '2026-09-07', generatedAt: '2026-09-07T01:23:45.000Z' }),
-    );
+    if (tokyo) expect(require('../lib/peleka-catalog').publishCurrentTokyoPelekaCatalog)
+      .toHaveBeenCalledWith(mockDb, runId, 'https://peleka.invalid/catalog', 'local-token');
     expect(boundary.bucket.remove).not.toHaveBeenCalled();
     for (const [index, [params]] of composePage.mock.calls.entries()) {
       const card = params.cards[0];

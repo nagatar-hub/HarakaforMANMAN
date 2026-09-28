@@ -1,4 +1,8 @@
-import { buildTokyoPelekaCatalog, publishTokyoPelekaCatalog } from '../lib/peleka-catalog';
+import {
+  buildCurrentTokyoPelekaCatalog,
+  buildTokyoPelekaCatalog,
+  publishTokyoPelekaCatalog,
+} from '../lib/peleka-catalog';
 
 const card = (overrides: Record<string, unknown> = {}) => ({
   id: 'prepared-1', run_id: 'run-1', source_shinsoku_id: 'source-2', raw_import_id: null,
@@ -35,4 +39,22 @@ test('rejects duplicate identities and a failed receiver response', async () => 
       body: JSON.stringify(payload),
     }));
   } finally { global.fetch = originalFetch; }
+});
+
+test('builds a revisioned payload from the database-allocated full-run snapshot', async () => {
+  const rpc = jest.fn().mockResolvedValue({
+    data: {
+      runId: 'run-1', snapshotId: 'snapshot-1', businessDate: '2026-09-08',
+      generatedAt: '2026-09-08T01:00:00Z', revision: 3, cards: [card()],
+    },
+    error: null,
+  });
+  const payload = await buildCurrentTokyoPelekaCatalog({ rpc }, 'run-1');
+  expect(rpc).toHaveBeenCalledWith('allocate_tokyo_peleka_catalog_revision', { p_run_id: 'run-1' });
+  expect(payload).toEqual(expect.objectContaining({ runId: 'run-1', revision: 3, count: 1 }));
+
+  await buildCurrentTokyoPelekaCatalog({ rpc }, 'run-1', 'page-1');
+  expect(rpc).toHaveBeenLastCalledWith('allocate_tokyo_peleka_catalog_revision', {
+    p_run_id: 'run-1', p_regenerating_page_id: 'page-1',
+  });
 });
