@@ -4,6 +4,7 @@ const mockApplyPrices: jest.Mock = jest.fn((cards) => cards);
 const mockLoadSettings: jest.Mock = jest.fn(async () => ({ box_price_low_enabled: mockBoxPriceLowEnabled }));
 const mockPublish: jest.Mock = jest.fn(async () => ({ status: 'completed', rowCount: 1 }));
 const mockDownload: jest.Mock = jest.fn(async () => Buffer.from('asset'));
+const mockCatalogPublish: jest.Mock = jest.fn(async () => ({ revision: 1, count: 1, productsSha256: 'local' }));
 let mockDb: unknown;
 let mockDisabled = false;
 let mockBoxPriceLowEnabled = false;
@@ -20,6 +21,8 @@ jest.mock('../lib/shinsoku-box-price-source', () => ({
   loadShinsokuBoxPriceMap: (...args: unknown[]) => mockLoadPrices(...args),
   applyCurrentShinsokuBoxPrices: (...args: unknown[]) => mockApplyPrices(...args),
 }));
+jest.mock('../lib/env', () => ({ getRequiredEnvOrSecret: async (name: string) => name === 'PELEKA_TOKYO_CATALOG_URL' ? 'https://peleka.invalid/catalog' : 'local-token' }));
+jest.mock('../lib/peleka-catalog', () => ({ publishCurrentTokyoPelekaCatalog: (...args: unknown[]) => mockCatalogPublish(...args) }));
 
 test.each([
   [false, false, false, false], [true, false, false, false], [false, true, false, false],
@@ -82,10 +85,64 @@ test.each([
       expect(rendered.layout).toBe(layout);
       expect(mockDownload).toHaveBeenCalledWith(expect.objectContaining({ storagePath: 'tokyo/box_30.png' }));
       expect(mockDownload).toHaveBeenCalledWith(expect.objectContaining({ storagePath: 'tokyo/box-back.png' }));
+      expect(mockCatalogPublish).toHaveBeenCalledTimes(legacy ? 0 : 1);
     }
   } finally {
     mockDisabled = false;
     mockBoxPriceLowEnabled = false;
+    if (originalStore === undefined) delete process.env.STORE_NAME; else process.env.STORE_NAME = originalStore;
+    if (originalPage === undefined) delete process.env.PAGE_ID; else process.env.PAGE_ID = originalPage;
+  }
+});
+
+test('Tokyo regeneration stays pending until catalog sync, then failed sync can be retried', async () => {
+  const originalStore = process.env.STORE_NAME;
+  const originalPage = process.env.PAGE_ID;
+  const statuses: string[] = [];
+  try {
+    jest.resetModules(); jest.clearAllMocks();
+    process.env.STORE_NAME = 'manman-akihabara'; process.env.PAGE_ID = 'page';
+    mockDisabled = true;
+    mockCatalogPublish.mockRejectedValueOnce(new Error('catalog boundary failed'))
+      .mockResolvedValue({ revision: 2, count: 1, productsSha256: 'local' });
+    const layout = { rows: [], priceBoxWidth: 100, priceBoxHeight: 20, cardFit: 'contain' };
+    const card = { id: 'card', run_id: 'run', card_name: '[BOX]テスト', grade: 'BOX', tag: 'BOX', price_high: 9300, price_low: 1111 };
+    const page = { id: 'page', run_id: 'run', franchise: 'Pokemon', layout_template_id: 'box-layout', card_ids: ['card'], page_label: 'BOX', page_index: 0 };
+    mockDb = {
+      from: (table: string) => {
+        let single = false;
+        const query: Record<string, unknown> = {};
+        const result = () => ({ data: table === 'run' ? single
+          ? { id: 'run', order_list_import_id: 'import', tokyo_snapshot_id: 'snapshot' } : [{ id: 'run' }]
+          : table === 'generated_page' ? page : table === 'prepared_card' ? [card]
+            : table === 'order_list_import' ? { business_date: '2026-09-07' }
+              : table === 'asset_profile' ? [{ layout_config: layout, total_slots: 30 }]
+              : table === 'layout_template' ? { id: 'box-layout', franchise: 'Pokemon', slug: 'box_30', grid_cols: 6, total_slots: 30,
+                template_storage_path: 'tokyo/box_30.png', card_back_storage_path: 'tokyo/box-back.png', layout_config: layout } : null,
+          error: null });
+        for (const method of ['select', 'eq', 'in', 'limit', 'returns']) query[method] = () => query;
+        query.update = (value: { status?: string }) => { if (table === 'generated_page' && value.status) statuses.push(value.status); return query; };
+        for (const method of ['single', 'maybeSingle']) query[method] = () => { single = true; return Promise.resolve(result()); };
+        query.then = (resolve: (value: unknown) => unknown) => Promise.resolve(result()).then(resolve);
+        return query;
+      },
+      storage: { from: () => ({ upload: async () => ({ error: null }), getPublicUrl: () => ({ data: { publicUrl: 'https://test.invalid/image.png' } }) }) },
+    };
+    const { runRegeneratePage } = await import('../jobs/regenerate-page.js');
+    await expect(runRegeneratePage()).rejects.toThrow('catalog boundary failed');
+    expect(statuses).toEqual(['pending', 'failed']);
+    expect(mockCatalogPublish).toHaveBeenLastCalledWith(
+      mockDb, 'run', 'https://peleka.invalid/catalog', 'local-token', 'page',
+    );
+
+    statuses.length = 0;
+    await runRegeneratePage();
+    expect(statuses).toEqual(['pending', 'generated']);
+    expect(mockCatalogPublish).toHaveBeenLastCalledWith(
+      mockDb, 'run', 'https://peleka.invalid/catalog', 'local-token', 'page',
+    );
+  } finally {
+    mockDisabled = false;
     if (originalStore === undefined) delete process.env.STORE_NAME; else process.env.STORE_NAME = originalStore;
     if (originalPage === undefined) delete process.env.PAGE_ID; else process.env.PAGE_ID = originalPage;
   }

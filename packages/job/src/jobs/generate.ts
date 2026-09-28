@@ -28,7 +28,7 @@ import { planPages, type PagePlan } from '../lib/page-planner.js';
 import { batchInsert } from '../lib/batch.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import { getOptionalEnvOrSecret, getRequiredEnvOrSecret } from '../lib/env.js';
-import { buildTokyoPelekaCatalog, publishTokyoPelekaCatalog } from '../lib/peleka-catalog.js';
+import { publishCurrentTokyoPelekaCatalog } from '../lib/peleka-catalog.js';
 import { loadStorePricingSettings } from '../lib/pricing-settings.js';
 import { applyCurrentShinsokuBoxPrices, loadShinsokuBoxPriceMap } from '../lib/shinsoku-box-price-source.js';
 import { isBoxRow } from '../lib/box-row.js';
@@ -726,15 +726,9 @@ export async function runGenerate() {
         || expectedIds.some(id => !actualIds.includes(id))) {
         throw new Error('東京通常ギャラリーの全商品・画像生成を確認できません');
       }
-      const cardsById = new Map([...pricedCardsByFranchise.values()].flat().map(card => [card.id, card]));
-      const payload = buildTokyoPelekaCatalog({
-        runId: run.id,
-        snapshotId: run.tokyo_snapshot_id!,
-        businessDate: `${displayDate.year}-${displayDate.month}-${displayDate.day}`,
-        generatedAt: run.started_at,
-        cards: actualIds.map(id => cardsById.get(id)!),
-      });
-      await publishTokyoPelekaCatalog(pelekaConfig!.endpoint, pelekaConfig!.token, payload);
+      const payload = await publishCurrentTokyoPelekaCatalog(
+        supabase, run.id, pelekaConfig!.endpoint, pelekaConfig!.token,
+      );
       console.log(`[generate] Peleka東京カタログ反映完了: ${payload.count}商品 sha256=${payload.productsSha256}`);
     }
     // ---- 5. Run 完了更新（claim token一致時だけ） ----

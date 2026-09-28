@@ -18,6 +18,8 @@ import { makeBoxLayout } from '../lib/box-layout.js';
 import { isBoxRow } from '../lib/box-row.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
 import { loadStorePricingSettings } from '../lib/pricing-settings.js';
+import { getRequiredEnvOrSecret } from '../lib/env.js';
+import { publishCurrentTokyoPelekaCatalog } from '../lib/peleka-catalog.js';
 import { applyCurrentShinsokuBoxPrices, loadShinsokuBoxPriceMap } from '../lib/shinsoku-box-price-source.js';
 import {
   formatGenerationDate,
@@ -119,10 +121,10 @@ export async function runRegeneratePage() {
   try {
     await _runRegeneratePage(supabase, pageId, ownedRun);
   } catch (err) {
-    // 失敗時: status は 'generated' を維持（ギャラリーから消えないように）し、error_message に記録
+    // 東京はPeleka同期を含む再生成の失敗をポーリング元へ返す。failedもギャラリー一覧には残る。
     const errMsg = err instanceof Error ? err.message : String(err);
     await supabase.from('generated_page').update({
-      status: 'generated',
+      status: STORE_NAME === 'manman-akihabara' && ownedRun.tokyo_snapshot_id ? 'failed' : 'generated',
       error_message: `再生成失敗: ${errMsg}`,
     }).eq('id', pageId).eq('run_id', ownedRun.id);
     throw err;
@@ -430,7 +432,7 @@ async function _runRegeneratePage(
 
   // ---- 9. generated_page 更新 ----
   const { error: pageUpdateError } = await supabase.from('generated_page').update({
-    status: 'generated',
+    status: tokyoPostalSnapshot ? 'pending' : 'generated',
     image_key: storageKey,
     image_url: publicUrl.publicUrl,
     error_message: null,
@@ -460,6 +462,20 @@ async function _runRegeneratePage(
       color: COLOR.WARNING,
       fields: [{ name: 'Run', value: page.run_id }, { name: 'エラー', value: message.slice(0, 1024) }],
     });
+  }
+
+  if (tokyoPostalSnapshot) {
+    const [endpoint, token] = await Promise.all([
+      getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_URL'),
+      getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_TOKEN'),
+    ]);
+    const payload = await publishCurrentTokyoPelekaCatalog(supabase, page.run_id, endpoint, token, pageId);
+    const { error: completionError } = await supabase.from('generated_page').update({
+      status: 'generated',
+      error_message: null,
+    }).eq('id', pageId).eq('run_id', ownedRun.id);
+    if (completionError) throw new Error(`Peleka同期完了状態の保存に失敗しました: ${completionError.message}`);
+    console.log(`[regenerate-page] Peleka東京カタログ反映完了: revision=${payload.revision} ${payload.count}商品 sha256=${payload.productsSha256}`);
   }
 
   console.log(`[regenerate-page] 完了: ${storageKey}`);

@@ -18,6 +18,7 @@ export function buildTokyoPelekaCatalog(params: {
   snapshotId: string;
   businessDate: string;
   generatedAt: string;
+  revision?: number;
   cards: PreparedCardRow[];
 }) {
   const products: PelekaCatalogProduct[] = params.cards.map(card => {
@@ -47,10 +48,38 @@ export function buildTokyoPelekaCatalog(params: {
     snapshotId: params.snapshotId,
     businessDate: params.businessDate,
     generatedAt: params.generatedAt,
+    revision: params.revision ?? 0,
     count: products.length,
     productsSha256: createHash('sha256').update(JSON.stringify(products)).digest('hex'),
     products,
   };
+}
+
+type TokyoPelekaCatalogSnapshot = {
+  runId: string;
+  snapshotId: string;
+  businessDate: string;
+  generatedAt: string;
+  revision: number;
+  cards: PreparedCardRow[];
+};
+
+export async function buildCurrentTokyoPelekaCatalog(
+  supabase: { rpc: unknown },
+  runId: string,
+  regeneratingPageId?: string,
+) {
+  const params: Record<string, unknown> = { p_run_id: runId };
+  if (regeneratingPageId) params.p_regenerating_page_id = regeneratingPageId;
+  const { data, error } = await (supabase.rpc as (
+    name: string,
+    params: Record<string, unknown>,
+  ) => PromiseLike<{ data: unknown; error: { message: string } | null }>)(
+    'allocate_tokyo_peleka_catalog_revision', params,
+  );
+  if (error || !data) throw new Error(`Pelekaカタログスナップショット取得失敗: ${error?.message ?? '該当なし'}`);
+  const snapshot = data as TokyoPelekaCatalogSnapshot;
+  return buildTokyoPelekaCatalog(snapshot);
 }
 
 export async function publishTokyoPelekaCatalog(
@@ -67,4 +96,16 @@ export async function publishTokyoPelekaCatalog(
     const detail = (await response.text()).slice(0, 500);
     throw new Error(`Pelekaカタログ反映失敗: HTTP ${response.status}${detail ? ` ${detail}` : ''}`);
   }
+}
+
+export async function publishCurrentTokyoPelekaCatalog(
+  supabase: Parameters<typeof buildCurrentTokyoPelekaCatalog>[0],
+  runId: string,
+  endpoint: string,
+  token: string,
+  regeneratingPageId?: string,
+) {
+  const payload = await buildCurrentTokyoPelekaCatalog(supabase, runId, regeneratingPageId);
+  await publishTokyoPelekaCatalog(endpoint, token, payload);
+  return payload;
 }
