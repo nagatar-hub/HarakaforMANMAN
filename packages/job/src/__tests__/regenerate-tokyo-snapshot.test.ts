@@ -102,7 +102,12 @@ test('Tokyo regeneration stays pending until catalog sync, then failed sync can 
   try {
     jest.resetModules(); jest.clearAllMocks();
     process.env.STORE_NAME = 'manman-akihabara'; process.env.PAGE_ID = 'page';
-    mockDisabled = true;
+    // 実シート出力は未完了ページを拒否するため、出力時点のページ状態を記録する。
+    const statusesAtSheetPublish: string[] = [];
+    mockPublish.mockImplementation(async () => {
+      statusesAtSheetPublish.push(statuses[statuses.length - 1]);
+      return { status: 'completed', rowCount: 1 };
+    });
     mockCatalogPublish.mockRejectedValueOnce(new Error('catalog boundary failed'))
       .mockResolvedValue({ revision: 2, count: 1, productsSha256: 'local' });
     const layout = { rows: [], priceBoxWidth: 100, priceBoxHeight: 20, cardFit: 'contain' };
@@ -131,6 +136,7 @@ test('Tokyo regeneration stays pending until catalog sync, then failed sync can 
     const { runRegeneratePage } = await import('../jobs/regenerate-page.js');
     await expect(runRegeneratePage()).rejects.toThrow('catalog boundary failed');
     expect(statuses).toEqual(['pending', 'failed']);
+    expect(statusesAtSheetPublish).toEqual([]);
     expect(mockCatalogPublish).toHaveBeenLastCalledWith(
       mockDb, 'run', 'https://peleka.invalid/catalog', 'local-token', 'page',
     );
@@ -138,6 +144,7 @@ test('Tokyo regeneration stays pending until catalog sync, then failed sync can 
     statuses.length = 0;
     await runRegeneratePage();
     expect(statuses).toEqual(['pending', 'generated']);
+    expect(statusesAtSheetPublish).toEqual(['generated']);
     expect(mockCatalogPublish).toHaveBeenLastCalledWith(
       mockDb, 'run', 'https://peleka.invalid/catalog', 'local-token', 'page',
     );

@@ -441,6 +441,21 @@ async function _runRegeneratePage(
     throw new Error(`再生成ページの保存に失敗しました: ${pageUpdateError.message}`);
   }
 
+  // 東京はPeleka同期でページが generated に戻るまでシートが「未完了ページあり」で拒否されるため、同期後に出力する。
+  if (tokyoPostalSnapshot) {
+    const [endpoint, token] = await Promise.all([
+      getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_URL'),
+      getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_TOKEN'),
+    ]);
+    const payload = await publishCurrentTokyoPelekaCatalog(supabase, page.run_id, endpoint, token, pageId);
+    const { error: completionError } = await supabase.from('generated_page').update({
+      status: 'generated',
+      error_message: null,
+    }).eq('id', pageId).eq('run_id', ownedRun.id);
+    if (completionError) throw new Error(`Peleka同期完了状態の保存に失敗しました: ${completionError.message}`);
+    console.log(`[regenerate-page] Peleka東京カタログ反映完了: revision=${payload.revision} ${payload.count}商品 sha256=${payload.productsSha256}`);
+  }
+
   if (!tokyoPostalSnapshot || !isBuybackSheetPublishDisabled()) try {
     const buybackSheetAccessToken = await getBuybackSheetAccessToken();
     const publishResult = await publishManmanBuybackSheet({
@@ -462,20 +477,6 @@ async function _runRegeneratePage(
       color: COLOR.WARNING,
       fields: [{ name: 'Run', value: page.run_id }, { name: 'エラー', value: message.slice(0, 1024) }],
     });
-  }
-
-  if (tokyoPostalSnapshot) {
-    const [endpoint, token] = await Promise.all([
-      getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_URL'),
-      getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_TOKEN'),
-    ]);
-    const payload = await publishCurrentTokyoPelekaCatalog(supabase, page.run_id, endpoint, token, pageId);
-    const { error: completionError } = await supabase.from('generated_page').update({
-      status: 'generated',
-      error_message: null,
-    }).eq('id', pageId).eq('run_id', ownedRun.id);
-    if (completionError) throw new Error(`Peleka同期完了状態の保存に失敗しました: ${completionError.message}`);
-    console.log(`[regenerate-page] Peleka東京カタログ反映完了: revision=${payload.revision} ${payload.count}商品 sha256=${payload.productsSha256}`);
   }
 
   console.log(`[regenerate-page] 完了: ${storageKey}`);
