@@ -48,8 +48,9 @@ test('the five-source comparison flows through one high/low pick into the unchan
   expect(prepared.find(p => p.source_shinsoku_id === 'IAP1')).toMatchObject({ price_high: 11000, price_low: 10000, tag: 'BOX' });
 
   const payload = buildTokyoPelekaCatalog({ runId: '00000000-0000-4000-8000-000000000002', snapshotId: result.snapshot.id,
-    businessDate: '2026-09-09', generatedAt: '2026-09-09T05:00:00Z', cards: prepared as PreparedCardRow[] });
-  expect(payload.products.map(p => [p.sourceId, p.priceHigh, p.priceLow])).toEqual([
-    ['IADB1', 57000, 51000], ['IAP1', 11000, 10000],
+    businessDate: '2026-09-09', generatedAt: '2026-09-09T05:00:00Z', cards: prepared as PreparedCardRow[],
+    shinsokuPrices: new Map([['IADB1', 60000], ['IAP1', 12000]]) });
+  expect(payload.products.map(p => [p.sourceId, p.priceHigh, p.priceLow, p.shinsokuPrice])).toEqual([
+    ['IADB1', 57000, 51000, 60000], ['IAP1', 11000, 10000, 12000],
   ]);
 });
