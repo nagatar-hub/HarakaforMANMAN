@@ -356,7 +356,9 @@ export default function GalleryDatePage() {
                         <span className="text-base text-text-secondary font-normal ml-3">{pages.length}ページ</span>
                       </h2>
                       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-6">
-                        {pages.map((page) => (
+                        {pages.map((page) => {
+                          const label = (page.is_peleka_postal ? page.page_label : page.display_name || page.page_label) || `page-${page.page_index}`;
+                          return (
                           <div key={page.id} className={`bg-card-bg border rounded-xl overflow-hidden hover:scale-[1.03] transition-all duration-300 relative ${selectMode && selectedIds.has(page.id) ? 'border-text-primary ring-2 ring-text-primary/30' : 'border-border-card'}`}>
                             {selectMode && (
                               <button
@@ -385,10 +387,10 @@ export default function GalleryDatePage() {
                             </button>
                             <div className="px-4 py-3 flex items-center justify-between gap-2">
                               <div className="min-w-0 flex-1">
-                                {hasPelekaPostal && (page.is_peleka_postal || page.kind === 'store') && (
-                                  <p className="text-xs font-semibold text-text-secondary mb-0.5">{page.is_peleka_postal ? '郵送買取' : '店頭買取'}</p>
+                                {hasPelekaPostal && page.kind === 'store' && (
+                                  <p className="text-xs font-semibold text-text-secondary mb-0.5">店頭買取</p>
                                 )}
-                                <p className="text-base font-semibold text-text-primary truncate" title={page.display_name || page.page_label || ''}>{page.display_name || page.page_label || `page-${page.page_index}`}</p>
+                                <p className={`text-base font-semibold text-text-primary ${page.is_peleka_postal ? 'break-words' : 'truncate'}`} title={label}>{label}</p>
                                 <p className="text-sm text-text-secondary mt-0.5">{page.card_ids.length}枚</p>
                               </div>
                               <button
@@ -400,7 +402,8 @@ export default function GalleryDatePage() {
                               </button>
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                 ))}
