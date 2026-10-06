@@ -1,4 +1,4 @@
-import { fetchShinsokuPostalProducts, matchShinsokuPostalProducts, postalProductIdentity, type PostalCandidate, type ShinsokuPostalProduct } from '../lib/shinsoku-postal';
+import { fetchShinsokuPostalProducts, matchShinsokuPostalProducts, postalProductIdentity, tokyoBoxAliasName, type PostalCandidate, type ShinsokuPostalProduct } from '../lib/shinsoku-postal';
 
 const candidate: PostalCandidate = { source: 'kecak', id: 'k1', franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10' };
 const product: ShinsokuPostalProduct = { id: 's1', franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10', price: 13900, imageUrl: null };
@@ -58,6 +58,29 @@ test('BOX identity absorbs source spelling variants that listed one product twic
   expect(box('Pokemon', '拡張パックデラックス「ブラックボルト」(SV11B)')).not.toBe(box('Pokemon', '拡張パック「ブラックボルト」(SV11B)'));
   expect(box('Pokemon', '25th ANNIVERSARY GOLDEN BOX')).not.toBe(box('Pokemon', '拡張パック「25th ANNIVERSARY COLLECTION BOX」(S8a)'));
   expect(box('Pokemon', '[1BOX]30th CELEBRATION FUTURISTIC BOX')).not.toBe(box('Pokemon', '拡張パック「30th CELEBRATION」(M6a)'));
+});
+
+test('Tokyo BOX aliases cover only the two reviewed products and their canonical display names', () => {
+  const key = (franchise: string, name: string, productType: 'BOX' | 'PSA10' = 'BOX') => postalProductIdentity({
+    franchise, name: tokyoBoxAliasName({ franchise, name, productType }), modelNumber: null, productType,
+  });
+  const dragon = key('DRAGON BALL', 'BRIGHTNESS OF HOPE FB11');
+  expect(key('DRAGON BALL', '[1BOX]BRIGHTNESS OF HOPE')).toBe(dragon);
+  expect(key('DRAGON BALL', 'FB11  BRIGHTNESS OF HOPE')).toBe(dragon);
+  const pokemon = key('Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー');
+  expect(key('Pokemon', '[1BOX]30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー')).toBe(pokemon);
+  expect(key('Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー プレミアムデッキ')).toBe(pokemon);
+  for (const [franchise, name, type] of [
+    ['DRAGON BALL', 'FB12 BRIGHTNESS OF HOPE', 'BOX'],
+    ['Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー 英語版', 'BOX'],
+    ['Pokemon', '25th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー', 'BOX'],
+    ['Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー 1パック', 'BOX'],
+    ['Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー 1カートン', 'BOX'],
+    ['Pokemon', '30th CELEBRATION プレミアムデッキセット ニンフィア', 'BOX'],
+    ['Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー', 'PSA10'],
+  ] as const) {
+    expect(key(franchise, name, type)).not.toBe(franchise === 'DRAGON BALL' ? dragon : pokemon);
+  }
 });
 
 test('Weiss Shinsoku ゲーム版 label is the same BOX as the plain title, not The Animation', () => {
