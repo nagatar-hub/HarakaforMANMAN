@@ -37,7 +37,7 @@ export default function GalleryDatePage() {
   const [images, setImages] = useState<PageImage[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
-  const [kindFilter, setKindFilter] = useState<'all' | 'store' | 'postal'>('all');
+  const [kindFilter, setKindFilter] = useState<'store' | 'postal'>('store');
   const [modalIndex, setModalIndex] = useState<number | null>(null);
   const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set());
   const [detailPageId, setDetailPageId] = useState<string | null>(null);
@@ -76,7 +76,7 @@ export default function GalleryDatePage() {
   }, [date]);
 
   const hasPelekaPostal = images.some(image => image.is_peleka_postal);
-  const kindFiltered = !hasPelekaPostal || kindFilter === 'all' ? images : images.filter(image => kindFilter === 'postal'
+  const kindFiltered = !hasPelekaPostal ? images : images.filter(image => kindFilter === 'postal'
     ? image.is_peleka_postal : image.kind === 'store');
   const filtered = filter === 'all'
     ? kindFiltered
@@ -245,21 +245,34 @@ export default function GalleryDatePage() {
         </div>
       )}
 
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8 sm:mb-14">
+      <div className="mb-8">
         <div>
           <Link href="/gallery" className="text-sm text-text-secondary hover:text-text-primary transition-colors mb-1 inline-block">&larr; ギャラリー</Link>
           <h1 className="page-title text-2xl sm:text-4xl text-text-primary">{date}</h1>
         </div>
+      </div>
+      <div className="mb-8"><GalleryTabs active="standard" /></div>
+      {hasPelekaPostal && (
+        <div role="group" aria-label="買取区分" className="flex border-b border-border-card mb-6">
+          {([['store', '店頭買取'], ['postal', '郵送買取']] as const).map(([value, label]) => (
+            <button key={value} aria-pressed={kindFilter === value} disabled={downloading}
+              onClick={() => {
+                if (kindFilter === value) return;
+                setKindFilter(value);
+                setSelectedIds(new Set());
+                setSelectMode(false);
+                setModalIndex(null);
+                setDetailPageId(null);
+              }}
+              className={`flex-1 sm:flex-none px-8 py-3 text-base font-bold border-b-2 transition-colors disabled:opacity-40 ${kindFilter === value ? 'border-text-primary text-text-primary' : 'border-transparent text-text-secondary hover:bg-warm-100'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="mb-8">
         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <FranchiseTabs active={filter} onChange={setFilter} />
-          {hasPelekaPostal && <div className="flex rounded-full border border-border-card overflow-hidden">
-            {([['all', 'すべて'], ['store', '店頭'], ['postal', '郵送']] as const).map(([value, label]) => (
-              <button key={value} onClick={() => setKindFilter(value)}
-                className={`px-3 py-2 text-xs ${kindFilter === value ? 'bg-text-primary text-white' : 'bg-card-bg text-text-secondary'}`}>
-                {label}
-              </button>
-            ))}
-          </div>}
           {!selectMode ? (
             <>
               <button
@@ -267,14 +280,14 @@ export default function GalleryDatePage() {
                 disabled={downloading || latestFiltered.length === 0}
                 className="px-4 py-2 rounded-full text-sm font-semibold border border-border-card text-text-primary hover:bg-warm-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                一括DL
+                {hasPelekaPostal ? `${kindFilter === 'store' ? '店頭' : '郵送'}を一括DL` : '一括DL'}
               </button>
               <button
                 onClick={() => { setSelectMode(true); setSelectedIds(new Set()); }}
                 disabled={downloading || allFiltered.length === 0}
                 className="px-4 py-2 rounded-full text-sm font-semibold border border-border-card text-text-primary hover:bg-warm-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                選択DL
+                {hasPelekaPostal ? `${kindFilter === 'store' ? '店頭' : '郵送'}を選択DL` : '選択DL'}
               </button>
             </>
           ) : (
@@ -296,7 +309,6 @@ export default function GalleryDatePage() {
           )}
         </div>
       </div>
-      <div className="mb-8"><GalleryTabs active="standard" /></div>
 
       {loading ? (
         <p className="text-text-secondary">読み込み中...</p>
