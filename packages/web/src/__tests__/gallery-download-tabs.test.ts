@@ -7,7 +7,7 @@ test('店頭・郵送タブの表示と一括・選択DLが混ざらず、切替
   const page = (id: string, postal = false, old = false, franchise = 'Pokemon') => ({
     id, run_id: old ? 'old' : 'new', run_started_at: old ? '2026-10-06T01:00:00Z' : '2026-10-06T02:00:00Z',
     kind: postal ? 'postal' : 'store', is_peleka_postal: postal, franchise,
-    page_index: 0, page_label: id, display_name: postal ? `郵送買取 ${franchise} ${id} (1).png` : id, card_ids: [], image_url: `https://images/${id}.png`,
+    page_index: 0, page_label: id, display_name: `${postal ? '郵送買取 ' : ''}${franchise} ${id} (1).png`, card_ids: [], image_url: `https://images/${id}.png`,
   });
   let images = [page('store-1'), page('postal-1', true), page('store-2', false, false, 'OnePiece'),
     page('postal-2', true, false, 'OnePiece'), page('old-store', false, true), page('old-postal', true, true)];
@@ -61,6 +61,10 @@ test('店頭・郵送タブの表示と一括・選択DLが混ざらず、切替
 
   expect(button('店頭買取').props['aria-pressed']).toBe(true);
   expect(visibleIds()).toEqual(['store-1', 'store-2']);
+  const storeLabels = nodes(render()).filter(node => node.type === 'p' && node.props.title);
+  expect(storeLabels.map(node => text(node))).toEqual(['store-1', 'store-2']);
+  expect(storeLabels.every(node => node.props.className.includes('break-words') && !node.props.className.includes('truncate'))).toBe(true);
+  expect(nodes(render()).filter(node => node.type === 'p').some(node => text(node).includes('店頭買取'))).toBe(false);
   await button('店頭を一括DL').props.onClick();
   expect(downloadedIds()).toEqual(['store-1.png', 'store-2.png']);
   button('店頭を選択DL').props.onClick();
