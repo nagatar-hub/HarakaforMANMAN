@@ -2,6 +2,7 @@ import { createSupabaseClientFromSecrets } from './lib/supabase.js';
 import { runSync } from './jobs/sync.js';
 import { runGenerate } from './jobs/generate.js';
 import { runGeneratePelekaPostal } from './jobs/generate-peleka-postal.js';
+import { runRefreshPelekaPostal } from './jobs/refresh-peleka-postal.js';
 import { runRegeneratePage } from './jobs/regenerate-page.js';
 import { runWatchdog } from './jobs/watchdog.js';
 import { runPublishBuybackSheet } from './jobs/publish-buyback-sheet.js';
@@ -27,6 +28,9 @@ async function main() {
         break;
       case 'generate-peleka-postal':
         await runGeneratePelekaPostal();
+        break;
+      case 'refresh-peleka-postal':
+        await runRefreshPelekaPostal();
         break;
       case 'regenerate-page':
         await runRegeneratePage();

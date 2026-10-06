@@ -1,10 +1,13 @@
 import { Hono } from 'hono';
 import { fork } from 'child_process';
+import { randomUUID } from 'node:crypto';
 import path from 'path';
 import type { Database } from '@haraka/shared';
 import { createSupabaseClient } from '../lib/supabase.js';
 import { loadTokyoGalleryPricing } from '../lib/gallery-pricing.js';
 import { authorizeInternalApiRequest } from '../lib/internal-api-auth.js';
+import { executeCloudRunJob } from '../lib/cloud-run-jobs.js';
+import { isDefinitiveCloudRunJobRejection } from '../lib/cloud-run-errors.js';
 import {
   summarizeGalleryDates,
   utcRangeForJstDate,
@@ -16,6 +19,9 @@ export const galleryRoutes = new Hono();
 
 const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
 const TOKYO_STORE = 'manman-akihabara';
+const TOKYO_POSTAL_REFRESH_JOB_NAME = process.env.POSTAL_REFRESH_JOB_NAME?.trim()
+  || `haraka-${TOKYO_STORE}-generate`;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 function isTokyoPelekaPostalPage(page: Record<string, unknown> | null | undefined) {
   return STORE_NAME === TOKYO_STORE && page?.kind === 'postal' && page.peleka_snapshot != null;
@@ -57,7 +63,7 @@ function catalogSyncError(error: unknown) {
   };
 }
 
-type StoreOwnership = { runId: string | null; error: string | null };
+type StoreOwnership = { runId: string | null; postalRefreshAvailable?: boolean; error: string | null };
 
 async function findPageRunInStore(
   supabase: ReturnType<typeof createSupabaseClient>,
@@ -68,17 +74,22 @@ async function findPageRunInStore(
     .select('run_id')
     .eq('id', pageId)
     .maybeSingle();
-  if (pageError) return { runId: null, error: pageError.message };
-  if (!page) return { runId: null, error: null };
+  if (pageError) return { runId: null, postalRefreshAvailable: false, error: pageError.message };
+  if (!page) return { runId: null, postalRefreshAvailable: false, error: null };
 
   const { data: run, error: runError } = await supabase
     .from('run')
-    .select('id')
+    .select('id, tokyo_snapshot_id, status, generate_done_at')
     .eq('id', page.run_id)
     .eq('store', STORE_NAME)
     .maybeSingle();
-  if (runError) return { runId: null, error: runError.message };
-  return { runId: run?.id ?? null, error: null };
+  if (runError) return { runId: null, postalRefreshAvailable: false, error: runError.message };
+  return {
+    runId: run?.id ?? null,
+    postalRefreshAvailable: STORE_NAME === TOKYO_STORE && run?.status === 'completed'
+      && Boolean(run.generate_done_at && run.tokyo_snapshot_id),
+    error: null,
+  };
 }
 
 async function findCardRunInStore(
@@ -257,6 +268,7 @@ galleryRoutes.get('/gallery/pages/:pageId', async (c) => {
     .single();
 
   if (pageErr || !page) return c.json({ error: 'Page not found' }, 404);
+  (page as Record<string, unknown>).can_refresh_peleka_postal = ownership.postalRefreshAvailable;
 
   // card_ids の順序を保持してカード取得
   const cardIds: string[] = (page as Record<string, unknown>).card_ids as string[] || [];
@@ -651,6 +663,67 @@ galleryRoutes.post('/gallery/pages/:pageId/regenerate', async (c) => {
   child.unref();
 
   return c.json({ status: 'triggered', pageId, pid: child.pid });
+});
+
+/** 完了済みRunのPeleka郵送ページを、現行カタログから全件まとめて更新する。 */
+galleryRoutes.post('/gallery/runs/:runId/postal/refresh', async (c) => {
+  if (STORE_NAME !== TOKYO_STORE) return c.json({ error: 'Not found' }, 404);
+  const runId = c.req.param('runId');
+  if (!UUID.test(runId)) return c.json({ error: 'Invalid run ID' }, 400);
+  const supabase = createSupabaseClient();
+  const { data: run, error: runError } = await supabase.from('run').select('id')
+    .eq('id', runId).eq('store', TOKYO_STORE).eq('status', 'completed').not('generate_done_at', 'is', null).maybeSingle();
+  if (runError) return c.json({ error: runError.message }, 500);
+  if (!run) return c.json({ error: '対象の実行分が見つかりません' }, 404);
+
+  const requestId = randomUUID();
+  const { error: claimError } = await supabase.rpc('claim_tokyo_peleka_postal_refresh' as never, {
+    p_run_id: runId, p_request_id: requestId,
+  } as never);
+  if (claimError) {
+    if (claimError.message.includes('already running')) {
+      return c.json({ error: 'この実行分の郵送表は更新中です' }, 409);
+    }
+    return c.json({ error: `郵送表更新を開始できません: ${claimError.message}` }, 500);
+  }
+
+  try {
+    const execution = await executeCloudRunJob(TOKYO_POSTAL_REFRESH_JOB_NAME, {
+      env: {
+        JOB_NAME: 'refresh-peleka-postal', STORE_NAME: TOKYO_STORE,
+        RUN_ID: runId, POSTAL_REFRESH_REQUEST_ID: requestId, TRIGGER: 'web-ui',
+      },
+    });
+    return c.json({ status: 'running', runId, requestId, ...execution }, 202);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isDefinitiveCloudRunJobRejection(error)) {
+      await supabase.rpc('fail_tokyo_peleka_postal_refresh' as never, {
+        p_run_id: runId, p_request_id: requestId, p_error_message: `Job起動失敗: ${message}`,
+      } as never);
+      return c.json({ error: `郵送表更新Jobを起動できません: ${message}` }, 503);
+    }
+    return c.json({ status: 'running', runId, requestId,
+      warning: 'Job起動結果を確認できません。進捗を確認してください。' }, 202);
+  }
+});
+
+galleryRoutes.get('/gallery/runs/:runId/postal/refresh', async (c) => {
+  if (STORE_NAME !== TOKYO_STORE) return c.json({ error: 'Not found' }, 404);
+  const auth = authorizeInternalApiRequest(c.req.header('authorization'));
+  if (auth === 'misconfigured') return c.json({ error: 'API authentication is not configured' }, 503);
+  if (auth !== 'authorized') return c.json({ error: 'Unauthorized' }, 401);
+  const runId = c.req.param('runId');
+  if (!UUID.test(runId)) return c.json({ error: 'Invalid run ID' }, 400);
+  const supabase = createSupabaseClient();
+  const { data: run, error: runError } = await supabase.from('run').select('id')
+    .eq('id', runId).eq('store', TOKYO_STORE).maybeSingle();
+  if (runError) return c.json({ error: runError.message }, 500);
+  if (!run) return c.json({ error: '対象の実行分が見つかりません' }, 404);
+  const { data, error } = await (supabase as any).from('tokyo_peleka_postal_refresh').select('*')
+    .eq('run_id', runId).maybeSingle();
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json(data ?? { run_id: runId, status: 'idle' });
 });
 
 const PRICE_HISTORY_LIMIT = 200;

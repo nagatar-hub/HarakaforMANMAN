@@ -19,6 +19,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { formatGalleryCardList } from '@/lib/gallery-card-list';
+import { refreshTokyoPostalPages } from '@/lib/postal-refresh';
 import { GalleryCardPricing } from '@/components/gallery-card-pricing';
 import type { ComponentProps } from 'react';
 
@@ -50,6 +51,7 @@ type PageDetail = {
   status: string;
   kind: 'store' | 'postal';
   peleka_snapshot?: Record<string, unknown> | null;
+  can_refresh_peleka_postal?: boolean;
 };
 
 const API_URL = '/api/backend';
@@ -730,6 +732,7 @@ export function PageDetailModal({
   const [loading, setLoading] = useState(true);
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const [refreshingPostal, setRefreshingPostal] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showAddCard, setShowAddCard] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -866,6 +869,26 @@ export function PageDetailModal({
     }
   }
 
+  async function handlePostalRefresh() {
+    if (!page?.run_id) return;
+    setRefreshingPostal(true);
+    setMessage(null);
+    try {
+      setMessage({ type: 'success', text: 'この実行分の郵送表をすべて更新中...' });
+      const { pageCount } = await refreshTokyoPostalPages(page.run_id);
+      setMessage({ type: 'success', text: pageCount === 0
+        ? 'この実行分の郵送表をすべて更新しました（現在の対象商品は0件です）'
+        : `この実行分の郵送表をすべて更新しました（${pageCount}ページ）` });
+      setRefreshingPostal(false);
+      onRegenerated?.();
+      onClose();
+      return;
+    } catch (error) {
+      setMessage({ type: 'error', text: error instanceof Error ? error.message : 'ネットワークエラー' });
+    }
+    setRefreshingPostal(false);
+  }
+
   async function handleCopyCardList() {
     try {
       await navigator.clipboard.writeText(formatGalleryCardList(cards));
@@ -912,7 +935,7 @@ export function PageDetailModal({
           onClick={e => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-border-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-3 sm:py-4 border-b border-border-card">
             <div className="min-w-0">
               <h2 className="text-base sm:text-xl font-bold text-text-primary truncate">
                 {page?.page_label || `page-${page?.page_index}`}
@@ -921,7 +944,7 @@ export function PageDetailModal({
                 {page?.franchise}{page?.peleka_snapshot != null ? ' · 郵送買取' : ''} · {cards.length}枚
               </p>
             </div>
-            <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+            <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3 ml-auto">
               <button
                 onClick={handleCopyCardList}
                 disabled={loading || cards.length === 0}
@@ -929,9 +952,9 @@ export function PageDetailModal({
               >
                 一覧コピー
               </button>
-              <button
+              {page?.peleka_snapshot == null && <button
                 onClick={handleRegenerate}
-                disabled={regenerating}
+                disabled={regenerating || refreshingPostal}
                 className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-semibold transition-all duration-100 ${
                   regenerating
                     ? 'bg-blue-600 text-white cursor-wait'
@@ -944,7 +967,23 @@ export function PageDetailModal({
                     再生成中...
                   </span>
                 ) : '再生成'}
-              </button>
+              </button>}
+              {page?.can_refresh_peleka_postal && <button
+                onClick={handlePostalRefresh}
+                disabled={regenerating || refreshingPostal}
+                className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-semibold transition-all duration-100 ${
+                  refreshingPostal
+                    ? 'bg-blue-600 text-white cursor-wait'
+                    : 'bg-text-primary text-white hover:bg-warm-800 active:scale-90'
+                }`}
+              >
+                {refreshingPostal ? (
+                  <span className="flex items-center gap-2">
+                    <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    郵送表を全更新中...
+                  </span>
+                ) : 'この実行分の郵送表をすべて更新'}
+              </button>}
               <button
                 onClick={onClose}
                 className="w-7 sm:w-8 h-7 sm:h-8 rounded-full bg-warm-200 text-text-secondary hover:bg-warm-300 flex items-center justify-center text-base sm:text-lg"

@@ -4,7 +4,7 @@ import {
   matchTokyoPelekaPostalProducts,
   parseTokyoPelekaPostalSnapshot,
 } from '../lib/peleka-postal';
-import { assertExactTokyoPelekaPostalCoverage } from '../lib/tokyo-peleka-postal-render';
+import { assertExactTokyoPelekaPostalCoverage, renderTokyoPelekaPostalPages } from '../lib/tokyo-peleka-postal-render';
 
 const runId = '10000000-0000-4000-8000-000000000001';
 const snapshotId = '20000000-0000-4000-8000-000000000001';
@@ -72,4 +72,18 @@ test('postal planning must cover every eligible product exactly once', () => {
     .toThrow('全商品を一意');
   expect(() => assertExactTokyoPelekaPostalCoverage(['a', 'b'], [{ label: 'x', cardIds: ['a'], layoutTemplateId: 'l' }]))
     .toThrow('全商品を一意');
+});
+
+test('zero eligible products still publishes the empty replacement', async () => {
+  const publishTogether = jest.fn(async () => {});
+  await expect(renderTokyoPelekaPostalPages({
+    supabase: {} as any,
+    runId,
+    snapshot: snapshot({ products: [] }) as any,
+    preparedCards: [],
+    datePath: '2026/10/06',
+    generationVersion: 1,
+    publishTogether,
+  })).resolves.toBe(0);
+  expect(publishTogether).toHaveBeenCalledWith([]);
 });

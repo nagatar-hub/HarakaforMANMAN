@@ -72,12 +72,15 @@ export async function renderTokyoPelekaPostalPages(params: {
   snapshot: TokyoPelekaPostalSnapshot;
   preparedCards: PreparedCardRow[];
   datePath: string;
-  generationVersion: number;
+  generationVersion: number | string;
   // Completed runs must publish postal pages only after every image and price check succeeds.
   publishTogether?: (pages: GeneratedPageInsert[]) => Promise<void>;
 }): Promise<number> {
   const matched = matchTokyoPelekaPostalProducts(params.preparedCards, params.snapshot);
-  if (matched.length === 0) return 0;
+  if (matched.length === 0) {
+    if (params.publishTogether) await params.publishTogether([]);
+    return 0;
+  }
   const matchedById = new Map(matched.map(card => [card.id, card]));
   const productByCardId = new Map(matched.map(card => [card.id, card.pelekaProduct]));
   let totalPages = 0;

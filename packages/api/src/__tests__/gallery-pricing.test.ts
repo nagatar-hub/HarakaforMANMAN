@@ -164,7 +164,9 @@ test('postal gallery overlays persisted Peleka values and rejects shared-card ed
     let data: unknown;
     if (table === 'generated_page') data = select === 'run_id' ? { run_id: 'run-1' }
       : { id: 'postal-page', run_id: 'run-1', kind: 'postal', card_ids: ['card-1'], peleka_snapshot: snapshot };
-    else if (table === 'run') data = url.searchParams.get('id')?.startsWith('eq.') ? { id: 'run-1' } : [{ id: 'run-1' }];
+    else if (table === 'run') data = url.searchParams.get('id')?.startsWith('eq.')
+      ? { id: 'run-1', tokyo_snapshot_id: 'snapshot-1', status: 'completed', generate_done_at: '2026-10-06T02:00:00Z' }
+      : [{ id: 'run-1' }];
     else if (table === 'prepared_card') data = [{ id: 'card-1', run_id: 'run-1', source_shinsoku_id: 'source-1',
       franchise: 'Pokemon', card_name: 'ピカチュウ', grade: 'PSA10', list_no: '001', image_url: 'https://store.invalid/card.png',
       alt_image_url: null, rarity: null, tag: 'PSA10', price_high: 10000, price_low: 8000, image_status: 'ok' }];
@@ -174,8 +176,9 @@ test('postal gallery overlays persisted Peleka values and rejects shared-card ed
   try {
     const detail = await galleryRoutes.request('/gallery/pages/postal-page');
     assert.equal(detail.status, 200);
-    const payload = await detail.json() as { page: { kind: string }; cards: any[] };
+    const payload = await detail.json() as { page: { kind: string; can_refresh_peleka_postal: boolean }; cards: any[] };
     assert.equal(payload.page.kind, 'postal');
+    assert.equal(payload.page.can_refresh_peleka_postal, true);
     assert.deepEqual({ id: payload.cards[0].id, image_url: payload.cards[0].image_url,
       alt_image_url: payload.cards[0].alt_image_url, price_high: payload.cards[0].price_high, price_low: payload.cards[0].price_low },
     { id: 'card-1', image_url: 'https://postal.invalid/card.png', alt_image_url: null, price_high: 15000, price_low: 12000 });
