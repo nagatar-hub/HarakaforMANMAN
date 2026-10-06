@@ -29,8 +29,8 @@ export async function runGeneratePelekaPostal() {
   const ids = pages.flatMap(page => page.card_ids);
   if (!ids.length || new Set(ids).size !== ids.length) throw new Error('Store card coverage is invalid');
   const cards: PreparedCardRow[] = [];
-  for (let offset = 0; offset < ids.length; offset += 500) {
-    const chunk = ids.slice(offset, offset + 500);
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const chunk = ids.slice(offset, offset + 100);
     const { data, error } = await supabase.from('prepared_card').select('*').eq('run_id', runId).in('id', chunk);
     if (error || data?.length !== chunk.length) throw new Error('Store cards are incomplete');
     cards.push(...data);
