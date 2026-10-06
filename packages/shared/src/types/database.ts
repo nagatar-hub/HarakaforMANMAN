@@ -449,6 +449,7 @@ export type GeneratedPageRow = {
   layout_template_id: string | null;
   kind: 'postal' | 'store';
   display_name: string | null;
+  peleka_snapshot?: Record<string, unknown> | null;
   created_at: string;
 };
 
@@ -722,13 +723,14 @@ export type Database = {
       };
       generated_page: {
         Row: GeneratedPageRow;
-        Insert: Omit<GeneratedPageRow, 'id' | 'created_at' | 'image_key' | 'image_url' | 'status' | 'error_message' | 'layout_template_id' | 'kind' | 'display_name'> & {
+        Insert: Omit<GeneratedPageRow, 'id' | 'created_at' | 'image_key' | 'image_url' | 'status' | 'error_message' | 'layout_template_id' | 'kind' | 'display_name' | 'peleka_snapshot'> & {
           id?: string; created_at?: string;
           image_key?: string | null; image_url?: string | null; status?: PageStatus;
           error_message?: string | null;
           layout_template_id?: string | null;
           kind?: 'postal' | 'store';
           display_name?: string | null;
+          peleka_snapshot?: Record<string, unknown> | null;
         };
         Update: Partial<Omit<GeneratedPageRow, 'id' | 'created_at'>>;
         Relationships: [];

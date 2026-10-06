@@ -19,6 +19,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { formatGalleryCardList } from '@/lib/gallery-card-list';
+import { refreshTokyoPostalPages } from '@/lib/postal-refresh';
 import { GalleryCardPricing } from '@/components/gallery-card-pricing';
 import type { ComponentProps } from 'react';
 
@@ -48,6 +49,9 @@ type PageDetail = {
   image_key: string | null;
   image_url: string | null;
   status: string;
+  kind: 'store' | 'postal';
+  peleka_snapshot?: Record<string, unknown> | null;
+  can_refresh_peleka_postal?: boolean;
 };
 
 const API_URL = '/api/backend';
@@ -538,11 +542,13 @@ function SortableRow({
   idx,
   onClick,
   onDelete,
+  readOnly = false,
 }: {
   card: CardDetail;
   idx: number;
   onClick: () => void;
   onDelete: () => void;
+  readOnly?: boolean;
 }) {
   const {
     attributes,
@@ -551,7 +557,7 @@ function SortableRow({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: card.id });
+  } = useSortable({ id: card.id, disabled: readOnly });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -567,14 +573,14 @@ function SortableRow({
       className={`border-b border-border-card/50 last:border-0 hover:bg-warm-100 transition-colors ${isDragging ? 'bg-warm-200' : ''}`}
     >
       <td className="py-2 pr-1 w-8">
-        <button
+        {!readOnly && <button
           {...attributes}
           {...listeners}
           className="cursor-grab active:cursor-grabbing p-1 text-text-secondary hover:text-text-primary"
           title="ドラッグして並べ替え"
         >
           ⠿
-        </button>
+        </button>}
       </td>
       <td className="py-2 pr-2 text-text-secondary cursor-pointer" onClick={onClick}>{idx + 1}</td>
       <td className="py-2 pr-2 cursor-pointer" onClick={onClick}>
@@ -612,13 +618,13 @@ function SortableRow({
         <ImageStatusBadge card={card} />
       </td>
       <td className="py-2 pl-2">
-        <button
+        {!readOnly && <button
           onClick={(e) => { e.stopPropagation(); onDelete(); }}
           className="w-6 h-6 rounded-full text-warm-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center text-sm transition-colors"
           title="このカードをページから削除"
         >
           ×
-        </button>
+        </button>}
       </td>
     </tr>
   );
@@ -630,11 +636,13 @@ function SortableCard({
   idx,
   onClick,
   onDelete,
+  readOnly = false,
 }: {
   card: CardDetail;
   idx: number;
   onClick: () => void;
   onDelete: () => void;
+  readOnly?: boolean;
 }) {
   const {
     attributes,
@@ -643,7 +651,7 @@ function SortableCard({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: card.id });
+  } = useSortable({ id: card.id, disabled: readOnly });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -659,13 +667,13 @@ function SortableCard({
       className={`flex items-center gap-2 p-2.5 rounded-xl border transition-colors ${isDragging ? 'bg-warm-200 border-warm-300' : 'bg-white border-border-card'}`}
     >
       {/* Drag handle */}
-      <button
+      {!readOnly && <button
         {...attributes}
         {...listeners}
         className="cursor-grab active:cursor-grabbing p-1 text-text-secondary hover:text-text-primary flex-shrink-0 touch-none"
       >
         ⠿
-      </button>
+      </button>}
 
       {/* Number */}
       <span className="text-xs text-text-secondary w-5 text-center flex-shrink-0">{idx + 1}</span>
@@ -698,13 +706,13 @@ function SortableCard({
       </div>
 
       {/* Delete */}
-      <button
+      {!readOnly && <button
         onClick={(e) => { e.stopPropagation(); onDelete(); }}
         className="w-7 h-7 rounded-full text-warm-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center text-sm transition-colors flex-shrink-0"
         title="削除"
       >
         ×
-      </button>
+      </button>}
     </div>
   );
 }
@@ -724,6 +732,7 @@ export function PageDetailModal({
   const [loading, setLoading] = useState(true);
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const [refreshingPostal, setRefreshingPostal] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showAddCard, setShowAddCard] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -782,6 +791,7 @@ export function PageDetailModal({
   }
 
   async function handleDragEnd(event: DragEndEvent) {
+    if (page?.peleka_snapshot != null) return;
     const { active, over } = event;
     if (!over || active.id === over.id || busy) return;
 
@@ -859,6 +869,26 @@ export function PageDetailModal({
     }
   }
 
+  async function handlePostalRefresh() {
+    if (!page?.run_id) return;
+    setRefreshingPostal(true);
+    setMessage(null);
+    try {
+      setMessage({ type: 'success', text: 'この実行分の郵送表をすべて更新中...' });
+      const { pageCount } = await refreshTokyoPostalPages(page.run_id);
+      setMessage({ type: 'success', text: pageCount === 0
+        ? 'この実行分の郵送表をすべて更新しました（現在の対象商品は0件です）'
+        : `この実行分の郵送表をすべて更新しました（${pageCount}ページ）` });
+      setRefreshingPostal(false);
+      onRegenerated?.();
+      onClose();
+      return;
+    } catch (error) {
+      setMessage({ type: 'error', text: error instanceof Error ? error.message : 'ネットワークエラー' });
+    }
+    setRefreshingPostal(false);
+  }
+
   async function handleCopyCardList() {
     try {
       await navigator.clipboard.writeText(formatGalleryCardList(cards));
@@ -893,7 +923,7 @@ export function PageDetailModal({
     setBusy(false);
   }
 
-  const editingCard = editingCardId ? cards.find(c => c.id === editingCardId) : null;
+  const editingCard = page?.peleka_snapshot == null && editingCardId ? cards.find(c => c.id === editingCardId) : null;
   // 東京の店舗別比較表は列が多いので、横スクロールなしで収まるよう広げる。他店舗の見た目は変えない。
   const wide = cards.some(card => card.pricing?.comparison);
 
@@ -905,16 +935,16 @@ export function PageDetailModal({
           onClick={e => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-border-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-3 sm:py-4 border-b border-border-card">
             <div className="min-w-0">
               <h2 className="text-base sm:text-xl font-bold text-text-primary truncate">
                 {page?.page_label || `page-${page?.page_index}`}
               </h2>
               <p className="text-xs sm:text-sm text-text-secondary mt-0.5">
-                {page?.franchise} · {cards.length}枚
+                {page?.franchise}{page?.peleka_snapshot != null ? ' · 郵送買取' : ''} · {cards.length}枚
               </p>
             </div>
-            <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+            <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3 ml-auto">
               <button
                 onClick={handleCopyCardList}
                 disabled={loading || cards.length === 0}
@@ -922,9 +952,9 @@ export function PageDetailModal({
               >
                 一覧コピー
               </button>
-              <button
+              {page?.peleka_snapshot == null && <button
                 onClick={handleRegenerate}
-                disabled={regenerating}
+                disabled={regenerating || refreshingPostal}
                 className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-semibold transition-all duration-100 ${
                   regenerating
                     ? 'bg-blue-600 text-white cursor-wait'
@@ -937,7 +967,23 @@ export function PageDetailModal({
                     再生成中...
                   </span>
                 ) : '再生成'}
-              </button>
+              </button>}
+              {page?.can_refresh_peleka_postal && <button
+                onClick={handlePostalRefresh}
+                disabled={regenerating || refreshingPostal}
+                className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-semibold transition-all duration-100 ${
+                  refreshingPostal
+                    ? 'bg-blue-600 text-white cursor-wait'
+                    : 'bg-text-primary text-white hover:bg-warm-800 active:scale-90'
+                }`}
+              >
+                {refreshingPostal ? (
+                  <span className="flex items-center gap-2">
+                    <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    郵送表を全更新中...
+                  </span>
+                ) : 'この実行分の郵送表をすべて更新'}
+              </button>}
               <button
                 onClick={onClose}
                 className="w-7 sm:w-8 h-7 sm:h-8 rounded-full bg-warm-200 text-text-secondary hover:bg-warm-300 flex items-center justify-center text-base sm:text-lg"
@@ -984,7 +1030,7 @@ export function PageDetailModal({
 
                 {/* Card list */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs text-text-secondary mb-2">タップして編集 · ⠿で並べ替え</p>
+                  <p className="text-xs text-text-secondary mb-2">{page?.peleka_snapshot != null ? '閲覧専用 · 価格はPelekaの設定から反映されます' : 'タップして編集 · ⠿で並べ替え'}</p>
 
                   <DndContext
                     sensors={sensors}
@@ -1017,8 +1063,9 @@ export function PageDetailModal({
                                 key={card.id}
                                 card={card}
                                 idx={idx}
-                                onClick={() => setEditingCardId(card.id)}
+                                onClick={() => { if (page?.peleka_snapshot == null) setEditingCardId(card.id); }}
                                 onDelete={() => handleDeleteCard(card.id)}
+                                readOnly={page?.peleka_snapshot != null}
                               />
                             ))}
                           </tbody>
@@ -1037,8 +1084,9 @@ export function PageDetailModal({
                             key={card.id}
                             card={card}
                             idx={idx}
-                            onClick={() => setEditingCardId(card.id)}
+                            onClick={() => { if (page?.peleka_snapshot == null) setEditingCardId(card.id); }}
                             onDelete={() => handleDeleteCard(card.id)}
+                            readOnly={page?.peleka_snapshot != null}
                           />
                         ))}
                       </SortableContext>
@@ -1046,7 +1094,7 @@ export function PageDetailModal({
                   </DndContext>
 
                   {/* カード追加ボタン */}
-                  {cards.length < 40 && (
+                  {page?.peleka_snapshot == null && cards.length < 40 && (
                     <button
                       onClick={() => setShowAddCard(true)}
                       disabled={busy}

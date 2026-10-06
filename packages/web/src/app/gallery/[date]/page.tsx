@@ -18,6 +18,9 @@ type PageImage = {
   franchise: string;
   page_index: number;
   page_label: string | null;
+  kind: 'store' | 'postal';
+  display_name: string | null;
+  is_peleka_postal: boolean;
   card_ids: string[];
   image_url: string | null;
   run_started_at: string;
@@ -34,6 +37,7 @@ export default function GalleryDatePage() {
   const [images, setImages] = useState<PageImage[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
+  const [kindFilter, setKindFilter] = useState<'store' | 'postal'>('store');
   const [modalIndex, setModalIndex] = useState<number | null>(null);
   const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set());
   const [detailPageId, setDetailPageId] = useState<string | null>(null);
@@ -71,10 +75,13 @@ export default function GalleryDatePage() {
     load();
   }, [date]);
 
+  const hasPelekaPostal = images.some(image => image.is_peleka_postal);
+  const kindFiltered = !hasPelekaPostal ? images : images.filter(image => kindFilter === 'postal'
+    ? image.is_peleka_postal : image.kind === 'store');
   const filtered = filter === 'all'
-    ? images
-    : images.filter((img) => img.franchise === filter);
-  const latestImages = latestRunImages(images);
+    ? kindFiltered
+    : kindFiltered.filter((img) => img.franchise === filter);
+  const latestImages = latestRunImages(images, kindFiltered);
   const latestFiltered = filter === 'all'
     ? latestImages
     : latestImages.filter((img) => img.franchise === filter);
@@ -115,7 +122,7 @@ export default function GalleryDatePage() {
   const indexById = new Map(allFiltered.map((p, i) => [p.id, i]));
 
   function buildDownloadList(pages: PageImage[]): DownloadableImage[] {
-    return galleryDownloadList(pages);
+    return galleryDownloadList(pages.map(page => ({ ...page, isPelekaPostal: page.is_peleka_postal })));
   }
 
   async function handleBulkDownload() {
@@ -238,11 +245,32 @@ export default function GalleryDatePage() {
         </div>
       )}
 
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8 sm:mb-14">
+      <div className="mb-8">
         <div>
           <Link href="/gallery" className="text-sm text-text-secondary hover:text-text-primary transition-colors mb-1 inline-block">&larr; ギャラリー</Link>
           <h1 className="page-title text-2xl sm:text-4xl text-text-primary">{date}</h1>
         </div>
+      </div>
+      <div className="mb-8"><GalleryTabs active="standard" /></div>
+      {hasPelekaPostal && (
+        <div role="group" aria-label="買取区分" className="flex border-b border-border-card mb-6">
+          {([['store', '店頭買取'], ['postal', '郵送買取']] as const).map(([value, label]) => (
+            <button key={value} aria-pressed={kindFilter === value} disabled={downloading}
+              onClick={() => {
+                if (kindFilter === value) return;
+                setKindFilter(value);
+                setSelectedIds(new Set());
+                setSelectMode(false);
+                setModalIndex(null);
+                setDetailPageId(null);
+              }}
+              className={`flex-1 sm:flex-none px-8 py-3 text-base font-bold border-b-2 transition-colors disabled:opacity-40 ${kindFilter === value ? 'border-text-primary text-text-primary' : 'border-transparent text-text-secondary hover:bg-warm-100'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="mb-8">
         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <FranchiseTabs active={filter} onChange={setFilter} />
           {!selectMode ? (
@@ -252,14 +280,14 @@ export default function GalleryDatePage() {
                 disabled={downloading || latestFiltered.length === 0}
                 className="px-4 py-2 rounded-full text-sm font-semibold border border-border-card text-text-primary hover:bg-warm-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                一括DL
+                {hasPelekaPostal ? `${kindFilter === 'store' ? '店頭' : '郵送'}を一括DL` : '一括DL'}
               </button>
               <button
                 onClick={() => { setSelectMode(true); setSelectedIds(new Set()); }}
                 disabled={downloading || allFiltered.length === 0}
                 className="px-4 py-2 rounded-full text-sm font-semibold border border-border-card text-text-primary hover:bg-warm-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                選択DL
+                {hasPelekaPostal ? `${kindFilter === 'store' ? '店頭' : '郵送'}を選択DL` : '選択DL'}
               </button>
             </>
           ) : (
@@ -281,7 +309,6 @@ export default function GalleryDatePage() {
           )}
         </div>
       </div>
-      <div className="mb-8"><GalleryTabs active="standard" /></div>
 
       {loading ? (
         <p className="text-text-secondary">読み込み中...</p>
@@ -329,7 +356,9 @@ export default function GalleryDatePage() {
                         <span className="text-base text-text-secondary font-normal ml-3">{pages.length}ページ</span>
                       </h2>
                       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-6">
-                        {pages.map((page) => (
+                        {pages.map((page) => {
+                          const label = page.page_label || `page-${page.page_index}`;
+                          return (
                           <div key={page.id} className={`bg-card-bg border rounded-xl overflow-hidden hover:scale-[1.03] transition-all duration-300 relative ${selectMode && selectedIds.has(page.id) ? 'border-text-primary ring-2 ring-text-primary/30' : 'border-border-card'}`}>
                             {selectMode && (
                               <button
@@ -358,7 +387,7 @@ export default function GalleryDatePage() {
                             </button>
                             <div className="px-4 py-3 flex items-center justify-between gap-2">
                               <div className="min-w-0 flex-1">
-                                <p className="text-base font-semibold text-text-primary truncate" title={page.page_label || ''}>{page.page_label || `page-${page.page_index}`}</p>
+                                <p className="text-base font-semibold text-text-primary break-words" title={label}>{label}</p>
                                 <p className="text-sm text-text-secondary mt-0.5">{page.card_ids.length}枚</p>
                               </div>
                               <button
@@ -370,7 +399,8 @@ export default function GalleryDatePage() {
                               </button>
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                 ))}

@@ -19,3 +19,18 @@ test('同名ページ（東京 Pokemon「その他」×2）もZIP内で上書き
   expect(names).toEqual(['Pokemon_その他.png', 'Pokemon_その他-2.png', 'Pokemon_その他-3.png', 'Pokemon_その他_2.png', 'Pokemon_AR-SAR.png']);
   expect(new Set(names).size).toBe(names.length);
 });
+
+test('店頭と郵送は同じページ名でも別ファイルになる', () => {
+  const pages = [false, true].map(isPelekaPostal => ({ isPelekaPostal, franchise: 'Pokemon', page_label: 'PSA10', page_index: 0,
+    image_url: `https://x/${isPelekaPostal}.png` }));
+  expect(galleryDownloadList(pages).map(item => item.filename)).toEqual(['Pokemon_PSA10.png', 'postal_Pokemon_PSA10.png']);
+});
+
+test('最新Runに郵送対象がないとき過去の郵送表を一括DLしない', () => {
+  const images = [
+    { id: 'old-postal', run_id: 'old', run_started_at: '2026-10-06T01:00:00Z', isPelekaPostal: true },
+    { id: 'new-store', run_id: 'new', run_started_at: '2026-10-06T02:00:00Z', isPelekaPostal: false },
+  ];
+  expect(latestRunImages(images, images.filter(image => image.isPelekaPostal))).toEqual([]);
+  expect(latestRunImages(images, images.filter(image => !image.isPelekaPostal)).map(image => image.id)).toEqual(['new-store']);
+});

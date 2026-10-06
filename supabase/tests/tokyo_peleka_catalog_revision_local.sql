@@ -17,7 +17,8 @@ CREATE TABLE public.generated_page (
   id UUID PRIMARY KEY,
   run_id UUID NOT NULL REFERENCES public.run(id),
   status TEXT NOT NULL,
-  card_ids UUID[] NOT NULL
+  card_ids UUID[] NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'store'
 );
 CREATE TABLE public.prepared_card (
   id UUID PRIMARY KEY,
@@ -35,6 +36,7 @@ CREATE TABLE public.prepared_card (
 );
 
 \i /tmp/20260928000001_tokyo_peleka_catalog_revisions.sql
+\i /tmp/20261006000001_add_peleka_snapshot_to_generated_page.sql
 
 INSERT INTO public.tokyo_buyback_snapshot VALUES
   ('10000000-0000-4000-8000-000000000001', 'manman-akihabara', '2026-09-27'),
@@ -51,9 +53,12 @@ INSERT INTO public.generated_page VALUES
   ('10000000-0000-4000-8000-000000000020', '10000000-0000-4000-8000-000000000002', 'generated', ARRAY[
     '10000000-0000-4000-8000-000000000010'::UUID,
     '10000000-0000-4000-8000-000000000011'::UUID
-  ]),
-  ('10000000-0000-4000-8000-000000000021', '10000000-0000-4000-8000-000000000002', 'generated', ARRAY[]::UUID[]),
-  ('20000000-0000-4000-8000-000000000020', '20000000-0000-4000-8000-000000000002', 'generated', ARRAY[]::UUID[]);
+  ], 'store'),
+  ('10000000-0000-4000-8000-000000000021', '10000000-0000-4000-8000-000000000002', 'generated', ARRAY[]::UUID[], 'store'),
+  ('20000000-0000-4000-8000-000000000020', '20000000-0000-4000-8000-000000000002', 'generated', ARRAY[]::UUID[], 'store'),
+  ('10000000-0000-4000-8000-000000000022', '10000000-0000-4000-8000-000000000002', 'pending', ARRAY[
+    '10000000-0000-4000-8000-000000000010'::UUID
+  ], 'postal');
 
 DO $$
 DECLARE
@@ -202,3 +207,183 @@ END;
 $$;
 
 SELECT 'Haraka Tokyo catalog revision contract passed' AS result;
+
+ALTER TABLE public.generated_page ADD COLUMN franchise TEXT, ADD COLUMN page_index INTEGER,
+  ADD COLUMN page_label TEXT, ADD COLUMN layout_template_id UUID, ADD COLUMN display_name TEXT,
+  ADD COLUMN image_key TEXT, ADD COLUMN image_url TEXT, ADD COLUMN error_message TEXT;
+\i /tmp/20261006000002_refresh_tokyo_peleka_postal_pages.sql
+DELETE FROM public.generated_page WHERE kind = 'postal';
+DO $$
+DECLARE
+  before_rows JSONB;
+  pages JSONB := '[{"id":"90000000-0000-4000-8000-000000000001","run_id":"10000000-0000-4000-8000-000000000002",
+    "franchise":"Pokemon","page_index":0,"kind":"postal","status":"generated","card_ids":[],
+    "image_key":"postal.png","image_url":"https://example.test/postal.png","peleka_snapshot":{
+      "runId":"10000000-0000-4000-8000-000000000002","snapshotId":"10000000-0000-4000-8000-000000000001","businessDate":"2026-09-27"}}]';
+BEGIN
+  SELECT jsonb_agg(p ORDER BY p.id) INTO before_rows FROM public.generated_page p WHERE kind = 'store';
+  BEGIN
+    PERFORM public.insert_tokyo_peleka_postal_pages('10000000-0000-4000-8000-000000000002',
+      '10000000-0000-4000-8000-000000000001', '2026-09-28', pages);
+    RAISE EXCEPTION 'wrong date accepted';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'Completed Tokyo run does not match' THEN RAISE; END IF;
+  END;
+  PERFORM public.insert_tokyo_peleka_postal_pages('10000000-0000-4000-8000-000000000002',
+    '10000000-0000-4000-8000-000000000001', '2026-09-27', pages);
+  IF (SELECT jsonb_agg(p ORDER BY p.id) FROM public.generated_page p WHERE kind = 'store') IS DISTINCT FROM before_rows
+    THEN RAISE EXCEPTION 'store pages changed'; END IF;
+  BEGIN
+    PERFORM public.insert_tokyo_peleka_postal_pages('10000000-0000-4000-8000-000000000002',
+      '10000000-0000-4000-8000-000000000001', '2026-09-27', pages);
+    RAISE EXCEPTION 'duplicate publication accepted';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'Store pages are incomplete or postal pages already exist' THEN RAISE; END IF;
+  END;
+  IF (SELECT count(*) FROM public.generated_page WHERE kind = 'postal') <> 1 THEN
+    RAISE EXCEPTION 'postal publication is not atomic'; END IF;
+END;
+$$;
+SELECT 'Postal-only publication preserves store pages and rejects repeated publication' AS result;
+
+CREATE TABLE public.post_item_asset (
+  id UUID PRIMARY KEY,
+  generated_page_id UUID REFERENCES public.generated_page(id)
+);
+DO $$
+DECLARE
+  before_store JSONB;
+  before_postal JSONB;
+  request_one UUID := '80000000-0000-4000-8000-000000000001';
+  request_two UUID := '80000000-0000-4000-8000-000000000002';
+  request_three UUID := '80000000-0000-4000-8000-000000000003';
+  request_four UUID := '80000000-0000-4000-8000-000000000004';
+  request_five UUID := '80000000-0000-4000-8000-000000000005';
+  request_six UUID := '80000000-0000-4000-8000-000000000006';
+  replacement JSONB := '[{"id":"90000000-0000-4000-8000-000000000099","run_id":"10000000-0000-4000-8000-000000000002",
+    "franchise":"Pokemon","page_index":0,"kind":"postal","status":"generated","card_ids":["10000000-0000-4000-8000-000000000010"],
+    "image_key":"postal-r6.png","image_url":"https://example.test/postal-r6.png","peleka_snapshot":{
+      "runId":"10000000-0000-4000-8000-000000000002","snapshotId":"10000000-0000-4000-8000-000000000001",
+      "businessDate":"2026-09-27","revision":6,"fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]';
+BEGIN
+  SELECT jsonb_agg(p ORDER BY p.id) INTO before_store FROM public.generated_page p WHERE kind = 'store';
+  PERFORM public.claim_tokyo_peleka_postal_refresh(
+    '10000000-0000-4000-8000-000000000002', request_one);
+  PERFORM public.replace_tokyo_peleka_postal_pages(
+    '10000000-0000-4000-8000-000000000002', request_one,
+    '10000000-0000-4000-8000-000000000001', '2026-09-27', 6,
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', replacement);
+  IF (SELECT id FROM public.generated_page WHERE kind = 'postal')
+      <> '90000000-0000-4000-8000-000000000001'::UUID THEN
+    RAISE EXCEPTION 'same page key did not preserve its ID';
+  END IF;
+  IF (SELECT image_key FROM public.generated_page WHERE kind = 'postal') <> 'postal-r6.png' THEN
+    RAISE EXCEPTION 'postal page was not replaced';
+  END IF;
+  IF (SELECT card_ids FROM public.generated_page WHERE kind = 'postal')
+      <> ARRAY['10000000-0000-4000-8000-000000000010'::UUID] THEN
+    RAISE EXCEPTION 'changed eligible product set was not replaced';
+  END IF;
+  IF (SELECT jsonb_agg(p ORDER BY p.id) FROM public.generated_page p WHERE kind = 'store') IS DISTINCT FROM before_store THEN
+    RAISE EXCEPTION 'refresh changed store pages';
+  END IF;
+
+  SELECT jsonb_agg(p ORDER BY p.id) INTO before_postal FROM public.generated_page p WHERE kind = 'postal';
+  PERFORM public.claim_tokyo_peleka_postal_refresh(
+    '10000000-0000-4000-8000-000000000002', request_four);
+  UPDATE public.tokyo_peleka_catalog_revisions SET last_revision = 7
+  WHERE run_id = '10000000-0000-4000-8000-000000000002';
+  BEGIN
+    PERFORM public.replace_tokyo_peleka_postal_pages(
+      '10000000-0000-4000-8000-000000000002', request_four,
+      '10000000-0000-4000-8000-000000000001', '2026-09-27', 6,
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', replacement);
+    RAISE EXCEPTION 'changed catalog revision was accepted';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'Tokyo Peleka catalog revision changed' THEN RAISE; END IF;
+  END;
+  IF (SELECT jsonb_agg(p ORDER BY p.id) FROM public.generated_page p WHERE kind = 'postal') IS DISTINCT FROM before_postal THEN
+    RAISE EXCEPTION 'stale revision changed postal pages';
+  END IF;
+  PERFORM public.fail_tokyo_peleka_postal_refresh(
+    '10000000-0000-4000-8000-000000000002', request_four, 'revision changed');
+  UPDATE public.tokyo_peleka_catalog_revisions SET last_revision = 6
+  WHERE run_id = '10000000-0000-4000-8000-000000000002';
+
+  INSERT INTO public.post_item_asset VALUES (
+    '70000000-0000-4000-8000-000000000001',
+    '90000000-0000-4000-8000-000000000001'
+  );
+  SELECT jsonb_agg(p ORDER BY p.id) INTO before_postal FROM public.generated_page p WHERE kind = 'postal';
+  PERFORM public.claim_tokyo_peleka_postal_refresh(
+    '10000000-0000-4000-8000-000000000002', request_two);
+  BEGIN
+    PERFORM public.replace_tokyo_peleka_postal_pages(
+      '10000000-0000-4000-8000-000000000002', request_two,
+      '10000000-0000-4000-8000-000000000001', '2026-09-27', 6,
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '[]'::JSONB);
+    RAISE EXCEPTION 'referenced postal page was deleted';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'Postal page is referenced by a post plan and cannot be removed' THEN RAISE; END IF;
+  END;
+  IF (SELECT jsonb_agg(p ORDER BY p.id) FROM public.generated_page p WHERE kind = 'postal') IS DISTINCT FROM before_postal THEN
+    RAISE EXCEPTION 'failed refresh changed postal pages';
+  END IF;
+  PERFORM public.fail_tokyo_peleka_postal_refresh(
+    '10000000-0000-4000-8000-000000000002', request_two, 'referenced');
+  DELETE FROM public.post_item_asset;
+
+  PERFORM public.claim_tokyo_peleka_postal_refresh(
+    '10000000-0000-4000-8000-000000000002', request_three);
+  PERFORM public.replace_tokyo_peleka_postal_pages(
+    '10000000-0000-4000-8000-000000000002', request_three,
+    '10000000-0000-4000-8000-000000000001', '2026-09-27', 6,
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '[]'::JSONB);
+  IF EXISTS (SELECT 1 FROM public.generated_page WHERE kind = 'postal') THEN
+    RAISE EXCEPTION 'zero-product refresh left stale postal pages';
+  END IF;
+  IF (SELECT page_count FROM public.tokyo_peleka_postal_refresh
+      WHERE run_id = '10000000-0000-4000-8000-000000000002') <> 0 THEN
+    RAISE EXCEPTION 'zero-product refresh status is incorrect';
+  END IF;
+
+  UPDATE public.tokyo_peleka_postal_refresh SET
+    request_id = request_five, status = 'running', updated_at = now() - interval '76 minutes',
+    completed_at = NULL, error_message = NULL
+  WHERE run_id = '10000000-0000-4000-8000-000000000002';
+  PERFORM public.claim_tokyo_peleka_postal_refresh(
+    '10000000-0000-4000-8000-000000000002', request_six);
+  IF (SELECT request_id FROM public.tokyo_peleka_postal_refresh
+      WHERE run_id = '10000000-0000-4000-8000-000000000002') <> request_six THEN
+    RAISE EXCEPTION 'stale running refresh was not reclaimed';
+  END IF;
+  BEGIN
+    PERFORM public.replace_tokyo_peleka_postal_pages(
+      '10000000-0000-4000-8000-000000000002', request_five,
+      '10000000-0000-4000-8000-000000000001', '2026-09-27', 6,
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '[]'::JSONB);
+    RAISE EXCEPTION 'stale request completed a newer refresh';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'Tokyo postal refresh request does not match' THEN RAISE; END IF;
+  END;
+  PERFORM public.fail_tokyo_peleka_postal_refresh(
+    '10000000-0000-4000-8000-000000000002', request_five, 'late failure');
+  IF NOT EXISTS (SELECT 1 FROM public.tokyo_peleka_postal_refresh
+      WHERE run_id = '10000000-0000-4000-8000-000000000002'
+        AND request_id = request_six AND status = 'running') THEN
+    RAISE EXCEPTION 'stale request changed the newer refresh';
+  END IF;
+  BEGIN
+    PERFORM public.replace_tokyo_peleka_postal_pages(
+      '10000000-0000-4000-8000-000000000002', request_six,
+      '10000000-0000-4000-8000-000000000001', '2026-09-27', 6,
+      NULL, '[]'::JSONB);
+    RAISE EXCEPTION 'null fingerprint was accepted';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'Tokyo Peleka catalog identity is invalid' THEN RAISE; END IF;
+  END;
+  PERFORM public.fail_tokyo_peleka_postal_refresh(
+    '10000000-0000-4000-8000-000000000002', request_six, 'fixture complete');
+END;
+$$;
+SELECT 'Postal refresh atomically preserves IDs, store pages, references, zero-product replacement, and request fencing' AS result;

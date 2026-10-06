@@ -29,6 +29,8 @@ import { batchInsert } from '../lib/batch.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import { getOptionalEnvOrSecret, getRequiredEnvOrSecret } from '../lib/env.js';
 import { publishCurrentTokyoPelekaCatalog } from '../lib/peleka-catalog.js';
+import { assertTokyoPelekaPostalUnchanged, fetchTokyoPelekaPostalSnapshot } from '../lib/peleka-postal.js';
+import { renderTokyoPelekaPostalPages } from '../lib/tokyo-peleka-postal-render.js';
 import { loadStorePricingSettings } from '../lib/pricing-settings.js';
 import { applyCurrentShinsokuBoxPrices, loadShinsokuBoxPriceMap } from '../lib/shinsoku-box-price-source.js';
 import { isBoxRow } from '../lib/box-row.js';
@@ -718,7 +720,7 @@ export async function runGenerate() {
 
     if (tokyoSnapshot) {
       const { data: finalPages, error } = await supabase.from('generated_page').select('status,card_ids')
-        .eq('run_id', run.id);
+        .eq('run_id', run.id).eq('kind', 'store');
       const expectedIds = [...pricedCardsByFranchise.values()].flat().map(card => card.id);
       const actualIds = (finalPages ?? []).flatMap(page => page.card_ids);
       if (error || !finalPages?.length || finalPages.some(page => page.status !== 'generated')
@@ -730,6 +732,27 @@ export async function runGenerate() {
         supabase, run.id, pelekaConfig!.endpoint, pelekaConfig!.token,
       );
       console.log(`[generate] Peleka東京カタログ反映完了: ${payload.count}商品 sha256=${payload.productsSha256}`);
+      const postalSnapshot = await fetchTokyoPelekaPostalSnapshot(
+        pelekaConfig!.endpoint,
+        pelekaConfig!.token,
+        { runId: run.id, revision: payload.revision },
+      );
+      const postalPages = await renderTokyoPelekaPostalPages({
+        supabase,
+        runId: run.id,
+        snapshot: postalSnapshot,
+        preparedCards: [...pricedCardsByFranchise.values()].flat(),
+        datePath,
+        generationVersion,
+      });
+      totalPages += postalPages;
+      const confirmedPostalSnapshot = await fetchTokyoPelekaPostalSnapshot(
+        pelekaConfig!.endpoint,
+        pelekaConfig!.token,
+        { runId: run.id, revision: payload.revision },
+      );
+      assertTokyoPelekaPostalUnchanged(postalSnapshot, confirmedPostalSnapshot);
+      console.log(`[generate] Peleka東京郵送画像生成完了: ${postalPages}ページ fingerprint=${postalSnapshot.fingerprint}`);
     }
     // ---- 5. Run 完了更新（claim token一致時だけ） ----
     const completedAt = new Date().toISOString();

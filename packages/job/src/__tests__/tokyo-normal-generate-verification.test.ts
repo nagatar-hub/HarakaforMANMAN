@@ -9,6 +9,7 @@ let mockImage: Buffer;
 let mockBackground: Buffer;
 let mockSheetDisabled = false;
 let mockBoxPriceLowEnabled = false;
+let mockPostalSnapshot: any;
 jest.mock('../lib/supabase', () => ({ createSupabaseClientFromSecrets: async () => mockDb }));
 jest.mock('../lib/auth', () => ({ getAccessToken: jest.fn(async () => 'local-only'), getBuybackSheetAccessToken: jest.fn() }));
 jest.mock('../lib/pricing-settings', () => ({ loadStorePricingSettings: jest.fn(async () => normalizeStorePricingSettings({
@@ -29,6 +30,10 @@ jest.mock('../lib/env', () => ({
 jest.mock('../lib/peleka-catalog', () => ({
   publishCurrentTokyoPelekaCatalog: jest.fn(async () => ({ count: 10, revision: 1, productsSha256: 'local' })),
 }));
+jest.mock('../lib/peleka-postal', () => {
+  const actual = jest.requireActual('../lib/peleka-postal');
+  return { ...actual, fetchTokyoPelekaPostalSnapshot: jest.fn(async () => mockPostalSnapshot) };
+});
 jest.mock('../lib/progress', () => ({ updateProgress: jest.fn(), clearProgress: jest.fn() }));
 jest.mock('../lib/buyback-sheet', () => ({ isBuybackSheetPublishDisabled: () => mockSheetDisabled, publishManmanBuybackSheet: jest.fn(async () => ({ status: 'completed', rowCount: 10 })) }));
 jest.mock('../lib/discord', () => ({ sendDiscordNotification: jest.fn(), COLOR: {} }));
@@ -89,6 +94,7 @@ function database(tables: Record<string, any[]>) {
       delete: () => { action = 'delete'; return query; },
       returns: () => query,
       maybeSingle: async () => { const result = execute(); return { ...result, data: result.data[0] ?? null }; },
+      single: async () => { const result = execute(); return { ...result, data: result.data[0] ?? null }; },
       then: (resolve: any, reject: any) => Promise.resolve(execute()).then(resolve, reject),
     };
     return query;
@@ -154,6 +160,16 @@ test.each([
   })));
   const prepared = buildTokyoPreparedCards(runId, { snapshot: { store: 'manman-akihabara', business_date: '2026-09-07', settings: normalizeStorePricingSettings({}) }, products } as any)
     .map((row, n) => ({ id: `card-${n}`, ...row }));
+  mockPostalSnapshot = {
+    schemaVersion: 1, store: 'manman-akihabara', runId, snapshotId: '20000000-0000-4000-8000-000000000001',
+    revision: 1, businessDate: '2026-09-07', generatedAt: '2026-09-07T01:23:45.000Z',
+    buyPriceDisplayMode: 'UPPER_ONLY', boxBuybackEnabled: false, fingerprint: 'a'.repeat(32),
+    products: prepared.filter(card => card.grade === 'PSA10').map(card => ({
+      sourceId: card.source_shinsoku_id, franchise: card.franchise, productType: 'PSA10', name: card.card_name,
+      modelNumber: card.list_no, imageUrl: 'https://local.invalid/postal.png', priceHigh: (card.price_high ?? 0) + 700,
+      priceLow: Math.max(0, (card.price_low ?? 0) - 500),
+    })),
+  };
   if (tokyo) for (const card of prepared) if (card.grade === 'PSA10') card.tag = 'AR/SAR/selected';
   const rules = tokyo ? FRANCHISES.map(franchise => ({ id: `rule-${franchise}`, store, franchise,
     tag_pattern: 'AR/SAR', match_type: 'contains', behavior: 'group', priority: 100, group_key: '保存したタググループ' })) : [];
@@ -181,13 +197,19 @@ test.each([
     await runGenerate();
     expect(tables.run[0].status).toBe('completed');
     expect(tables.run[0].generate_done_at).toBeTruthy();
-    expect(tables.generated_page).toHaveLength(products.length);
-    expect(tables.generated_page.every(page => page.status === 'generated' && page.run_id === runId && page.kind === 'store')).toBe(true);
-    expect(tables.generated_page.flatMap(page => page.card_ids).sort()).toEqual(prepared.map(card => card.id).sort());
+    const storePages = tables.generated_page.filter(page => page.kind === 'store');
+    const postalPages = tables.generated_page.filter(page => page.kind === 'postal');
+    expect(storePages).toHaveLength(products.length);
+    expect(storePages.every(page => page.status === 'generated' && page.run_id === runId)).toBe(true);
+    expect(storePages.flatMap(page => page.card_ids).sort()).toEqual(prepared.map(card => card.id).sort());
     if (tokyo) {
-      expect(tables.generated_page.filter(page => page.page_label === '保存したタググループ')).toHaveLength(FRANCHISES.length);
+      expect(postalPages).toHaveLength(FRANCHISES.length);
+      expect(postalPages.every(page => page.status === 'generated' && page.peleka_snapshot?.fingerprint === 'a'.repeat(32))).toBe(true);
+      expect(postalPages.flatMap(page => page.card_ids).sort()).toEqual(prepared.filter(card => card.grade === 'PSA10').map(card => card.id).sort());
+      expect(postalPages.flatMap(page => page.peleka_snapshot.products).every((product: any) => product.productType === 'PSA10')).toBe(true);
+      expect(storePages.filter(page => page.page_label === '保存したタググループ')).toHaveLength(FRANCHISES.length);
       for (const card of prepared.filter(card => card.grade === 'PSA10')) {
-        expect(tables.generated_page.find(page => page.card_ids.includes(card.id)).page_label).toBe('保存したタググループ');
+        expect(storePages.find(page => page.card_ids.includes(card.id)).page_label).toBe('保存したタググループ');
       }
       expect(tables.rule.every(rule => rule.tag_pattern === 'AR/SAR' && rule.match_type === 'contains')).toBe(true);
     }
@@ -196,6 +218,7 @@ test.each([
     expect(require('../lib/auth').getAccessToken.mock.calls.length).toBe(tokyo ? 0 : 1);
     expect(require('../lib/pricing-settings').loadStorePricingSettings).toHaveBeenCalledTimes(1);
     expect(require('../lib/peleka-catalog').publishCurrentTokyoPelekaCatalog.mock.calls.length).toBe(tokyo ? 1 : 0);
+    expect(require('../lib/peleka-postal').fetchTokyoPelekaPostalSnapshot.mock.calls.length).toBe(tokyo ? 2 : 0);
     expect(sheetPublisher).toHaveBeenCalledTimes(sheetDisabled ? 0 : 1);
     if (!sheetDisabled) expect(sheetPublisher).toHaveBeenCalledWith(expect.objectContaining({ runId, supabase: mockDb }));
     expect(require('../lib/auth').getBuybackSheetAccessToken).toHaveBeenCalledTimes(sheetDisabled ? 0 : 1);
@@ -209,10 +232,12 @@ test.each([
     expect(boundary.bucket.remove).not.toHaveBeenCalled();
     for (const [index, [params]] of composePage.mock.calls.entries()) {
       const card = params.cards[0];
+      const postal = Boolean(card.pelekaProduct);
       expect(params.dateText).toBe('09/07');
       expect(params.skipPriceLow).toBe(card.tag !== 'BOX');
-      expect(params.priceLowText).toBe(tokyo && card.tag === 'BOX' && !boxPriceLowEnabled ? '-' : undefined);
-      expect(card.price_high).toBe(products.find(product => product.id === card.source_shinsoku_id)!.price_high);
+      expect(params.priceLowText).toBe(!postal && tokyo && card.tag === 'BOX' && !boxPriceLowEnabled ? '-' : undefined);
+      const storePrice = products.find(product => product.id === card.source_shinsoku_id)!.price_high;
+      expect(card.price_high).toBe(postal ? storePrice + 700 : storePrice);
       if (card.tag === 'BOX') {
         expect(params.layout.rows[0].cardY).toBe(tokyo ? 17 : 24);
         expect(params.layout.rows[0].priceLowY - params.layout.rows[0].priceHighY).toBe(30);
@@ -227,10 +252,46 @@ test.each([
       }
       expect(params.totalSlots).toBe(card.tag === 'BOX' ? 30 : 24);
     }
-    expect(boundary.uploads).toHaveLength(products.length);
+    expect(boundary.uploads).toHaveLength(products.length + (tokyo ? FRANCHISES.length : 0));
     for (const upload of boundary.uploads) {
       expect(upload.path).toContain(`generated/${store}/`);
       expect((await sharp(upload.image).metadata()).format).toBe('png');
+    }
+    if (tokyo && !sheetFailure && !sheetDisabled && !boxPriceLowEnabled) {
+      const { runGeneratePelekaPostal } = require('../jobs/generate-peleka-postal');
+      process.env.PELEKA_CATALOG_REVISION = '1'; process.env.EXPECTED_BUSINESS_DATE = '2026-09-07';
+      tables.run[0].tokyo_snapshot_id = mockPostalSnapshot.snapshotId;
+      const publishCalls = require('../lib/peleka-catalog').publishCurrentTokyoPelekaCatalog.mock.calls.length;
+      const sheetCalls = sheetPublisher.mock.calls.length;
+      await expect(runGeneratePelekaPostal()).rejects.toThrow('postal pages must not exist');
+      tables.generated_page = tables.generated_page.filter(page => page.kind === 'store');
+      const before = JSON.stringify({ run: tables.run, cards: tables.prepared_card, pages: tables.generated_page });
+      const eligibleProducts = mockPostalSnapshot.products;
+      mockPostalSnapshot.products = [];
+      await expect(runGeneratePelekaPostal()).rejects.toThrow('No eligible postal products');
+      mockPostalSnapshot.products = eligibleProducts;
+      process.env.EXPECTED_BUSINESS_DATE = '2026-09-08';
+      await expect(runGeneratePelekaPostal()).rejects.toThrow('business date does not match');
+      process.env.EXPECTED_BUSINESS_DATE = '2026-09-07';
+      mockDb.rpc = jest.fn(async (_name: string, args: any) => {
+        expect(tables.generated_page.every(page => page.kind === 'store')).toBe(true);
+        tables.generated_page.push(...args.p_pages);
+        return { error: null };
+      });
+      const fetchPostal = require('../lib/peleka-postal').fetchTokyoPelekaPostalSnapshot;
+      fetchPostal.mockResolvedValueOnce(mockPostalSnapshot)
+        .mockResolvedValueOnce({ ...mockPostalSnapshot, fingerprint: 'b'.repeat(32) });
+      await expect(runGeneratePelekaPostal()).rejects.toThrow('画像生成中に変更');
+      expect(mockDb.rpc).not.toHaveBeenCalled();
+      expect(JSON.stringify({ run: tables.run, cards: tables.prepared_card, pages: tables.generated_page })).toBe(before);
+      await runGeneratePelekaPostal();
+      expect(mockDb.rpc).toHaveBeenCalledTimes(1);
+      expect(tables.generated_page.filter(page => page.kind === 'postal')).toHaveLength(FRANCHISES.length);
+      expect(JSON.stringify({ run: tables.run, cards: tables.prepared_card,
+        pages: tables.generated_page.filter(page => page.kind === 'store') })).toBe(before);
+      expect(require('../lib/peleka-catalog').publishCurrentTokyoPelekaCatalog.mock.calls.length).toBe(publishCalls);
+      expect(sheetPublisher.mock.calls.length).toBe(sheetCalls);
+      delete process.env.PELEKA_CATALOG_REVISION; delete process.env.EXPECTED_BUSINESS_DATE;
     }
   } finally {
     mockSheetDisabled = false;
