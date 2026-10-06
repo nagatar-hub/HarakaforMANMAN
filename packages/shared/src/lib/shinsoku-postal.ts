@@ -46,6 +46,20 @@ function nameKey(value: string, type: PostalCandidate['productType'], franchise:
   return name;
 }
 
+const TOKYO_BOX_NAME_ALIASES = new Map<string, string>([
+  ['DRAGON BALL', '[1BOX]BRIGHTNESS OF HOPE', 'BRIGHTNESS OF HOPE FB11'],
+  ['DRAGON BALL', 'FB11  BRIGHTNESS OF HOPE', 'BRIGHTNESS OF HOPE FB11'],
+  ['Pokemon', '[1BOX]30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー'],
+  ['Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー プレミアムデッキ', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー'],
+].map(([franchise, name, canonical]) => [JSON.stringify([franchise, normalize(name)]), canonical]));
+
+/** Reviewed Tokyo-only BOX aliases; all other identities stay on the existing normalizer. */
+export function tokyoBoxAliasName(product: Pick<PostalCandidate, 'franchise' | 'name' | 'productType'>): string {
+  return product.productType === 'BOX'
+    ? TOKYO_BOX_NAME_ALIASES.get(JSON.stringify([product.franchise, normalize(product.name)])) ?? product.name
+    : product.name;
+}
+
 export function postalProductIdentity(product: Pick<PostalCandidate, 'franchise' | 'name' | 'modelNumber' | 'productType'>): string {
   return JSON.stringify([product.franchise, product.productType, nameKey(product.name, product.productType, product.franchise),
     product.productType === 'PSA10' ? normalize(product.modelNumber ?? '') : '']);

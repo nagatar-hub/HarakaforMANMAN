@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   calculateBoxPriceHigh, calculateBuyPriceHigh, isBuiltInOrderListExclusion,
-  normalizeStorePricingSettings, postalProductIdentity, tokyoBusinessDate,
+  normalizeStorePricingSettings, postalProductIdentity, tokyoBoxAliasName, tokyoBusinessDate,
   fetchShinsokuPostalProducts, TOKYO_PRICE_SOURCES, validateTokyoSourceDiscountRates, validateTokyoOutlierGuard,
   validateTokyoPriceMaxAgeDays,
   type PostalCandidate, type ShinsokuPostalProduct, type StorePricingSettings, type Franchise, type TokyoPriceSource, type TokyoOutlierGuard,
@@ -131,7 +131,7 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
       unmatched.push({ candidate, reason: candidate.priceStale ? 'stale_price' : 'invalid_price' });
       continue;
     }
-    const identity = postalProductIdentity(candidate);
+    const identity = postalProductIdentity({ ...candidate, name: tokyoBoxAliasName(candidate) });
     groups.set(identity, [...(groups.get(identity) ?? []), candidate]);
   }
 
@@ -173,7 +173,7 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
       id: shinsoku?.id ?? `TOKYO_${createHash('sha256').update(identity).digest('hex')}`,
       franchise: canonical.franchise,
       product_type: canonical.productType === 'BOX' ? 'box' as const : 'psa' as const,
-      name: canonical.name,
+      name: tokyoBoxAliasName(canonical),
       model_number: canonical.modelNumber,
       image_url: canonical.imageUrl ?? origins.find(origin => origin.imageUrl)?.imageUrl ?? null,
       source_price: high.rawPrice,

@@ -4,6 +4,7 @@ import {
   type TokyoCandidate,
 } from '../jobs/tokyo-buyback-sync';
 import { blueRocketCardName, blueRocketModelNumber, blueRocketPsaCandidates, parseBlueRocketPsaSheet } from '../lib/blue-rocket-sheet';
+import { buildTokyoPreparedCards } from '../lib/tokyo-normal-cards';
 import type { ShinsokuPostalProduct } from '@haraka/shared';
 
 const SETTINGS = normalizeStorePricingSettings({});
@@ -108,6 +109,59 @@ test('a Blue Rocket BOX publishes on its own and only Shinsoku supplies the cata
     source_price: 50000, selected_high_source: 'blue_rocket', image_url: 'checker.jpg', product_type: 'box' });
   expect(byName['青眼の白龍']).toMatchObject({ id: 'IAY1', price_high: 76000, price_low: 76000,
     selected_high_source: 'shinsoku' });
+});
+
+test('the two reviewed Tokyo BOX aliases merge sources, keep canonical names and preserve ambiguity', () => {
+  const box = (source: 'kecak' | 'blue_rocket', id: string, franchise: string, name: string, sourcePrice: number): TokyoCandidate => ({
+    source, id, franchise, name, modelNumber: null, productType: 'BOX', sourcePrice,
+  });
+  const dragon = compareTokyoSourceProducts([
+    box('kecak', 'kecak-db', 'DRAGON BALL', '[1BOX]BRIGHTNESS OF HOPE', 7956),
+  ], [{ id: 'shinsoku-db', franchise: 'DRAGON BALL', name: 'FB11  BRIGHTNESS OF HOPE', modelNumber: null,
+    productType: 'BOX', price: 6800, imageUrl: 'db.jpg' }], SETTINGS, OBSERVED_AT);
+  expect(dragon.products).toEqual([expect.objectContaining({ id: 'shinsoku-db', name: 'BRIGHTNESS OF HOPE FB11',
+    source_price: 7956, price_high: 7000, price_low: 7000,
+    origins: [expect.objectContaining({ source: 'kecak', rawPrice: 7956 }), expect.objectContaining({ source: 'shinsoku', rawPrice: 6800 })] })]);
+
+  const pokemonBase = box('kecak', 'base', 'Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー', 17442);
+  const baseId = 'TOKYO_89554178d9b12af706c94ebab6edd2ce2d71ed7a92d39cd009557d03f47ad4ff';
+  expect(compareTokyoSourceProducts([pokemonBase], [], SETTINGS, OBSERVED_AT).products[0].id).toBe(baseId);
+  const pokemon = compareTokyoSourceProducts([
+    { ...pokemonBase, id: 'kecak-pokemon', name: '[1BOX]30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー' },
+    box('blue_rocket', 'blue-pokemon', 'Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー プレミアムデッキ', 19000),
+    box('blue_rocket', 'blue-language', 'Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー 英語版', 15000),
+  ], [], SETTINGS, OBSERVED_AT);
+  expect(pokemon.products).toHaveLength(2);
+  expect(pokemon.products.find(product => product.id === baseId)).toMatchObject({
+    name: '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー', source_price: 19000,
+    price_high: 17000, price_low: 17000,
+    origins: [expect.objectContaining({ source: 'kecak', rawPrice: 17442 }), expect.objectContaining({ source: 'blue_rocket', rawPrice: 19000 })],
+  });
+  expect(pokemon.products.find(product => product.name.endsWith('英語版'))).toBeDefined();
+
+  const image = (name: string) => `https://fexadnveyuqduiujewrc.supabase.co/storage/v1/object/public/goods/${name}.jpg`;
+  const prepared = buildTokyoPreparedCards('run', {
+    snapshot: { store: 'manman-akihabara', business_date: '2026-10-06', settings: SETTINGS },
+    products: [dragon.products[0], pokemon.products.find(product => product.id === baseId)!],
+  } as any, [], [
+    { id: 'db-dragon', store: 'manman-akihabara', franchise: 'DRAGON BALL',
+      card_name: '[1BOX]BRIGHTNESS OF HOPE', grade: '未開封BOX', list_no: null,
+      image_url: image('dragon'), alt_image_url: null, image_status: 'alive', tag: 'BOX' },
+    { id: 'db-pokemon', store: 'manman-akihabara', franchise: 'Pokemon',
+      card_name: '[1BOX]30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー', grade: '未開封BOX', list_no: null,
+      image_url: image('pokemon'), alt_image_url: null, image_status: 'alive', tag: 'BOX' },
+  ] as any);
+  expect(prepared.map(row => [row.card_name, row.image_url, row.tag])).toEqual([
+    ['BRIGHTNESS OF HOPE FB11', image('dragon'), 'BOX'],
+    ['30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー', image('pokemon'), 'BOX'],
+  ]);
+
+  const ambiguous = compareTokyoSourceProducts([
+    box('kecak', 'kecak-a', 'DRAGON BALL', '[1BOX]BRIGHTNESS OF HOPE', 7956),
+    box('kecak', 'kecak-b', 'DRAGON BALL', 'FB11  BRIGHTNESS OF HOPE', 6800),
+  ], [], SETTINGS, OBSERVED_AT);
+  expect(ambiguous.products).toEqual([]);
+  expect(ambiguous.unmatched.map(row => row.reason)).toEqual(['ambiguous', 'ambiguous']);
 });
 
 test.each([null, 0, -1, 1.5, NaN, Infinity, 100000001])('an invalid price %s never reaches a published product', price => {
