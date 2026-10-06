@@ -5,6 +5,7 @@ const mockLoadSettings: jest.Mock = jest.fn(async () => ({ box_price_low_enabled
 const mockPublish: jest.Mock = jest.fn(async () => ({ status: 'completed', rowCount: 1 }));
 const mockDownload: jest.Mock = jest.fn(async () => Buffer.from('asset'));
 const mockCatalogPublish: jest.Mock = jest.fn(async () => ({ revision: 1, count: 1, productsSha256: 'local' }));
+const mockPostalFetch: jest.Mock = jest.fn();
 let mockDb: unknown;
 let mockDisabled = false;
 let mockBoxPriceLowEnabled = false;
@@ -23,6 +24,11 @@ jest.mock('../lib/shinsoku-box-price-source', () => ({
 }));
 jest.mock('../lib/env', () => ({ getRequiredEnvOrSecret: async (name: string) => name === 'PELEKA_TOKYO_CATALOG_URL' ? 'https://peleka.invalid/catalog' : 'local-token' }));
 jest.mock('../lib/peleka-catalog', () => ({ publishCurrentTokyoPelekaCatalog: (...args: unknown[]) => mockCatalogPublish(...args) }));
+jest.mock('../lib/peleka-postal', () => {
+  const actual = jest.requireActual('../lib/peleka-postal');
+  return { ...actual, fetchTokyoPelekaPostalSnapshot: (...args: unknown[]) => mockPostalFetch(...args) };
+});
+jest.mock('../lib/tokyo-peleka-postal-render', () => ({ stampPostalIdentifier: async (image: Buffer) => image }));
 
 test.each([
   [false, false, false, false], [true, false, false, false], [false, true, false, false],
@@ -150,6 +156,65 @@ test('Tokyo regeneration stays pending until catalog sync, then failed sync can 
     );
   } finally {
     mockDisabled = false;
+    if (originalStore === undefined) delete process.env.STORE_NAME; else process.env.STORE_NAME = originalStore;
+    if (originalPage === undefined) delete process.env.PAGE_ID; else process.env.PAGE_ID = originalPage;
+  }
+});
+
+test('postal regeneration uses the saved matching Peleka revision and never republishes store data', async () => {
+  const originalStore = process.env.STORE_NAME;
+  const originalPage = process.env.PAGE_ID;
+  const runId = '10000000-0000-4000-8000-000000000001';
+  const snapshot = {
+    schemaVersion: 1, store: 'manman-akihabara', runId, snapshotId: '20000000-0000-4000-8000-000000000001',
+    revision: 4, businessDate: '2026-10-06', generatedAt: '2026-10-06T01:00:00.000Z',
+    buyPriceDisplayMode: 'UPPER_ONLY', boxBuybackEnabled: false, fingerprint: 'b'.repeat(32),
+    products: [{ sourceId: 'source-1', franchise: 'Pokemon', productType: 'PSA10', name: 'ピカチュウ',
+      modelNumber: '001', imageUrl: 'https://postal.invalid/card.png', priceHigh: 15000, priceLow: 12000 }],
+  };
+  const savedSnapshot = { ...snapshot, fingerprint: 'a'.repeat(32), buyPriceDisplayMode: 'RANGE',
+    products: [{ ...snapshot.products[0], priceHigh: 11000, priceLow: 9000 }] };
+  const pageUpdates: Record<string, unknown>[] = [];
+  try {
+    jest.resetModules(); jest.clearAllMocks(); mockPostalFetch.mockResolvedValue(snapshot);
+    process.env.STORE_NAME = 'manman-akihabara'; process.env.PAGE_ID = 'postal-page';
+    const layout = { rows: [], priceBoxWidth: 100, priceBoxHeight: 20, cardFit: 'contain' };
+    const card = { id: 'card-1', run_id: runId, source_shinsoku_id: 'source-1', franchise: 'Pokemon',
+      card_name: 'ピカチュウ', grade: 'PSA10', list_no: '001', tag: 'PSA10', image_url: 'https://store.invalid/card.png',
+      alt_image_url: null, price_high: 10000, price_low: 8000 };
+    const page = { id: 'postal-page', run_id: runId, franchise: 'Pokemon', kind: 'postal', layout_template_id: 'layout',
+      card_ids: ['card-1'], page_label: 'PSA10', page_index: 0, peleka_snapshot: savedSnapshot };
+    mockDb = {
+      from: (table: string) => {
+        let single = false;
+        const query: Record<string, unknown> = {};
+        const result = () => ({ data: table === 'run' ? single
+          ? { id: runId, order_list_import_id: 'import', tokyo_snapshot_id: 'tokyo-snapshot' } : [{ id: runId }]
+          : table === 'generated_page' ? single ? page : [page] : table === 'prepared_card' ? [card]
+            : table === 'order_list_import' ? { business_date: '2026-10-05' }
+              : table === 'asset_profile' ? [{ layout_config: layout, total_slots: 30 }]
+                : table === 'layout_template' ? { id: 'layout', franchise: 'Pokemon', slug: 'psa_24', grid_cols: 6,
+                  total_slots: 24, template_storage_path: 'template', card_back_storage_path: 'back', layout_config: layout } : null,
+        error: null });
+        for (const method of ['select', 'eq', 'in', 'limit', 'returns']) query[method] = () => query;
+        query.update = (value: Record<string, unknown>) => { if (table === 'generated_page') pageUpdates.push(value); return query; };
+        for (const method of ['single', 'maybeSingle']) query[method] = () => { single = true; return Promise.resolve(result()); };
+        query.then = (resolve: (value: unknown) => unknown) => Promise.resolve(result()).then(resolve);
+        return query;
+      },
+      storage: { from: () => ({ upload: async () => ({ error: null }), remove: async () => ({ error: null }),
+        getPublicUrl: () => ({ data: { publicUrl: 'https://test.invalid/postal.png' } }) }) },
+    };
+    const { runRegeneratePage } = await import('../jobs/regenerate-page.js');
+    await runRegeneratePage();
+    expect(mockPostalFetch).toHaveBeenCalledTimes(2);
+    expect(mockCatalogPublish).not.toHaveBeenCalled();
+    expect(mockPublish).not.toHaveBeenCalled();
+    const rendered = mockCompose.mock.calls[0][0];
+    expect(rendered.cards[0]).toMatchObject({ image_url: 'https://postal.invalid/card.png', price_high: 15000, price_low: 12000 });
+    expect(rendered.skipPriceLow).toBe(true);
+    expect(pageUpdates.at(-1)?.peleka_snapshot).toMatchObject({ fingerprint: 'b'.repeat(32), buyPriceDisplayMode: 'UPPER_ONLY' });
+  } finally {
     if (originalStore === undefined) delete process.env.STORE_NAME; else process.env.STORE_NAME = originalStore;
     if (originalPage === undefined) delete process.env.PAGE_ID; else process.env.PAGE_ID = originalPage;
   }

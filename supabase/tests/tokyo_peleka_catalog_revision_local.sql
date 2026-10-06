@@ -17,7 +17,8 @@ CREATE TABLE public.generated_page (
   id UUID PRIMARY KEY,
   run_id UUID NOT NULL REFERENCES public.run(id),
   status TEXT NOT NULL,
-  card_ids UUID[] NOT NULL
+  card_ids UUID[] NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'store'
 );
 CREATE TABLE public.prepared_card (
   id UUID PRIMARY KEY,
@@ -35,6 +36,7 @@ CREATE TABLE public.prepared_card (
 );
 
 \i /tmp/20260928000001_tokyo_peleka_catalog_revisions.sql
+\i /tmp/20261006000001_add_peleka_snapshot_to_generated_page.sql
 
 INSERT INTO public.tokyo_buyback_snapshot VALUES
   ('10000000-0000-4000-8000-000000000001', 'manman-akihabara', '2026-09-27'),
@@ -51,9 +53,12 @@ INSERT INTO public.generated_page VALUES
   ('10000000-0000-4000-8000-000000000020', '10000000-0000-4000-8000-000000000002', 'generated', ARRAY[
     '10000000-0000-4000-8000-000000000010'::UUID,
     '10000000-0000-4000-8000-000000000011'::UUID
-  ]),
-  ('10000000-0000-4000-8000-000000000021', '10000000-0000-4000-8000-000000000002', 'generated', ARRAY[]::UUID[]),
-  ('20000000-0000-4000-8000-000000000020', '20000000-0000-4000-8000-000000000002', 'generated', ARRAY[]::UUID[]);
+  ], 'store'),
+  ('10000000-0000-4000-8000-000000000021', '10000000-0000-4000-8000-000000000002', 'generated', ARRAY[]::UUID[], 'store'),
+  ('20000000-0000-4000-8000-000000000020', '20000000-0000-4000-8000-000000000002', 'generated', ARRAY[]::UUID[], 'store'),
+  ('10000000-0000-4000-8000-000000000022', '10000000-0000-4000-8000-000000000002', 'pending', ARRAY[
+    '10000000-0000-4000-8000-000000000010'::UUID
+  ], 'postal');
 
 DO $$
 DECLARE
@@ -202,3 +207,40 @@ END;
 $$;
 
 SELECT 'Haraka Tokyo catalog revision contract passed' AS result;
+
+ALTER TABLE public.generated_page ADD COLUMN franchise TEXT, ADD COLUMN page_index INTEGER,
+  ADD COLUMN page_label TEXT, ADD COLUMN layout_template_id UUID, ADD COLUMN display_name TEXT,
+  ADD COLUMN image_key TEXT, ADD COLUMN image_url TEXT;
+DELETE FROM public.generated_page WHERE kind = 'postal';
+DO $$
+DECLARE
+  before_rows JSONB;
+  pages JSONB := '[{"id":"90000000-0000-4000-8000-000000000001","run_id":"10000000-0000-4000-8000-000000000002",
+    "franchise":"Pokemon","page_index":0,"kind":"postal","status":"generated","card_ids":[],
+    "image_key":"postal.png","image_url":"https://example.test/postal.png","peleka_snapshot":{
+      "runId":"10000000-0000-4000-8000-000000000002","snapshotId":"10000000-0000-4000-8000-000000000001","businessDate":"2026-09-27"}}]';
+BEGIN
+  SELECT jsonb_agg(p ORDER BY p.id) INTO before_rows FROM public.generated_page p WHERE kind = 'store';
+  BEGIN
+    PERFORM public.insert_tokyo_peleka_postal_pages('10000000-0000-4000-8000-000000000002',
+      '10000000-0000-4000-8000-000000000001', '2026-09-28', pages);
+    RAISE EXCEPTION 'wrong date accepted';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'Completed Tokyo run does not match' THEN RAISE; END IF;
+  END;
+  PERFORM public.insert_tokyo_peleka_postal_pages('10000000-0000-4000-8000-000000000002',
+    '10000000-0000-4000-8000-000000000001', '2026-09-27', pages);
+  IF (SELECT jsonb_agg(p ORDER BY p.id) FROM public.generated_page p WHERE kind = 'store') IS DISTINCT FROM before_rows
+    THEN RAISE EXCEPTION 'store pages changed'; END IF;
+  BEGIN
+    PERFORM public.insert_tokyo_peleka_postal_pages('10000000-0000-4000-8000-000000000002',
+      '10000000-0000-4000-8000-000000000001', '2026-09-27', pages);
+    RAISE EXCEPTION 'duplicate publication accepted';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'Store pages are incomplete or postal pages already exist' THEN RAISE; END IF;
+  END;
+  IF (SELECT count(*) FROM public.generated_page WHERE kind = 'postal') <> 1 THEN
+    RAISE EXCEPTION 'postal publication is not atomic'; END IF;
+END;
+$$;
+SELECT 'Postal-only publication preserves store pages and rejects repeated publication' AS result;

@@ -10,23 +10,23 @@ export type DownloadableImage = {
  * ZIP内で上書きされるため連番を付け、「AR/SAR」の / はフォルダ区切りにならないよう置き換える。
  */
 export function galleryDownloadList(
-  pages: { franchise: string; page_label: string | null; page_index: number; image_url: string | null }[],
+  pages: { franchise: string; page_label: string | null; page_index: number; image_url: string | null; isPelekaPostal?: boolean }[],
 ): DownloadableImage[] {
   const used = new Map<string, number>();
   return pages.filter(p => p.image_url).map(p => {
-    const base = `${p.franchise}_${p.page_label || `page-${p.page_index}`}`.replace(/[\\/]/g, '-');
+    const base = `${p.isPelekaPostal ? 'postal_' : ''}${p.franchise}_${p.page_label || `page-${p.page_index}`}`.replace(/[\\/]/g, '-');
     const count = (used.get(base) ?? 0) + 1;
     used.set(base, count);
     return { image_url: p.image_url!, filename: `${base}${count > 1 ? `_${count}` : ''}.png` };
   });
 }
 
-export function latestRunImages<T extends { run_id: string; run_started_at: string }>(images: T[]): T[] {
+export function latestRunImages<T extends { run_id: string; run_started_at: string }>(images: T[], visibleImages: T[] = images): T[] {
   if (images.length === 0) return [];
   const latest = images.reduce((current, image) =>
     image.run_started_at > current.run_started_at ? image : current,
   );
-  return images.filter(image => image.run_id === latest.run_id);
+  return visibleImages.filter(image => image.run_id === latest.run_id);
 }
 
 /** Web Share API が使えるかどうか */

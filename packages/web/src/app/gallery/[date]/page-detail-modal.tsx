@@ -48,6 +48,8 @@ type PageDetail = {
   image_key: string | null;
   image_url: string | null;
   status: string;
+  kind: 'store' | 'postal';
+  peleka_snapshot?: Record<string, unknown> | null;
 };
 
 const API_URL = '/api/backend';
@@ -538,11 +540,13 @@ function SortableRow({
   idx,
   onClick,
   onDelete,
+  readOnly = false,
 }: {
   card: CardDetail;
   idx: number;
   onClick: () => void;
   onDelete: () => void;
+  readOnly?: boolean;
 }) {
   const {
     attributes,
@@ -551,7 +555,7 @@ function SortableRow({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: card.id });
+  } = useSortable({ id: card.id, disabled: readOnly });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -567,14 +571,14 @@ function SortableRow({
       className={`border-b border-border-card/50 last:border-0 hover:bg-warm-100 transition-colors ${isDragging ? 'bg-warm-200' : ''}`}
     >
       <td className="py-2 pr-1 w-8">
-        <button
+        {!readOnly && <button
           {...attributes}
           {...listeners}
           className="cursor-grab active:cursor-grabbing p-1 text-text-secondary hover:text-text-primary"
           title="ドラッグして並べ替え"
         >
           ⠿
-        </button>
+        </button>}
       </td>
       <td className="py-2 pr-2 text-text-secondary cursor-pointer" onClick={onClick}>{idx + 1}</td>
       <td className="py-2 pr-2 cursor-pointer" onClick={onClick}>
@@ -612,13 +616,13 @@ function SortableRow({
         <ImageStatusBadge card={card} />
       </td>
       <td className="py-2 pl-2">
-        <button
+        {!readOnly && <button
           onClick={(e) => { e.stopPropagation(); onDelete(); }}
           className="w-6 h-6 rounded-full text-warm-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center text-sm transition-colors"
           title="このカードをページから削除"
         >
           ×
-        </button>
+        </button>}
       </td>
     </tr>
   );
@@ -630,11 +634,13 @@ function SortableCard({
   idx,
   onClick,
   onDelete,
+  readOnly = false,
 }: {
   card: CardDetail;
   idx: number;
   onClick: () => void;
   onDelete: () => void;
+  readOnly?: boolean;
 }) {
   const {
     attributes,
@@ -643,7 +649,7 @@ function SortableCard({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: card.id });
+  } = useSortable({ id: card.id, disabled: readOnly });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -659,13 +665,13 @@ function SortableCard({
       className={`flex items-center gap-2 p-2.5 rounded-xl border transition-colors ${isDragging ? 'bg-warm-200 border-warm-300' : 'bg-white border-border-card'}`}
     >
       {/* Drag handle */}
-      <button
+      {!readOnly && <button
         {...attributes}
         {...listeners}
         className="cursor-grab active:cursor-grabbing p-1 text-text-secondary hover:text-text-primary flex-shrink-0 touch-none"
       >
         ⠿
-      </button>
+      </button>}
 
       {/* Number */}
       <span className="text-xs text-text-secondary w-5 text-center flex-shrink-0">{idx + 1}</span>
@@ -698,13 +704,13 @@ function SortableCard({
       </div>
 
       {/* Delete */}
-      <button
+      {!readOnly && <button
         onClick={(e) => { e.stopPropagation(); onDelete(); }}
         className="w-7 h-7 rounded-full text-warm-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center text-sm transition-colors flex-shrink-0"
         title="削除"
       >
         ×
-      </button>
+      </button>}
     </div>
   );
 }
@@ -782,6 +788,7 @@ export function PageDetailModal({
   }
 
   async function handleDragEnd(event: DragEndEvent) {
+    if (page?.peleka_snapshot != null) return;
     const { active, over } = event;
     if (!over || active.id === over.id || busy) return;
 
@@ -893,7 +900,7 @@ export function PageDetailModal({
     setBusy(false);
   }
 
-  const editingCard = editingCardId ? cards.find(c => c.id === editingCardId) : null;
+  const editingCard = page?.peleka_snapshot == null && editingCardId ? cards.find(c => c.id === editingCardId) : null;
   // 東京の店舗別比較表は列が多いので、横スクロールなしで収まるよう広げる。他店舗の見た目は変えない。
   const wide = cards.some(card => card.pricing?.comparison);
 
@@ -911,7 +918,7 @@ export function PageDetailModal({
                 {page?.page_label || `page-${page?.page_index}`}
               </h2>
               <p className="text-xs sm:text-sm text-text-secondary mt-0.5">
-                {page?.franchise} · {cards.length}枚
+                {page?.franchise}{page?.peleka_snapshot != null ? ' · 郵送買取' : ''} · {cards.length}枚
               </p>
             </div>
             <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
@@ -984,7 +991,7 @@ export function PageDetailModal({
 
                 {/* Card list */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs text-text-secondary mb-2">タップして編集 · ⠿で並べ替え</p>
+                  <p className="text-xs text-text-secondary mb-2">{page?.peleka_snapshot != null ? '閲覧専用 · 価格はPelekaの設定から反映されます' : 'タップして編集 · ⠿で並べ替え'}</p>
 
                   <DndContext
                     sensors={sensors}
@@ -1017,8 +1024,9 @@ export function PageDetailModal({
                                 key={card.id}
                                 card={card}
                                 idx={idx}
-                                onClick={() => setEditingCardId(card.id)}
+                                onClick={() => { if (page?.peleka_snapshot == null) setEditingCardId(card.id); }}
                                 onDelete={() => handleDeleteCard(card.id)}
+                                readOnly={page?.peleka_snapshot != null}
                               />
                             ))}
                           </tbody>
@@ -1037,8 +1045,9 @@ export function PageDetailModal({
                             key={card.id}
                             card={card}
                             idx={idx}
-                            onClick={() => setEditingCardId(card.id)}
+                            onClick={() => { if (page?.peleka_snapshot == null) setEditingCardId(card.id); }}
                             onDelete={() => handleDeleteCard(card.id)}
+                            readOnly={page?.peleka_snapshot != null}
                           />
                         ))}
                       </SortableContext>
@@ -1046,7 +1055,7 @@ export function PageDetailModal({
                   </DndContext>
 
                   {/* カード追加ボタン */}
-                  {cards.length < 40 && (
+                  {page?.peleka_snapshot == null && cards.length < 40 && (
                     <button
                       onClick={() => setShowAddCard(true)}
                       disabled={busy}

@@ -17,6 +17,10 @@ export const galleryRoutes = new Hono();
 const STORE_NAME = process.env.STORE_NAME?.trim() || 'manman';
 const TOKYO_STORE = 'manman-akihabara';
 
+function isTokyoPelekaPostalPage(page: Record<string, unknown> | null | undefined) {
+  return STORE_NAME === TOKYO_STORE && page?.kind === 'postal' && page.peleka_snapshot != null;
+}
+
 export function runCatalogSyncJob(runId: string, forkJob = fork): Promise<void> {
   const jobEntry = path.resolve(__dirname, '..', '..', '..', 'job', 'dist', 'index.js');
   return new Promise((resolve, reject) => {
@@ -207,7 +211,7 @@ galleryRoutes.get('/gallery/images', async (c) => {
 
   let query = supabase
     .from('generated_page')
-    .select('id, run_id, franchise, page_index, page_label, card_ids, image_key, image_url, status, error_message, created_at, run:run_id(started_at)')
+    .select('id, run_id, franchise, page_index, page_label, card_ids, image_key, image_url, status, error_message, kind, display_name, peleka_snapshot, created_at, run:run_id(started_at)')
     .in('status', ['generated', 'pending', 'failed'])
     .in('run_id', runs.map(r => r.id))
     .order('created_at', { ascending: false })
@@ -224,8 +228,10 @@ galleryRoutes.get('/gallery/images', async (c) => {
   // run情報をフラットに展開
   const pages = (data || []).map((p: Record<string, unknown>) => {
     const run = p.run as { started_at: string } | null;
+    const { peleka_snapshot: pelekaSnapshot, ...publicPage } = p;
     return {
-      ...p,
+      ...publicPage,
+      is_peleka_postal: STORE_NAME === TOKYO_STORE && p.kind === 'postal' && pelekaSnapshot != null,
       run_started_at: runStartedAt.get(p.run_id as string) || run?.started_at || p.created_at,
       run: undefined,
     };
@@ -262,7 +268,8 @@ galleryRoutes.get('/gallery/pages/:pageId', async (c) => {
     return c.json({ error: 'Page contains cards outside this store' }, 409);
   }
 
-  const cardQuery = includePricing
+  const postalPage = isTokyoPelekaPostalPage(page as Record<string, unknown>);
+  const cardQuery = includePricing || postalPage
     ? supabase.from('prepared_card').select('id, franchise, card_name, grade, list_no, image_url, alt_image_url, rarity, tag, price_high, price_low, image_status, run_id, source_shinsoku_id')
     : supabase.from('prepared_card').select('id, franchise, card_name, grade, list_no, image_url, alt_image_url, rarity, tag, price_high, price_low, image_status');
   const { data: cards, error: cardErr } = await cardQuery.in('id', cardOwnership.cardIds);
@@ -270,10 +277,25 @@ galleryRoutes.get('/gallery/pages/:pageId', async (c) => {
   if (cardErr) return c.json({ error: cardErr.message }, 500);
 
   // card_ids の並び順にソート
-  const cardMap = new Map((cards || []).map(c => [c.id, c]));
-  const orderedCards = cardIds.map(id => cardMap.get(id)).filter(Boolean);
+  const cardRows = (cards || []) as unknown as Record<string, unknown>[];
+  const cardMap = new Map(cardRows.map(card => [card.id as string, card]));
+  let orderedCards = cardIds.map(id => cardMap.get(id)).filter((card): card is Record<string, unknown> => Boolean(card));
+  if (postalPage) {
+    const snapshot = (page as Record<string, unknown>).peleka_snapshot as { products?: unknown[] } | null;
+    if (!Array.isArray(snapshot?.products)) return c.json({ error: 'Peleka郵送スナップショットが不正です' }, 500);
+    const products = snapshot.products as Record<string, unknown>[];
+    const productBySource = new Map(products.map(product => [product.sourceId, product]));
+    const overlaid = orderedCards.map(card => {
+      const sourceId = card.source_shinsoku_id;
+      const product = productBySource.get(sourceId);
+      return product ? { ...card, image_url: product.imageUrl, alt_image_url: null,
+        price_high: product.priceHigh, price_low: product.priceLow } : null;
+    });
+    if (overlaid.some(card => !card)) return c.json({ error: 'Peleka郵送スナップショットに商品がありません' }, 500);
+    orderedCards = overlaid as Record<string, unknown>[];
+  }
 
-  if (includePricing) {
+  if (includePricing && !postalPage) {
     try {
       const pricing = await loadTokyoGalleryPricing(supabase, orderedCards as unknown as Parameters<typeof loadTokyoGalleryPricing>[1]);
       return c.json({ page, cards: orderedCards.map(card => {
@@ -284,7 +306,11 @@ galleryRoutes.get('/gallery/pages/:pageId', async (c) => {
       return c.json({ error: error instanceof Error ? error.message : '掲載価格の読込に失敗しました' }, 500);
     }
   }
-  return c.json({ page, cards: orderedCards });
+  if (!postalPage) return c.json({ page, cards: orderedCards });
+  return c.json({ page, cards: orderedCards.map(card => {
+    const { run_id: _runId, source_shinsoku_id: _sourceId, ...publicCard } = card as unknown as Record<string, unknown>;
+    return publicCard;
+  }) });
 });
 
 /** カードデータ更新 */
@@ -305,11 +331,14 @@ galleryRoutes.patch('/gallery/pages/:pageId/cards/:cardId', async (c) => {
   // ページに紐づくカードか確認
   const { data: page } = await supabase
     .from('generated_page')
-    .select('card_ids')
+    .select('card_ids, kind, peleka_snapshot')
     .eq('id', pageId)
     .eq('run_id', ownership.runId)
     .single();
 
+  if (isTokyoPelekaPostalPage(page as Record<string, unknown> | null)) {
+    return c.json({ error: '郵送買取ページの商品は編集できません' }, 409);
+  }
   if (!page || !((page as Record<string, unknown>).card_ids as string[] || []).includes(cardId)) {
     return c.json({ error: 'Card not found in this page' }, 404);
   }
@@ -377,12 +406,13 @@ galleryRoutes.put('/gallery/pages/:pageId/reorder', async (c) => {
   if (!ownership.runId) return c.json({ error: 'Page not found' }, 404);
   const { data: page, error: pageErr } = await supabase
     .from('generated_page')
-    .select('card_ids')
+    .select('card_ids, kind, peleka_snapshot')
     .eq('id', pageId)
     .eq('run_id', ownership.runId)
     .single();
 
   if (pageErr || !page) return c.json({ error: 'Page not found' }, 404);
+  if (isTokyoPelekaPostalPage(page as Record<string, unknown>)) return c.json({ error: '郵送買取ページは並べ替えできません' }, 409);
 
   const currentIds = (page as Record<string, unknown>).card_ids as string[] || [];
   const currentSet = new Set(currentIds);
@@ -468,12 +498,13 @@ galleryRoutes.post('/gallery/pages/:pageId/cards', async (c) => {
   if (!ownership.runId) return c.json({ error: 'Page not found' }, 404);
   const { data: page, error: pageErr } = await supabase
     .from('generated_page')
-    .select('card_ids, franchise, run_id')
+    .select('card_ids, franchise, run_id, kind, peleka_snapshot')
     .eq('id', pageId)
     .eq('run_id', ownership.runId)
     .single();
 
   if (pageErr || !page) return c.json({ error: 'Page not found' }, 404);
+  if (isTokyoPelekaPostalPage(page as Record<string, unknown>)) return c.json({ error: '郵送買取ページに商品は追加できません' }, 409);
 
   const currentIds = (page as Record<string, unknown>).card_ids as string[] || [];
   if (currentIds.length >= 30) {
@@ -556,12 +587,13 @@ galleryRoutes.delete('/gallery/pages/:pageId/cards/:cardId', async (c) => {
   if (!ownership.runId) return c.json({ error: 'Page not found' }, 404);
   const { data: page, error: pageErr } = await supabase
     .from('generated_page')
-    .select('card_ids')
+    .select('card_ids, kind, peleka_snapshot')
     .eq('id', pageId)
     .eq('run_id', ownership.runId)
     .single();
 
   if (pageErr || !page) return c.json({ error: 'Page not found' }, 404);
+  if (isTokyoPelekaPostalPage(page as Record<string, unknown>)) return c.json({ error: '郵送買取ページの商品は削除できません' }, 409);
 
   const currentIds = (page as Record<string, unknown>).card_ids as string[] || [];
   if (!currentIds.includes(cardId)) {
@@ -685,7 +717,7 @@ galleryRoutes.get('/gallery/price-history', async (c) => {
   for (let i = 0; i < cards.length; i += 50) {
     const chunk = cards.slice(i, i + 50);
     const { data, error } = await supabase.from('generated_page').select('card_ids')
-      .in('run_id', [...new Set(chunk.map(card => card.run_id))]).eq('status', 'generated')
+      .in('run_id', [...new Set(chunk.map(card => card.run_id))]).eq('kind', 'store').eq('status', 'generated')
       .overlaps('card_ids', chunk.map(card => card.id));
     if (error) return c.json({ error: error.message }, 500);
     for (const page of data ?? []) for (const id of page.card_ids ?? []) publishedIds.add(id);

@@ -18,6 +18,9 @@ type PageImage = {
   franchise: string;
   page_index: number;
   page_label: string | null;
+  kind: 'store' | 'postal';
+  display_name: string | null;
+  is_peleka_postal: boolean;
   card_ids: string[];
   image_url: string | null;
   run_started_at: string;
@@ -34,6 +37,7 @@ export default function GalleryDatePage() {
   const [images, setImages] = useState<PageImage[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
+  const [kindFilter, setKindFilter] = useState<'all' | 'store' | 'postal'>('all');
   const [modalIndex, setModalIndex] = useState<number | null>(null);
   const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set());
   const [detailPageId, setDetailPageId] = useState<string | null>(null);
@@ -71,10 +75,13 @@ export default function GalleryDatePage() {
     load();
   }, [date]);
 
+  const hasPelekaPostal = images.some(image => image.is_peleka_postal);
+  const kindFiltered = !hasPelekaPostal || kindFilter === 'all' ? images : images.filter(image => kindFilter === 'postal'
+    ? image.is_peleka_postal : image.kind === 'store');
   const filtered = filter === 'all'
-    ? images
-    : images.filter((img) => img.franchise === filter);
-  const latestImages = latestRunImages(images);
+    ? kindFiltered
+    : kindFiltered.filter((img) => img.franchise === filter);
+  const latestImages = latestRunImages(images, kindFiltered);
   const latestFiltered = filter === 'all'
     ? latestImages
     : latestImages.filter((img) => img.franchise === filter);
@@ -115,7 +122,7 @@ export default function GalleryDatePage() {
   const indexById = new Map(allFiltered.map((p, i) => [p.id, i]));
 
   function buildDownloadList(pages: PageImage[]): DownloadableImage[] {
-    return galleryDownloadList(pages);
+    return galleryDownloadList(pages.map(page => ({ ...page, isPelekaPostal: page.is_peleka_postal })));
   }
 
   async function handleBulkDownload() {
@@ -245,6 +252,14 @@ export default function GalleryDatePage() {
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <FranchiseTabs active={filter} onChange={setFilter} />
+          {hasPelekaPostal && <div className="flex rounded-full border border-border-card overflow-hidden">
+            {([['all', 'すべて'], ['store', '店頭'], ['postal', '郵送']] as const).map(([value, label]) => (
+              <button key={value} onClick={() => setKindFilter(value)}
+                className={`px-3 py-2 text-xs ${kindFilter === value ? 'bg-text-primary text-white' : 'bg-card-bg text-text-secondary'}`}>
+                {label}
+              </button>
+            ))}
+          </div>}
           {!selectMode ? (
             <>
               <button
@@ -358,7 +373,10 @@ export default function GalleryDatePage() {
                             </button>
                             <div className="px-4 py-3 flex items-center justify-between gap-2">
                               <div className="min-w-0 flex-1">
-                                <p className="text-base font-semibold text-text-primary truncate" title={page.page_label || ''}>{page.page_label || `page-${page.page_index}`}</p>
+                                {hasPelekaPostal && (page.is_peleka_postal || page.kind === 'store') && (
+                                  <p className="text-xs font-semibold text-text-secondary mb-0.5">{page.is_peleka_postal ? '郵送買取' : '店頭買取'}</p>
+                                )}
+                                <p className="text-base font-semibold text-text-primary truncate" title={page.display_name || page.page_label || ''}>{page.display_name || page.page_label || `page-${page.page_index}`}</p>
                                 <p className="text-sm text-text-secondary mt-0.5">{page.card_ids.length}枚</p>
                               </div>
                               <button

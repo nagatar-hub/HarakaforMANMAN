@@ -152,3 +152,39 @@ test('five-source snapshots expose the per-store comparison and fall back when a
     assert.deepEqual(payload.cards[1].pricing.adopted, { store: 'シンソク郵送買取', price: 50000 });
   } finally { globalThis.fetch = savedFetch; }
 });
+
+test('postal gallery overlays persisted Peleka values and rejects shared-card editing', async () => {
+  const { galleryRoutes } = await import('../routes/gallery.js');
+  const savedFetch = globalThis.fetch;
+  const snapshot = { products: [{ sourceId: 'source-1', imageUrl: 'https://postal.invalid/card.png', priceHigh: 15000, priceLow: 12000 }] };
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    const table = url.pathname.split('/').at(-1);
+    const select = url.searchParams.get('select') ?? '';
+    let data: unknown;
+    if (table === 'generated_page') data = select === 'run_id' ? { run_id: 'run-1' }
+      : { id: 'postal-page', run_id: 'run-1', kind: 'postal', card_ids: ['card-1'], peleka_snapshot: snapshot };
+    else if (table === 'run') data = url.searchParams.get('id')?.startsWith('eq.') ? { id: 'run-1' } : [{ id: 'run-1' }];
+    else if (table === 'prepared_card') data = [{ id: 'card-1', run_id: 'run-1', source_shinsoku_id: 'source-1',
+      franchise: 'Pokemon', card_name: 'ピカチュウ', grade: 'PSA10', list_no: '001', image_url: 'https://store.invalid/card.png',
+      alt_image_url: null, rarity: null, tag: 'PSA10', price_high: 10000, price_low: 8000, image_status: 'ok' }];
+    else throw new Error(`Unexpected table ${table}`);
+    return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const detail = await galleryRoutes.request('/gallery/pages/postal-page');
+    assert.equal(detail.status, 200);
+    const payload = await detail.json() as { page: { kind: string }; cards: any[] };
+    assert.equal(payload.page.kind, 'postal');
+    assert.deepEqual({ id: payload.cards[0].id, image_url: payload.cards[0].image_url,
+      alt_image_url: payload.cards[0].alt_image_url, price_high: payload.cards[0].price_high, price_low: payload.cards[0].price_low },
+    { id: 'card-1', image_url: 'https://postal.invalid/card.png', alt_image_url: null, price_high: 15000, price_low: 12000 });
+    assert.equal('source_shinsoku_id' in payload.cards[0], false);
+
+    const edited = await galleryRoutes.request('/gallery/pages/postal-page/cards/card-1', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ price_high: 1 }),
+    });
+    assert.equal(edited.status, 409);
+    assert.match((await edited.json() as { error: string }).error, /編集できません/);
+  } finally { globalThis.fetch = savedFetch; }
+});

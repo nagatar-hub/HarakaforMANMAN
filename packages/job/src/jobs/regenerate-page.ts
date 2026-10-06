@@ -20,10 +20,20 @@ import { fetchSheetValues } from '../lib/google-sheets.js';
 import { loadStorePricingSettings } from '../lib/pricing-settings.js';
 import { getRequiredEnvOrSecret } from '../lib/env.js';
 import { publishCurrentTokyoPelekaCatalog } from '../lib/peleka-catalog.js';
+import {
+  fetchTokyoPelekaPostalSnapshot,
+  assertTokyoPelekaPostalUnchanged,
+  matchTokyoPelekaPostalProducts,
+  pageTokyoPelekaSnapshot,
+  parseTokyoPelekaPostalSnapshot,
+  type TokyoPelekaPostalSnapshot,
+} from '../lib/peleka-postal.js';
+import { stampPostalIdentifier } from '../lib/tokyo-peleka-postal-render.js';
 import { applyCurrentShinsokuBoxPrices, loadShinsokuBoxPriceMap } from '../lib/shinsoku-box-price-source.js';
 import {
   formatGenerationDate,
   getJstDateParts,
+  parseBusinessDate,
   resolveGenerationDisplayDate,
 } from '../lib/generation-date.js';
 import type {
@@ -136,7 +146,7 @@ async function _runRegeneratePage(
   pageId: string,
   ownedRun: OwnedPageRun,
 ) {
-  const tokyoPostalSnapshot = STORE_NAME === 'manman-akihabara' && Boolean(ownedRun.tokyo_snapshot_id);
+  const tokyoSnapshot = STORE_NAME === 'manman-akihabara' && Boolean(ownedRun.tokyo_snapshot_id);
 
   // ---- 1. ページ情報取得 ----
   const { data: page, error: pageErr } = await supabase
@@ -147,11 +157,12 @@ async function _runRegeneratePage(
     .single<GeneratedPageRow>();
 
   if (pageErr || !page) throw new Error(`ページが見つかりません: ${pageErr?.message}`);
+  const isPostal = tokyoSnapshot && page.kind === 'postal' && page.peleka_snapshot != null;
 
   const regenerationStartedAt = new Date();
   // Storage は従来どおり再生成日のJSTパスを維持し、画像表示日は元RunのExcel業務日を使う。
   const storageDate = getJstDateParts(regenerationStartedAt);
-  const displayDate = await resolveGenerationDisplayDate({
+  let displayDate = await resolveGenerationDisplayDate({
     orderListImportId: ownedRun.order_list_import_id,
     now: regenerationStartedAt,
     loadBusinessDate: async (importId) => {
@@ -195,17 +206,50 @@ async function _runRegeneratePage(
 
   // card_ids の順序を保持
   const orderedCards = page.card_ids.map(id => cardMap.get(id)!).filter(Boolean);
-  const accessToken = tokyoPostalSnapshot ? '' : await getAccessToken();
-  const pricingSettings = tokyoPostalSnapshot ? undefined : await loadStorePricingSettings(supabase, STORE_NAME);
+  const accessToken = tokyoSnapshot ? '' : await getAccessToken();
+  const pricingSettings = tokyoSnapshot ? undefined : await loadStorePricingSettings(supabase, STORE_NAME);
   const boxPriceLowEnabled = STORE_NAME === 'manman-akihabara'
     ? (pricingSettings ?? await loadStorePricingSettings(supabase, STORE_NAME)).box_price_low_enabled === true
     : true;
-  const boxPrices = tokyoPostalSnapshot ? undefined : await loadShinsokuBoxPriceMap(accessToken);
+  const boxPrices = tokyoSnapshot ? undefined : await loadShinsokuBoxPriceMap(accessToken);
   // Selection IDs remain available for source recovery; Tokyo Weiss/Dragon keep order-list prices.
-  const orderedCardsWithCurrentPrices = (tokyoPostalSnapshot ? orderedCards : applyCurrentShinsokuBoxPrices(
+  let postalSnapshot: TokyoPelekaPostalSnapshot | null = null;
+  let orderedCardsWithCurrentPrices = (tokyoSnapshot ? orderedCards : applyCurrentShinsokuBoxPrices(
     orderedCards, boxPrices!, pricingSettings!, STORE_NAME === 'manman-akihabara',
   ))
     .filter(card => !isBoxRow(card) || (card.price_high ?? 0) > 0);
+  if (isPostal) {
+    const saved = page.peleka_snapshot;
+    const revision = saved && Number.isSafeInteger(saved.revision) ? saved.revision as number : -1;
+    const savedSnapshot = parseTokyoPelekaPostalSnapshot(saved, { runId: page.run_id, revision });
+    const [endpoint, token] = await Promise.all([
+      getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_URL'),
+      getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_TOKEN'),
+    ]);
+    const fresh = await fetchTokyoPelekaPostalSnapshot(endpoint, token, { runId: page.run_id, revision });
+    const { data: postalPages, error: postalPagesError } = await supabase.from('generated_page')
+      .select('peleka_snapshot').eq('run_id', page.run_id).eq('kind', 'postal');
+    if (postalPagesError) throw new Error(`保存済みPeleka郵送ページ取得失敗: ${postalPagesError.message}`);
+    const savedEligibleIds = new Set((postalPages ?? []).flatMap(savedPage => {
+      const savedPageSnapshot = savedPage.peleka_snapshot as { products?: Array<{ sourceId?: unknown }> } | null;
+      return Array.isArray(savedPageSnapshot?.products)
+        ? savedPageSnapshot.products.flatMap(product => typeof product.sourceId === 'string' ? [product.sourceId] : []) : [];
+    }));
+    const freshEligibleIds = new Set(fresh.products.map(product => product.sourceId));
+    if (savedEligibleIds.size !== freshEligibleIds.size || [...savedEligibleIds].some(id => !freshEligibleIds.has(id))) {
+      throw new Error('Peleka郵送カタログの商品構成が変更されています。全体生成が必要です');
+    }
+    const freshBySource = new Map(fresh.products.map(product => [product.sourceId, product]));
+    const pageProducts = savedSnapshot.products.map(product => freshBySource.get(product.sourceId));
+    if (pageProducts.some(product => !product)) throw new Error('Peleka郵送ページの商品が現行revisionにありません。全体生成が必要です');
+    const currentSnapshot: TokyoPelekaPostalSnapshot = {
+      ...fresh,
+      products: pageProducts.filter((product): product is NonNullable<typeof product> => Boolean(product)),
+    };
+    postalSnapshot = currentSnapshot;
+    orderedCardsWithCurrentPrices = matchTokyoPelekaPostalProducts(orderedCards, currentSnapshot);
+    displayDate = parseBusinessDate(fresh.businessDate);
+  }
 
   console.log(`[regenerate-page] カード数: ${orderedCardsWithCurrentPrices.length}`);
 
@@ -222,7 +266,7 @@ async function _runRegeneratePage(
   if (profileErr || !profile) throw new Error(`プロファイルが見つかりません: ${profileErr?.message}`);
 
   let layoutTemplate: LayoutTemplateRow | null = null;
-  if (tokyoPostalSnapshot && !page.layout_template_id) throw new Error('東京郵送価格ページのレイアウトがありません');
+  if (tokyoSnapshot && !page.layout_template_id) throw new Error('東京価格ページのレイアウトがありません');
   if (page.layout_template_id) {
     const { data: layoutRow, error: layoutErr } = await supabase
       .from('layout_template')
@@ -231,7 +275,7 @@ async function _runRegeneratePage(
       .eq('store', STORE_NAME)
       .single<LayoutTemplateRow>();
     if (layoutErr || !layoutRow) throw new Error(`layout_template 取得失敗: ${layoutErr?.message ?? '該当なし'}`);
-    if (tokyoPostalSnapshot && layoutRow.franchise !== page.franchise) throw new Error('東京郵送価格ページの商材とレイアウトが一致しません');
+    if (tokyoSnapshot && layoutRow.franchise !== page.franchise) throw new Error('東京価格ページの商材とレイアウトが一致しません');
     layoutTemplate = layoutRow;
   }
 
@@ -260,7 +304,7 @@ async function _runRegeneratePage(
     cardBackBuffer = await downloadTemplateAsset({
       supabase,
       storagePath: layoutTemplate.card_back_storage_path,
-      driveId: tokyoPostalSnapshot ? null : profile.card_back_image,
+      driveId: tokyoSnapshot ? null : profile.card_back_image,
       accessToken,
       label: `${page.franchise}/${layoutTemplate.slug} カード裏`,
     });
@@ -374,7 +418,7 @@ async function _runRegeneratePage(
     : undefined;
 
   const dateText = formatGenerationDate(displayDate);
-  const adjustments = tokyoPostalSnapshot ? {
+  const adjustments = tokyoSnapshot ? {
     layoutAdjust: layout.layoutAdjust,
     rowPriceAdjust: layout.rowPriceAdjust,
     rowCardAdjust: layout.rowCardAdjust,
@@ -388,7 +432,7 @@ async function _runRegeneratePage(
 
   // ---- 7. 画像合成 ----
   console.log(`[regenerate-page] 画像合成開始...`);
-  const imageBuffer = await composePage({
+  let imageBuffer = await composePage({
     templateBuffer,
     cardBackBuffer,
     cards: orderedCardsWithCurrentPrices,
@@ -397,22 +441,26 @@ async function _runRegeneratePage(
     gridCols: layoutTemplate?.grid_cols,
     rarityIconBuffers,
     cardImageBuffers,
-    requireCardImages: tokyoPostalSnapshot,
+    requireCardImages: tokyoSnapshot,
     dateText,
-    skipPriceLow: tokyoPostalSnapshot ? !isBOX : isBOX ? false : layoutTemplate?.skip_price_low ?? false,
-    priceLowText: STORE_NAME === 'manman-akihabara' && isBOX && !boxPriceLowEnabled ? '-' : undefined,
+    skipPriceLow: isPostal ? postalSnapshot!.buyPriceDisplayMode === 'UPPER_ONLY'
+      : tokyoSnapshot ? !isBOX : isBOX ? false : layoutTemplate?.skip_price_low ?? false,
+    priceLowText: !isPostal && STORE_NAME === 'manman-akihabara' && isBOX && !boxPriceLowEnabled ? '-' : undefined,
     layoutAdjust: adjustments.layoutAdjust,
     rowPriceAdjust: adjustments.rowPriceAdjust,
     rowCardAdjust: adjustments.rowCardAdjust,
     totalSlots: layoutTemplate?.total_slots ?? profile.total_slots,
   });
+  if (isPostal) imageBuffer = await stampPostalIdentifier(imageBuffer);
 
   // ---- 8. Storage アップロード ----
   // 既存のimage_keyがあればそのまま上書き、なければ新規作成
   const datePath = `${storageDate.year}/${storageDate.month}/${storageDate.day}`;
   const safeFranchise = page.franchise.replace(/[^a-zA-Z0-9._-]/g, '') || 'franchise';
   const safeLabel = romanizeLabel(label);
-  const storageKey = `generated/${STORE_NAME}/${datePath}/${safeFranchise}/page_${page.page_index}_${safeLabel}_${Date.now()}.png`;
+  const storageKey = isPostal
+    ? `generated/${STORE_NAME}/${datePath}/postal/${safeFranchise}/postal_page_${page.page_index}_${Date.now()}.png`
+    : `generated/${STORE_NAME}/${datePath}/${safeFranchise}/page_${page.page_index}_${safeLabel}_${Date.now()}.png`;
 
   const { error: uploadError } = await supabase.storage
     .from('haraka-images')
@@ -431,18 +479,30 @@ async function _runRegeneratePage(
     .getPublicUrl(storageKey);
 
   // ---- 9. generated_page 更新 ----
+  if (isPostal) {
+    const [endpoint, token] = await Promise.all([
+      getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_URL'),
+      getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_TOKEN'),
+    ]);
+    const confirmed = await fetchTokyoPelekaPostalSnapshot(endpoint, token, {
+      runId: page.run_id,
+      revision: postalSnapshot!.revision,
+    });
+    assertTokyoPelekaPostalUnchanged(postalSnapshot!, confirmed);
+  }
   const { error: pageUpdateError } = await supabase.from('generated_page').update({
-    status: tokyoPostalSnapshot ? 'pending' : 'generated',
+    status: tokyoSnapshot && !isPostal ? 'pending' : 'generated',
     image_key: storageKey,
     image_url: publicUrl.publicUrl,
+    ...(isPostal ? { peleka_snapshot: pageTokyoPelekaSnapshot(postalSnapshot!, postalSnapshot!.products) } : {}),
     error_message: null,
   }).eq('id', pageId);
-  if (tokyoPostalSnapshot && pageUpdateError) {
+  if (tokyoSnapshot && pageUpdateError) {
     throw new Error(`再生成ページの保存に失敗しました: ${pageUpdateError.message}`);
   }
 
   // 東京はPeleka同期でページが generated に戻るまでシートが「未完了ページあり」で拒否されるため、同期後に出力する。
-  if (tokyoPostalSnapshot) {
+  if (tokyoSnapshot && !isPostal) {
     const [endpoint, token] = await Promise.all([
       getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_URL'),
       getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_TOKEN'),
@@ -456,7 +516,7 @@ async function _runRegeneratePage(
     console.log(`[regenerate-page] Peleka東京カタログ反映完了: revision=${payload.revision} ${payload.count}商品 sha256=${payload.productsSha256}`);
   }
 
-  if (!tokyoPostalSnapshot || !isBuybackSheetPublishDisabled()) try {
+  if (!isPostal && (!tokyoSnapshot || !isBuybackSheetPublishDisabled())) try {
     const buybackSheetAccessToken = await getBuybackSheetAccessToken();
     const publishResult = await publishManmanBuybackSheet({
       supabase,
@@ -471,7 +531,7 @@ async function _runRegeneratePage(
   } catch (sheetError) {
     const message = sheetError instanceof Error ? sheetError.message : String(sheetError);
     console.error(`[regenerate-page] Google Sheet更新失敗（再生成画像は完了状態を維持）: ${message}`);
-    if (tokyoPostalSnapshot) await sendDiscordNotification({
+    if (tokyoSnapshot) await sendDiscordNotification({
       title: '🟡 東京満満：再生成後のGoogle Sheet更新失敗',
       description: '買取表画像の再生成は完了しています。シート更新だけ再実行できます。',
       color: COLOR.WARNING,
