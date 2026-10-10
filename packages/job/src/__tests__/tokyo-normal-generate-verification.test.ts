@@ -20,7 +20,7 @@ jest.mock('../lib/shinsoku-box-price-source', () => ({
   applyCurrentShinsokuBoxPrices: jest.fn((cards: unknown[]) => cards),
 }));
 jest.mock('../lib/asset-storage', () => ({ downloadTemplateAsset: jest.fn(async ({ storagePath }) => storagePath.endsWith('template') ? mockBackground : mockImage) }));
-jest.mock('../lib/google-drive', () => ({ downloadDriveFile: jest.fn(), downloadImagesWithConcurrency: async (_: unknown, urls: unknown[]) => urls.map(() => mockImage) }));
+jest.mock('../lib/google-drive', () => ({ downloadDriveFile: jest.fn(), downloadImagesWithConcurrency: jest.fn(async (_: unknown, urls: unknown[]) => urls.map(() => mockImage)) }));
 jest.mock('../lib/google-sheets', () => ({ fetchSheetValues: jest.fn() }));
 jest.mock('../lib/env', () => ({
   getOptionalEnvOrSecret: jest.fn(async () => null),
@@ -193,8 +193,16 @@ test.each([
         rowsBOX: Array.from({ length: 5 }, (_, n) => ({ cardY: 5 + n * 140, priceHighY: 100 + n * 140, priceLowY: 130 + n * 140 })) } })),
   };
   const boundary = database(tables); mockDb = boundary.db;
+  const downloadImages = require('../lib/google-drive').downloadImagesWithConcurrency;
+  // Reproduce the incident: store images are usable, but the postal URL is unavailable.
+  downloadImages.mockImplementation(async (_: unknown, urls: unknown[]) =>
+    urls.map(url => url === 'https://local.invalid/postal.png' ? null : mockImage));
   try {
     await runGenerate();
+    expect(downloadImages.mock.calls.flatMap((call: unknown[]) => call[1]))
+      .not.toContain('https://local.invalid/postal.png');
+    // The standalone postal refresh below has no store cache and retains its existing download path.
+    downloadImages.mockImplementation(async (_: unknown, urls: unknown[]) => urls.map(() => mockImage));
     expect(tables.run[0].status).toBe('completed');
     expect(tables.run[0].generate_done_at).toBeTruthy();
     const storePages = tables.generated_page.filter(page => page.kind === 'store');

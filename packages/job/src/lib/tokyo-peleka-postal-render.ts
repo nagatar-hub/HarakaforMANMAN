@@ -71,6 +71,7 @@ export async function renderTokyoPelekaPostalPages(params: {
   runId: string;
   snapshot: TokyoPelekaPostalSnapshot;
   preparedCards: PreparedCardRow[];
+  cardImageBuffers?: ReadonlyMap<string, Buffer>;
   datePath: string;
   generationVersion: number | string;
   // Completed runs must publish postal pages only after every image and price check succeeds.
@@ -149,14 +150,18 @@ export async function renderTokyoPelekaPostalPages(params: {
         const pageCards = page.card_ids.map(id => matchedById.get(id));
         if (pageCards.some(card => !card)) throw new Error(`東京郵送ページの商品が見つかりません: page=${page.id}`);
         const orderedCards = pageCards as typeof matched;
-        const downloaded = await downloadImagesWithConcurrency('', orderedCards.map(card => card.image_url), 8);
+        const missingCards = orderedCards.filter(card => !params.cardImageBuffers?.has(card.id));
+        const downloaded = missingCards.length
+          ? await downloadImagesWithConcurrency('', missingCards.map(card => card.image_url), 8)
+          : [];
+        const downloadedById = new Map(missingCards.map((card, index) => [card.id, downloaded[index]]));
         const cardImages = new Map<string, Buffer>();
-        for (let index = 0; index < orderedCards.length; index++) {
-          const bytes = downloaded[index];
-          if (!bytes) throw new Error(`Peleka郵送商品の画像取得失敗: sourceId=${orderedCards[index].pelekaProduct.sourceId}`);
+        for (const card of orderedCards) {
+          const bytes = params.cardImageBuffers?.get(card.id) ?? downloadedById.get(card.id);
+          if (!bytes) throw new Error(`Peleka郵送商品の画像取得失敗: sourceId=${card.pelekaProduct.sourceId}`);
           try { await sharp(bytes, { limitInputPixels: 25_000_000 }).metadata(); }
-          catch { throw new Error(`Peleka郵送商品の画像が不正です: sourceId=${orderedCards[index].pelekaProduct.sourceId}`); }
-          cardImages.set(orderedCards[index].id, bytes);
+          catch { throw new Error(`Peleka郵送商品の画像が不正です: sourceId=${card.pelekaProduct.sourceId}`); }
+          cardImages.set(card.id, bytes);
         }
         const composed = await composePage({
           templateBuffer: assets.template,
