@@ -742,6 +742,7 @@ export async function runGenerate() {
         runId: run.id,
         snapshot: postalSnapshot,
         preparedCards: [...pricedCardsByFranchise.values()].flat(),
+        cardImageBuffers: tokyoImageBuffers,
         datePath,
         generationVersion,
       });
