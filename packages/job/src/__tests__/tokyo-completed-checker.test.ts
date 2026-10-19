@@ -2,12 +2,17 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { fetchShinsokuPostalProducts } from '@haraka/shared';
 import { buildTokyoBuybackSnapshot } from '../jobs/tokyo-buyback-sync';
 import { fetchBlueRocketPsaSheet } from '../lib/blue-rocket-sheet';
+import { fetchExtorecaBoxSheet, fetchExtorecaPsaSheet } from '../lib/extoreca-sheet';
 
 jest.mock('@haraka/shared', () => ({
   ...jest.requireActual('@haraka/shared'), fetchShinsokuPostalProducts: jest.fn(),
 }));
 jest.mock('../lib/blue-rocket-sheet', () => ({
   ...jest.requireActual('../lib/blue-rocket-sheet'), fetchBlueRocketPsaSheet: jest.fn(),
+}));
+jest.mock('../lib/extoreca-sheet', () => ({
+  ...jest.requireActual('../lib/extoreca-sheet'),
+  fetchExtorecaBoxSheet: jest.fn(), fetchExtorecaPsaSheet: jest.fn(),
 }));
 
 const now = new Date('2026-09-09T03:30:00Z');
@@ -68,6 +73,8 @@ beforeEach(() => {
   jest.mocked(fetchBlueRocketPsaSheet).mockReset().mockResolvedValue([
     { id: 'sheet:2', name: 'カイ', modelNumber: '236/172', price: 125000, imageUrl: null },
   ]);
+  jest.mocked(fetchExtorecaBoxSheet).mockReset().mockResolvedValue([]);
+  jest.mocked(fetchExtorecaPsaSheet).mockReset().mockResolvedValue([]);
 });
 
 test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied checker while the newest is %s, and compares KECAK, Shinsoku and Blue Rocket', async status => {
@@ -77,7 +84,7 @@ test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied check
   expect(result.snapshot.business_date).toBe('2026-09-09');
   // ブルーロケットはシートの PSA10 1件 + 買取チェッカーの BOX 1件。トレカバンク・アヴィリールは使わない。
   expect(result.snapshot.report.source_counts).toEqual({
-    kecak: 1, blue_rocket: 2, toreca_bank: 0, avirile: 0, shinsoku: 1 });
+    kecak: 1, blue_rocket: 2, extoreca: 0, toreca_bank: 0, avirile: 0, shinsoku: 1 });
   // 元価格が一番高い KECAK 130,000 を採用。買取チェッカー経由のブルロケ PSA 999,000 は使わない。
   expect(result.products.map(product => [product.id, product.source_price, product.selected_high_source, product.product_type])).toEqual([
     ['IAP1', 130000, 'kecak', 'psa'],
@@ -91,6 +98,8 @@ test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied check
   expect(result.snapshot.report.unmatched).toEqual([]);
   expect(fetchShinsokuPostalProducts).toHaveBeenCalledWith();
   expect(fetchBlueRocketPsaSheet).toHaveBeenCalledTimes(1);
+  expect(fetchExtorecaBoxSheet).toHaveBeenCalledTimes(1);
+  expect(fetchExtorecaPsaSheet).toHaveBeenCalledTimes(1);
 });
 
 // ブルーロケットのシートが取れない日は、ブルーロケット PSA が比較に参加しないだけで掲載全体は止めない。
@@ -102,6 +111,20 @@ test('a Blue Rocket sheet failure only removes Blue Rocket PSA from the comparis
   expect(result.products[0].origins.map(origin => origin.source)).toEqual(['kecak', 'shinsoku']);
 });
 
+test('an Extoreca tab failure is explicit while the other tab still joins the comparison', async () => {
+  jest.mocked(fetchExtorecaBoxSheet).mockRejectedValue(new Error('エクストレカBOX表の取得失敗: HTTP 503'));
+  jest.mocked(fetchExtorecaPsaSheet).mockResolvedValue([
+    { id: 'sheet:psa10:2', name: 'カイ', modelNumber: '236/172', price: 140000, productType: 'PSA10' },
+  ]);
+  const result = await buildTokyoBuybackSnapshot(database([completed]), now);
+  expect(result.products[0]).toMatchObject({ source_price: 140000, selected_high_source: 'extoreca', price_high: 120000 });
+  expect(result.snapshot.report.source_counts).toMatchObject({ extoreca: 1 });
+  expect(result.snapshot.report.extoreca).toMatchObject({
+    box: { used: 0, error: 'エクストレカBOX表の取得失敗: HTTP 503' },
+    psa: { used: 1, skipped: [], error: null },
+  });
+});
+
 // 翌日になり KECAK のオーダーリストも買取チェッカーも前日のまま、という実運用で起きる状況。
 const nextDay = new Date('2026-09-09T20:00:00Z'); // JST 2026-09-10 05:00
 
@@ -109,7 +132,7 @@ test('the approved 1-day window lets previous-day prices keep competing', async 
   const result = await buildTokyoBuybackSnapshot(database([completed]), nextDay);
   expect(result.snapshot.business_date).toBe('2026-09-10');
   expect(result.snapshot.report.source_counts).toEqual({
-    kecak: 1, blue_rocket: 2, toreca_bank: 0, avirile: 0, shinsoku: 1 });
+    kecak: 1, blue_rocket: 2, extoreca: 0, toreca_bank: 0, avirile: 0, shinsoku: 1 });
   expect(result.products[0]).toMatchObject({ id: 'IAP1', source_price: 130000, selected_high_source: 'kecak' });
 });
 
@@ -118,7 +141,7 @@ test('setting the window back to same-day only drops every previous-day price', 
   const result = await buildTokyoBuybackSnapshot(db, nextDay);
   // シートは同期時に取るので当日扱い。前日の KECAK と買取チェッカーは外れる。
   expect(result.snapshot.report.source_counts).toEqual({
-    kecak: 0, blue_rocket: 1, toreca_bank: 0, avirile: 0, shinsoku: 1 });
+    kecak: 0, blue_rocket: 1, extoreca: 0, toreca_bank: 0, avirile: 0, shinsoku: 1 });
   expect(result.products.map(product => [product.id, product.source_price, product.selected_high_source])).toEqual([
     ['IAP1', 125000, 'blue_rocket'],
   ]);

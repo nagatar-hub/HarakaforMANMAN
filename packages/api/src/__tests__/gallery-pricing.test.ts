@@ -100,6 +100,7 @@ test('five-source snapshots expose the per-store comparison and fall back when a
   const origins = [
     { source: 'kecak', id: 'K1', sourcePrice: 110000, rawPrice: 110000, highRate: 0.05, highPrice: 100000, lowRate: 0.05, lowPrice: 100000 },
     { source: 'toreca_bank', id: '42:1:0', sourcePrice: 100000, rawPrice: 100000, highRate: 0.1, highPrice: 90000, lowRate: 0.1, lowPrice: 90000, excluded: true },
+    { source: 'extoreca', id: 'sheet:psa10:2', sourcePrice: 105000, rawPrice: 105000, highRate: 0.1, highPrice: 94000, lowRate: 0.1, lowPrice: 94000 },
     { source: 'shinsoku', id: 'IAP1', sourcePrice: 100000, rawPrice: 100000, highRate: 0.05, highPrice: 95000, lowRate: 0.05, lowPrice: 95000 },
   ];
   globalThis.fetch = async input => {
@@ -136,12 +137,14 @@ test('five-source snapshots expose the per-store comparison and fall back when a
     assert.deepEqual(payload.cards.map(card => card.id), ['c1', 'c2']);
     assert.deepEqual(payload.cards[0].pricing, {
       listings: [{ store: 'KECAK', price: 110000 }, { store: 'トレカバンク', price: 100000 },
+        { store: 'エクストレカ', price: 105000 },
         { store: 'シンソク郵送買取', price: 100000 }],
       adopted: { store: 'KECAK', price: 110000 },
       comparison: {
         rows: [
           { store: 'KECAK', rawPrice: 110000, highRate: 0.05, highPrice: 100000, lowRate: 0.05, lowPrice: 100000, selectedHigh: true, selectedLow: false, excluded: false },
           { store: 'トレカバンク', rawPrice: 100000, highRate: 0.1, highPrice: 90000, lowRate: 0.1, lowPrice: 90000, selectedHigh: false, selectedLow: false, excluded: true },
+          { store: 'エクストレカ', rawPrice: 105000, highRate: 0.1, highPrice: 94000, lowRate: 0.1, lowPrice: 94000, selectedHigh: false, selectedLow: false, excluded: false },
           { store: 'シンソク郵送買取', rawPrice: 100000, highRate: 0.05, highPrice: 95000, lowRate: 0.05, lowPrice: 95000, selectedHigh: false, selectedLow: true, excluded: false },
         ],
         high: { store: 'KECAK', price: 100000 },

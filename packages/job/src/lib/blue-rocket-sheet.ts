@@ -1,5 +1,6 @@
 import { postalProductIdentity } from '@haraka/shared';
 import { fetchWithRetry } from './fetch-with-retry.js';
+import { parseCsv } from './public-csv-sheet.js';
 
 /** ブルーロケットの公開買取表「ポケカPSA強化買取リスト」。東京満満の PSA10 比較に使う。 */
 export const BLUE_ROCKET_PSA_SHEET_URL =
@@ -12,26 +13,6 @@ export type BlueRocketPsaRow = {
   price: number;
   imageUrl: string | null;
 };
-
-function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = '';
-  let quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (quoted) {
-      if (c !== '"') field += c;
-      else if (text[i + 1] === '"') { field += '"'; i++; }
-      else quoted = false;
-    } else if (c === '"') quoted = true;
-    else if (c === ',') { row.push(field); field = ''; }
-    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
-    else if (c !== '\r') field += c;
-  }
-  if (field || row.length) { row.push(field); rows.push(row); }
-  return rows;
-}
 
 /**
  * 「Nのゾロアークex SAR [M2a 242/193](...)」「MレックウザEX: プロモ[...]」「ミュウ ふしぎなしっぽ」

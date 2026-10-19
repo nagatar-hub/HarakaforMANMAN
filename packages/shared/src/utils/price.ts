@@ -6,11 +6,11 @@ export type BoxConditionDiscountRates = {
   no_shrink: number;
 };
 export type BoxDiscountRates = Record<Franchise, BoxConditionDiscountRates>;
-export const TOKYO_PRICE_SOURCES = ['kecak', 'blue_rocket', 'toreca_bank', 'avirile', 'shinsoku'] as const;
+export const TOKYO_PRICE_SOURCES = ['kecak', 'blue_rocket', 'extoreca', 'toreca_bank', 'avirile', 'shinsoku'] as const;
 export type TokyoPriceSource = typeof TOKYO_PRICE_SOURCES[number];
 export type TokyoSourceDiscountRate = { high: number; low: number };
 export type TokyoSourceDiscountRates = Record<TokyoPriceSource, TokyoSourceDiscountRate>;
-/** 1店舗だけの異常な元価格が5ソース比較の採用値になるのを防ぐ。 */
+/** 1店舗だけの異常な元価格が複数ソース比較の採用値になるのを防ぐ。 */
 export type TokyoOutlierGuard = {
   /** 同一商品の他ソース元価格の中央値に対する倍率。超えたソースは比較から除外する。 */
   max_median_ratio: number;
@@ -50,6 +50,7 @@ export const DEFAULT_PSA10_DISCOUNT_RATES: Record<Franchise, number> = {
 export const DEFAULT_TOKYO_SOURCE_DISCOUNT_RATES: TokyoSourceDiscountRates = {
   kecak: { high: 0.05, low: 0.05 },
   blue_rocket: { high: 0.10, low: 0.10 },
+  extoreca: { high: 0.10, low: 0.10 },
   toreca_bank: { high: 0.10, low: 0.10 },
   avirile: { high: 0.10, low: 0.10 },
   shinsoku: { high: 0.05, low: 0.05 },

@@ -66,6 +66,7 @@ const DEFAULT_BOX_RATES: BoxRates = {
 const TOKYO_SOURCE_LABELS: Record<TokyoPriceSource, string> = {
   kecak: 'KECAK',
   blue_rocket: 'Blue Rocket',
+  extoreca: 'エクストレカ',
   toreca_bank: 'トレカバンク',
   avirile: 'アヴィリール',
   shinsoku: 'シンソク郵送買取',
@@ -154,8 +155,10 @@ export default function SettingsPage() {
     }));
   }
 
-  function updateTokyoSourceRate(source: TokyoPriceSource, key: 'high' | 'low', value: number) {
-    setTokyoSourceRates(current => ({ ...current, [source]: { ...current[source], [key]: value } }));
+  function updateTokyoSourceRate(source: TokyoPriceSource, value: number) {
+    setTokyoSourceRates(current => ({ ...current, [source]: source === 'extoreca'
+      ? { high: value, low: value }
+      : { ...current[source], high: value } }));
   }
 
   async function handleSave() {
@@ -192,7 +195,8 @@ export default function SettingsPage() {
               // 画面から触れない値で保存が弾かれないよう、満たさなくなる場合だけ上限率に合わせる。
               TOKYO_PRICE_SOURCES.map(source => [source, {
                 high: tokyoSourceRates[source].high / 100,
-                low: Math.max(tokyoSourceRates[source].low, tokyoSourceRates[source].high) / 100,
+                low: (source === 'extoreca' ? tokyoSourceRates[source].high
+                  : Math.max(tokyoSourceRates[source].low, tokyoSourceRates[source].high)) / 100,
               }]),
             ) } : {}),
             ...(config?.store === 'manman-akihabara'
@@ -240,7 +244,7 @@ export default function SettingsPage() {
           {config?.store === 'manman-akihabara' && <section>
             <h2 className="text-lg font-bold text-text-primary mb-2">東京比較価格の店舗別減額率</h2>
             <p className="text-sm text-text-secondary mb-6">
-              各店舗の元価格へ減額率を適用し、最も高くなった店舗の金額を採用します。
+              各店舗の元価格に減額率と端数処理を適用し、最も高い金額を採用します。
             </p>
             <div className="space-y-5">
               {TOKYO_PRICE_SOURCES.map(source => <div key={source} className="grid gap-3 border-b border-border-card pb-5 last:border-b-0 sm:grid-cols-[1fr_140px] sm:items-end">
@@ -254,7 +258,7 @@ export default function SettingsPage() {
                       max={100}
                       step={1}
                       value={tokyoSourceRates[source].high}
-                      onChange={event => updateTokyoSourceRate(source, 'high', Number(event.target.value))}
+                      onChange={event => updateTokyoSourceRate(source, Number(event.target.value))}
                       className="w-full rounded-lg border border-border-card bg-transparent px-3 py-2 text-right font-bold text-text-primary focus:outline-none"
                     />
                     <span className="text-text-secondary">%</span>

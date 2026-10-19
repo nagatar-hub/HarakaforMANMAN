@@ -362,7 +362,7 @@ async function latestTokyoSnapshot(supabase: DbClient): Promise<LatestPriceSnaps
 
 export function mapTokyoCatalogCard(row: TokyoBuybackProductRow, priceDate: string): CustomBuybackCatalogCard {
   const shopName = ({
-    kecak: 'KECAK', blue_rocket: 'Blue Rocket', toreca_bank: 'トレカバンク',
+    kecak: 'KECAK', blue_rocket: 'Blue Rocket', extoreca: 'エクストレカ', toreca_bank: 'トレカバンク',
     avirile: 'アヴィリール', shinsoku: 'シンソク郵送買取',
   } as const)[row.selected_high_source ?? 'shinsoku'];
   return {

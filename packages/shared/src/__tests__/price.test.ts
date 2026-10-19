@@ -13,16 +13,19 @@ import {
 } from '../utils/price';
 
 describe('Tokyo source discount settings', () => {
-  it('uses the approved five-source defaults and preserves a partial source update', () => {
+  it('uses the approved source defaults and preserves a partial source update', () => {
     const defaults = normalizeStorePricingSettings({});
     expect(defaults.tokyo_source_discount_rates).toEqual({
       kecak: { high: 0.05, low: 0.05 }, blue_rocket: { high: 0.10, low: 0.10 },
+      extoreca: { high: 0.10, low: 0.10 },
       toreca_bank: { high: 0.10, low: 0.10 }, avirile: { high: 0.10, low: 0.10 },
       shinsoku: { high: 0.05, low: 0.05 },
     });
     const merged = mergeStorePricingSettings(defaults, { tokyo_source_discount_rates: { kecak: { high: 0.04 } } });
     expect(merged.tokyo_source_discount_rates.kecak).toEqual({ high: 0.04, low: 0.05 });
     expect(merged.tokyo_source_discount_rates.blue_rocket).toEqual({ high: 0.10, low: 0.10 });
+    expect(mergeStorePricingSettings(defaults, { tokyo_source_discount_rates: { extoreca: { high: 0.12, low: 0.12 } } })
+      .tokyo_source_discount_rates.extoreca).toEqual({ high: 0.12, low: 0.12 });
   });
 
   it('rejects out-of-range and inverted high/low settings', () => {

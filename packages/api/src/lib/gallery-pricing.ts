@@ -16,7 +16,7 @@ type Origin = { source?: string; id?: string; sourcePrice?: unknown; rawPrice?: 
   highRate?: unknown; highPrice?: unknown; lowRate?: unknown; lowPrice?: unknown; excluded?: unknown };
 const labels: Record<string, string> = {
   kecak: 'KECAK', blue_rocket: 'Blue Rocket', avirile: 'アヴィリール',
-  toreca_bank: 'トレカバンク', shinsoku: 'シンソク郵送買取',
+  extoreca: 'エクストレカ', toreca_bank: 'トレカバンク', shinsoku: 'シンソク郵送買取',
 };
 const price = (value: unknown): number | null => typeof value === 'number'
   && Number.isSafeInteger(value) && value > 0 && value <= 100_000_000 ? value : null;
