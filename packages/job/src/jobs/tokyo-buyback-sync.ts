@@ -10,6 +10,10 @@ import {
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { isBoxRow } from '../lib/box-row.js';
 import { BLUE_ROCKET_PSA_SHEET_URL, blueRocketPsaCandidates, fetchBlueRocketPsaSheet } from '../lib/blue-rocket-sheet.js';
+import {
+  EXTORECA_BOX_SHEET_URL, EXTORECA_PSA_SHEET_URL, extorecaPsaCandidates,
+  fetchExtorecaBoxSheet, fetchExtorecaPsaSheet, type ExtorecaRow,
+} from '../lib/extoreca-sheet.js';
 
 export const TOKYO_BUYBACK_STORE = 'manman-akihabara';
 const CHECKER_STORE = 'oripark';
@@ -163,9 +167,9 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
       unmatched.push(...group.map(candidate => ({ candidate, reason: 'zero_after_discount' as const })));
       continue;
     }
-    // 元価格が一番高い仕入れ元を選び、その店の減額率で上限・下限を出す（同額なら減額後が高い方）。
-    const high = eligible.reduce((winner, origin) => origin.rawPrice > winner.rawPrice
-      || (origin.rawPrice === winner.rawPrice && origin.highPrice > winner.highPrice) ? origin : winner);
+    // 減額・端数処理後の最高額を採用し、同額なら従来どおり元価格が高い店を優先する。
+    const high = eligible.reduce((winner, origin) => origin.highPrice > winner.highPrice
+      || (origin.highPrice === winner.highPrice && origin.rawPrice > winner.rawPrice) ? origin : winner);
     const low = high;
     const canonical = bySource.get('shinsoku')?.[0] ?? bySource.get('kecak')?.[0] ?? compared[0];
     const shinsoku = bySource.get('shinsoku')?.[0];
@@ -275,7 +279,26 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     source: 'blue_rocket' as const, id: row.id, franchise: 'Pokemon', name: row.name, modelNumber: row.modelNumber,
     productType: 'PSA10' as const, sourcePrice: row.price, imageUrl: row.imageUrl, observedAt: fetchedAt,
   })));
-  // ラインアップは3ソース（KECAK・シンソク・ブルーロケット）の和集合で、金額は比較候補でしかない。許容経過日数内の価格を
+  const extorecaTabs = await Promise.allSettled([fetchExtorecaBoxSheet(), fetchExtorecaPsaSheet()]);
+  let extorecaBox: ExtorecaRow[] = [];
+  let extorecaPsa: ReturnType<typeof extorecaPsaCandidates> = { used: [], skipped: [] };
+  const extorecaErrors: { box: string | null; psa: string | null } = { box: null, psa: null };
+  if (extorecaTabs[0].status === 'fulfilled') extorecaBox = extorecaTabs[0].value;
+  else extorecaErrors.box = extorecaTabs[0].reason instanceof Error
+    ? extorecaTabs[0].reason.message : String(extorecaTabs[0].reason);
+  if (extorecaTabs[1].status === 'fulfilled') {
+    extorecaPsa = extorecaPsaCandidates(extorecaTabs[1].value, [
+      ...candidates.filter(row => row.source === 'kecak' || row.source === 'blue_rocket'),
+      ...sourceProducts,
+    ]);
+  } else extorecaErrors.psa = extorecaTabs[1].reason instanceof Error
+    ? extorecaTabs[1].reason.message : String(extorecaTabs[1].reason);
+  for (const error of Object.values(extorecaErrors)) if (error) console.warn(`[tokyo-buyback] ${error}`);
+  candidates.push(...[...extorecaBox, ...extorecaPsa.used].map(row => ({
+    source: 'extoreca' as const, id: row.id, franchise: 'Pokemon', name: row.name, modelNumber: row.modelNumber,
+    productType: row.productType, sourcePrice: row.price, imageUrl: null, observedAt: fetchedAt,
+  })));
+  // ラインアップは4ソース（KECAK・シンソク・ブルーロケット・エクストレカ）の和集合で、金額は比較候補でしかない。許容経過日数内の価格を
   // 持たないソースはその日の比較に参加しないだけで、掲載全体を止める理由にはしない。
   const sourceCounts = Object.fromEntries(TOKYO_PRICE_SOURCES.map(source => [source, source === 'shinsoku'
     ? sourceProducts.filter(product => validPrice(product.price)).length
@@ -288,6 +311,10 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     report: { pricing_version: 2, source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
       checker_completed_at: checker.completed_at, source_counts: sourceCounts, shinsoku_count: sourceProducts.length,
       blue_rocket_psa: { url: BLUE_ROCKET_PSA_SHEET_URL, used: blueRocketPsa.used.length, skipped: blueRocketPsa.skipped, error: blueRocketPsaError },
+      extoreca: {
+        box: { url: EXTORECA_BOX_SHEET_URL, used: extorecaBox.length, error: extorecaErrors.box },
+        psa: { url: EXTORECA_PSA_SHEET_URL, used: extorecaPsa.used.length, skipped: extorecaPsa.skipped, error: extorecaErrors.psa },
+      },
       price_sources: result.priceSources,
       matched_count: result.products.length, unmatched_count: result.unmatched.length, unmatched: result.unmatched } }, products: result.products };
 }

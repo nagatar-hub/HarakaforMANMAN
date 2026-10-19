@@ -41,6 +41,10 @@ test('Tokyo catalog carries only the already discounted Shinsoku price and stabl
   assert.equal(box.tag, 'BOX');
   assert.equal(box.price_high, 9600);
   assert.equal(box.shop_name, 'アヴィリール');
+  assert.equal(mapTokyoCatalogCard({ snapshot_id: 'snapshot', id: 'extoreca-box', franchise: 'Pokemon',
+    product_type: 'box', name: 'BOX', model_number: null, image_url: null,
+    source_price: 10000, price_high: 9000, price_low: 9000, selected_high_source: 'extoreca',
+    selected_low_source: 'extoreca', origins: ['extoreca'] }, '2026-09-07').shop_name, 'エクストレカ');
   // Pre-comparison snapshots carry no selected source and keep the original label.
   assert.equal(mapTokyoCatalogCard({ snapshot_id: 'snapshot', id: 'legacy', franchise: 'Pokemon',
     product_type: 'box', name: 'BOX', model_number: null, image_url: null, source_price: 10000,

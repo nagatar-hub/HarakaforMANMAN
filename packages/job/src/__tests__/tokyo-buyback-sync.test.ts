@@ -66,7 +66,7 @@ test('a previous-day KECAK order list keeps its lineup row but never prices as t
   expect(alone.unmatched.map(row => row.reason)).toEqual(['stale_price']);
 });
 
-test('KECAK, Shinsoku and Blue Rocket compete on raw price and the winner applies its own rate', () => {
+test('KECAK, Shinsoku and Blue Rocket compete after applying their own rates', () => {
   const result = compareTokyoSourceProducts([...kecak(110000), blueRocket(100000)], [OFFICIAL], SETTINGS, OBSERVED_AT);
   expect(result.products).toHaveLength(1);
   expect(result.products[0]).toMatchObject({ id: 'IAP1', name: 'カイ', image_url: 'official.jpg',
@@ -78,13 +78,13 @@ test('KECAK, Shinsoku and Blue Rocket compete on raw price and the winner applie
   expect(result.unmatched).toEqual([]);
 });
 
-test('the highest raw price wins even when another source would be higher after its own discount', () => {
+test('the highest discounted price wins even when another source has a higher raw price', () => {
   const settings = normalizeStorePricingSettings({ tokyo_source_discount_rates: {
     blue_rocket: { high: 0.30, low: 0.30 }, shinsoku: { high: 0.00, low: 0.00 } } });
   const result = compareTokyoSourceProducts([blueRocket(120000)], [OFFICIAL], settings, OBSERVED_AT);
-  // ブルロケ 120,000 × 70% = 84,000 < シンソク 100,000 × 100% だが、元価格が高いブルロケを採用する。
-  expect(result.products[0]).toMatchObject({ source_price: 120000, price_high: 84000, price_low: 84000,
-    selected_high_source: 'blue_rocket', selected_low_source: 'blue_rocket' });
+  // ブルロケ84,000円より、減額後100,000円のシンソクを採用する。
+  expect(result.products[0]).toMatchObject({ source_price: 100000, price_high: 100000, price_low: 100000,
+    selected_high_source: 'shinsoku', selected_low_source: 'shinsoku' });
 });
 
 test('high and low both come from the chosen source; equal raw prices go to the higher discounted price', () => {
