@@ -1,5 +1,5 @@
 import { isBuiltInOrderListExclusion, postalProductIdentity } from '@haraka/shared';
-import { blueRocketModelNumber } from './blue-rocket-sheet.js';
+import { blueRocketModelNumber } from './blue-rocket.js';
 import { fetchWithRetry } from './fetch-with-retry.js';
 import { parseCsv } from './public-csv-sheet.js';
 

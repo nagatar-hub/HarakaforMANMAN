@@ -3,7 +3,7 @@ import {
   compareTokyoSourceProducts, runTokyoBuybackSync, tokyoDisplayPrice, tokyoProductCandidates,
   type TokyoCandidate,
 } from '../jobs/tokyo-buyback-sync';
-import { blueRocketCardName, blueRocketModelNumber, blueRocketPsaCandidates, parseBlueRocketPsaSheet } from '../lib/blue-rocket-sheet';
+import { blueRocketCardName, blueRocketModelNumber, blueRocketPsaCandidates } from '../lib/blue-rocket';
 import { buildTokyoPreparedCards } from '../lib/tokyo-normal-cards';
 import type { ShinsokuPostalProduct } from '@haraka/shared';
 
@@ -11,9 +11,9 @@ const SETTINGS = normalizeStorePricingSettings({});
 const OBSERVED_AT = '2026-09-09T05:00:00.000Z';
 const OFFICIAL: ShinsokuPostalProduct = { id: 'IAP1', franchise: 'Pokemon', name: 'カイ',
   modelNumber: '236/172', productType: 'PSA10', price: 100000, imageUrl: 'official.jpg' };
-/** ブルーロケット自社シートの PSA10 行（同期ではシートから作られる）。 */
+/** ブルーロケット公開APIの PSA10 行。 */
 const blueRocket = (price: number, name = 'カイ', modelNumber = '236/172'): TokyoCandidate => ({
-  source: 'blue_rocket', id: `sheet:${price}`, franchise: 'Pokemon', name, modelNumber, productType: 'PSA10',
+  source: 'blue_rocket', id: `api:laox:${price}`, franchise: 'Pokemon', name, modelNumber, productType: 'PSA10',
   sourcePrice: price, observedAt: OBSERVED_AT });
 const kecak = (price: number) => tokyoProductCandidates([
   { id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172', grade: 'PSA10', match_status: 'matched', source_price: price },
@@ -229,7 +229,7 @@ test('the per-source discount rate applies exactly once to the raw source price'
   expect(tokyoDisplayPrice(10098, 'Pokemon', 'PSA10', 0.05)).toBe(9000);
 });
 
-test('Blue Rocket sheet rows keep only the card name and a usable model number', () => {
+test('Blue Rocket labels keep only the card name and a usable model number', () => {
   expect(blueRocketCardName('Nのゾロアークex SAR [M2a 242/193](ハイクラスパック「MEGAドリームex」)')).toBe('Nのゾロアークex');
   expect(blueRocketCardName('MレックウザEX: プロモ[S8a-P 024/025](プロモカードパック)')).toBe('MレックウザEX');
   expect(blueRocketCardName('R団のサンダー(25th): プロモ[025 008](プロモ)')).toBe('R団のサンダー(25th)');
@@ -243,16 +243,6 @@ test('Blue Rocket sheet rows keep only the card name and a usable model number',
   expect(blueRocketModelNumber(' 242/193 ')).toBe('242/193');
   expect(blueRocketModelNumber('085')).toBeNull();
   expect(blueRocketModelNumber('0307/07')).toBeNull();
-  const csv = [
-    '"注記","金額","枚数","カード名","型番","","画像"',
-    '"","18,000","15","MレックウザEX: プロモ[S8a-P 024/025](x)","024/025","","https://img/1.jpg"',
-    '"","17,000","3","MレックウザEX: プロモ[S8a-P 024/025](x)","024/025","",""',
-    '"","","1","価格なし[x]","001/001","",""',
-    '"","410,000","1","ゴッホピカチュウ[SV-P]","085","",""',
-  ].join('\n');
-  // 同じカードが複数行あれば高い方だけ。価格や型番の無い行は使わない。
-  expect(parseBlueRocketPsaSheet(csv)).toEqual([
-    { id: 'sheet:2', name: 'MレックウザEX', modelNumber: '024/025', price: 18000, imageUrl: 'https://img/1.jpg' }]);
 });
 
 test('Blue Rocket rows whose model exists under another name are skipped instead of listed twice', () => {
