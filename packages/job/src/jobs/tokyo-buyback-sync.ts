@@ -19,6 +19,7 @@ import {
 export const TOKYO_BUYBACK_STORE = 'manman-akihabara';
 const CHECKER_STORE = 'oripark';
 const PAGE_SIZE = 500;
+const MAX_PRICE = 100_000_000;
 const KECAK_FRANCHISES = ['Pokemon', 'ONE PIECE', 'DRAGON BALL', 'WEISS SCHWARZ'];
 
 type OrderRow = { id: string; excel_product_id: string; franchise: string; card_name: string;
@@ -58,7 +59,18 @@ export function tokyoComparableOrigins(origins: ComparedOrigin[], guard: TokyoOu
 const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = { 11: 'blue_rocket' };
 const CHECKER_BOX_CONDITION_ID = 2;
 const validPrice = (price: number | null | undefined): price is number =>
-  Number.isSafeInteger(price) && price! > 0 && price! <= 100_000_000;
+  Number.isSafeInteger(price) && price! > 0 && price! <= MAX_PRICE;
+
+export function calculateTokyoExtorecaBoxPrice(shinsokuPrice: number, requestedPrice: number): number | null {
+  if (!Number.isSafeInteger(shinsokuPrice) || shinsokuPrice <= 0 || shinsokuPrice > MAX_PRICE - 100
+    || !Number.isSafeInteger(requestedPrice) || requestedPrice <= 0 || requestedPrice > MAX_PRICE) {
+    return null;
+  }
+  const finalPrice = requestedPrice * 100 >= shinsokuPrice * 115
+    ? Math.floor(requestedPrice / 110) * 100
+    : Math.floor(requestedPrice * 10 / 1035) * 100;
+  return finalPrice > 0 ? finalPrice : null;
+}
 /** 業務日から見た元価格の経過日数。未来日や解釈不能な値は null。 */
 const priceAgeDays = (value: string | null | undefined, businessDate: string): number | null => {
   if (!value) return null;
@@ -163,13 +175,26 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
     }
     const excluded = new Set(origins.filter(origin => !compared.includes(origin)).map(origin => origin.source));
     for (const origin of origins) if (excluded.has(origin.source)) origin.excluded = true;
+    const extoreca = compared.find(origin => origin.source === 'extoreca');
+    const marginShinsoku = compared.find(origin => origin.source === 'shinsoku');
+    let marginPrice: number | null = null;
+    if (extoreca?.franchise === 'Pokemon' && extoreca.productType === 'BOX' && marginShinsoku) {
+      const calculated = calculateTokyoExtorecaBoxPrice(marginShinsoku.rawPrice, extoreca.rawPrice);
+      if (calculated !== null) {
+        marginPrice = calculated;
+        extoreca.highRate = 1 - marginPrice / extoreca.rawPrice;
+        extoreca.highPrice = marginPrice;
+        extoreca.lowRate = extoreca.highRate;
+        extoreca.lowPrice = marginPrice;
+      }
+    }
     const eligible = compared.filter(origin => origin.highPrice > 0);
     if (!eligible.length) {
       unmatched.push(...group.map(candidate => ({ candidate, reason: 'zero_after_discount' as const })));
       continue;
     }
-    // 減額・端数処理後の最高額を採用し、同額なら従来どおり元価格が高い店を優先する。
-    const high = eligible.reduce((winner, origin) => origin.highPrice > winner.highPrice
+    // 対象BOXはExtoreca利益率価格を採用し、それ以外は従来どおり減額後の最高額を採用する。
+    const high = marginPrice !== null && extoreca ? extoreca : eligible.reduce((winner, origin) => origin.highPrice > winner.highPrice
       || (origin.highPrice === winner.highPrice && origin.rawPrice > winner.rawPrice) ? origin : winner);
     const low = high;
     const canonical = bySource.get('shinsoku')?.[0] ?? bySource.get('kecak')?.[0] ?? compared[0];
