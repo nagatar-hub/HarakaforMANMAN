@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fetchShinsokuPostalProducts } from '@haraka/shared';
 import { buildTokyoBuybackSnapshot } from '../jobs/tokyo-buyback-sync';
-import { BLUE_ROCKET_PRICES_API_URL, fetchBlueRocketPsaPrices, parseBlueRocketPsaPrices } from '../lib/blue-rocket';
+import { BLUE_ROCKET_AKIHABARA_PRICES_API_URL, BLUE_ROCKET_PRICES_API_URL,
+  fetchBlueRocketPsaPrices, parseBlueRocketPsaPrices, type BlueRocketPsaPrices } from '../lib/blue-rocket';
 import { fetchExtorecaBoxSheet, fetchExtorecaPsaSheet } from '../lib/extoreca-sheet';
 
 jest.mock('@haraka/shared', () => ({
@@ -20,6 +21,15 @@ const completed = { id: 'complete', store: 'oripark', status: 'applied',
   created_at: '2026-09-08T22:06:00Z', completed_at: '2026-09-08T23:40:00Z', product_count: 2, offer_count: 6 };
 const SAME_DAY = '2026-09-09T02:00:00Z';
 const PREVIOUS_DAY = '2026-09-08T02:00:00Z';
+const LAOX: BlueRocketPsaPrices = {
+  storeId: 'laox', businessDate: '2026-09-09', fetchedAt: SAME_DAY, itemCount: 1,
+  rows: [{ id: 'api:laox:2', name: 'カイ', modelNumber: '236/172', price: 125000, imageUrl: null }],
+};
+const AKIHABARA_EMPTY: BlueRocketPsaPrices = {
+  storeId: 'akihabara', businessDate: '2026-09-09', fetchedAt: SAME_DAY, itemCount: 0, rows: [],
+};
+const mockBlueRocketStores = (laox: BlueRocketPsaPrices, akihabara = AKIHABARA_EMPTY) =>
+  jest.mocked(fetchBlueRocketPsaPrices).mockImplementation(async store => store === 'akihabara' ? akihabara : laox);
 
 // shop 3 = トレカバンク / 11 = Blue Rocket / 13 = アヴィリール / 22 = 対象外。condition 1 = PSA10 / 2 = BOX
 // 東京満満は買取チェッカーからブルーロケットの BOX だけを使う（PSA10 はブルーロケット公開API）。
@@ -70,10 +80,8 @@ beforeEach(() => {
   jest.mocked(fetchShinsokuPostalProducts).mockReset().mockResolvedValue([
     { id: 'IAP1', franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10', price: 123000, imageUrl: null },
   ]);
-  jest.mocked(fetchBlueRocketPsaPrices).mockReset().mockResolvedValue({
-    storeId: 'laox', businessDate: '2026-09-09', fetchedAt: SAME_DAY, itemCount: 1,
-    rows: [{ id: 'api:laox:2', name: 'カイ', modelNumber: '236/172', price: 125000, imageUrl: null }],
-  });
+  jest.mocked(fetchBlueRocketPsaPrices).mockReset();
+  mockBlueRocketStores(LAOX);
   jest.mocked(fetchExtorecaBoxSheet).mockReset().mockResolvedValue([]);
   jest.mocked(fetchExtorecaPsaSheet).mockReset().mockResolvedValue([]);
 });
@@ -98,20 +106,87 @@ test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied check
   expect(result.snapshot.report.blue_rocket_psa).toMatchObject({
     url: BLUE_ROCKET_PRICES_API_URL, store_id: 'laox', business_date: '2026-09-09',
     fetched_at: SAME_DAY, received_count: 1, used: 1, skipped: [], error: null,
+    stores: {
+      laox: { url: BLUE_ROCKET_PRICES_API_URL, received_count: 1, selected_count: 1, error: null },
+      akihabara: { url: BLUE_ROCKET_AKIHABARA_PRICES_API_URL, received_count: 0, selected_count: 0, error: null },
+    },
   });
   expect(result.snapshot.report.unmatched).toEqual([]);
   expect(fetchShinsokuPostalProducts).toHaveBeenCalledWith();
-  expect(fetchBlueRocketPsaPrices).toHaveBeenCalledTimes(1);
+  expect(fetchBlueRocketPsaPrices).toHaveBeenCalledTimes(2);
+  expect(fetchBlueRocketPsaPrices).toHaveBeenNthCalledWith(1);
+  expect(fetchBlueRocketPsaPrices).toHaveBeenNthCalledWith(2, 'akihabara');
   expect(fetchExtorecaBoxSheet).toHaveBeenCalledTimes(1);
   expect(fetchExtorecaPsaSheet).toHaveBeenCalledTimes(1);
 });
 
+test.each([
+  ['higher Akihabara duplicate', 140000, 150000, 'api:akihabara:3', 150000],
+  ['lower Akihabara duplicate', 140000, 120000, 'api:laox:2', 140000],
+  ['tied duplicate', 140000, 140000, 'api:laox:2', 140000],
+] as const)('merges %s deterministically before source comparison', async (_label, laoxPrice, akihabaraPrice,
+  expectedId, expectedPrice) => {
+  mockBlueRocketStores(
+    { ...LAOX, itemCount: laoxPrice ? 1 : 0, rows: laoxPrice ? [{ ...LAOX.rows[0], price: laoxPrice }] : [] },
+    { ...AKIHABARA_EMPTY, itemCount: 1, rows: [{ id: 'api:akihabara:3', name: 'カイ', modelNumber: '236/172',
+      price: akihabaraPrice, imageUrl: null }] },
+  );
+  const result = await buildTokyoBuybackSnapshot(database([completed]), now);
+  const product = result.products.find(row => row.model_number === '236/172')!;
+  expect(product.origins.filter(origin => origin.source === 'blue_rocket')).toEqual([
+    expect.objectContaining({ id: expectedId, rawPrice: expectedPrice, observedAt: SAME_DAY }),
+  ]);
+});
+
+test('an Akihabara-only product reaches the prepared snapshot with its provenance', async () => {
+  mockBlueRocketStores({ ...LAOX, itemCount: 0, rows: [] }, {
+    ...AKIHABARA_EMPTY, itemCount: 1,
+    rows: [{ id: 'api:akihabara:7', name: 'ミュウ', modelNumber: '205/165', price: 150000, imageUrl: null }],
+  });
+  const result = await buildTokyoBuybackSnapshot(database([completed]), now);
+  expect(result.products.find(row => row.name === 'ミュウ')).toMatchObject({
+    model_number: '205/165', source_price: 150000, selected_high_source: 'blue_rocket', price_high: 130000,
+    origins: [expect.objectContaining({ id: 'api:akihabara:7', rawPrice: 150000, observedAt: SAME_DAY })],
+  });
+});
+
+test.each([
+  ['failure', 'laox'], ['failure', 'akihabara'], ['stale', 'laox'], ['stale', 'akihabara'],
+] as const)('a %s in %s keeps the other Blue Rocket store eligible', async (condition, affectedStore) => {
+  const healthyStore = affectedStore === 'laox' ? 'akihabara' : 'laox';
+  const resultFor = (store: 'laox' | 'akihabara'): BlueRocketPsaPrices => ({
+    storeId: store, businessDate: condition === 'stale' && store === affectedStore ? '2026-09-07' : '2026-09-09',
+    fetchedAt: SAME_DAY, itemCount: 1,
+    rows: [{ id: `api:${store}:${store === 'laox' ? 2 : 3}`, name: 'カイ', modelNumber: '236/172',
+      price: store === healthyStore ? 150000 : 160000, imageUrl: null }],
+  });
+  jest.mocked(fetchBlueRocketPsaPrices).mockImplementation(async store => {
+    const requested = store ?? 'laox';
+    if (condition === 'failure' && requested === affectedStore) throw new Error(`${requested} unavailable`);
+    return resultFor(requested);
+  });
+  const result = await buildTokyoBuybackSnapshot(database([completed]), now);
+  const product = result.products.find(row => row.model_number === '236/172')!;
+  expect(product.origins.filter(origin => origin.source === 'blue_rocket')).toEqual([
+    expect.objectContaining({ id: expect.stringMatching(`^api:${healthyStore}:`), rawPrice: 150000 }),
+  ]);
+  expect(result.snapshot.report.blue_rocket_psa.stores[affectedStore].error).toContain(
+    condition === 'failure' ? 'unavailable' : '営業日が許容範囲外');
+  expect(result.snapshot.report.blue_rocket_psa.stores[healthyStore]).toMatchObject({ selected_count: 1, error: null });
+});
+
 // ブルーロケットのAPIが取れない日は、ブルーロケット PSA が比較に参加しないだけで掲載全体は止めない。
-test('a Blue Rocket API failure only removes Blue Rocket PSA from the comparison', async () => {
+test('both Blue Rocket API failures only remove Blue Rocket PSA from the comparison', async () => {
   jest.mocked(fetchBlueRocketPsaPrices).mockRejectedValue(new Error('ブルーロケット買取APIの取得失敗: HTTP 401'));
   const result = await buildTokyoBuybackSnapshot(database([completed]), now);
   expect(result.snapshot.report.source_counts).toMatchObject({ kecak: 1, blue_rocket: 1, shinsoku: 1 });
-  expect(result.snapshot.report.blue_rocket_psa).toMatchObject({ used: 0, error: 'ブルーロケット買取APIの取得失敗: HTTP 401' });
+  expect(result.snapshot.report.blue_rocket_psa).toMatchObject({
+    used: 0, error: expect.stringContaining('laox: ブルーロケット買取APIの取得失敗: HTTP 401'),
+    stores: {
+      laox: { error: 'ブルーロケット買取APIの取得失敗: HTTP 401' },
+      akihabara: { error: 'ブルーロケット買取APIの取得失敗: HTTP 401' },
+    },
+  });
   expect(result.products[0].origins.map(origin => origin.source)).toEqual(['kecak', 'shinsoku']);
 });
 
@@ -142,7 +217,7 @@ test('the approved 1-day window lets previous-day prices keep competing', async 
 
 test('setting the window back to same-day only drops every previous-day price', async () => {
   const db = database([completed], OFFERS, { tokyo_price_max_age_days: 0 });
-  jest.mocked(fetchBlueRocketPsaPrices).mockResolvedValue({
+  mockBlueRocketStores({
     storeId: 'laox', businessDate: '2026-09-10', fetchedAt: nextDay.toISOString(), itemCount: 1,
     rows: [{ id: 'api:laox:2', name: 'カイ', modelNumber: '236/172', price: 125000, imageUrl: null }],
   });
@@ -157,7 +232,7 @@ test('setting the window back to same-day only drops every previous-day price', 
 });
 
 test.each(['2026-09-07', '2026-09-10'])('stale or future Blue Rocket business date %s is excluded even if fetched today', async businessDate => {
-  jest.mocked(fetchBlueRocketPsaPrices).mockResolvedValue({
+  mockBlueRocketStores({
     storeId: 'laox', businessDate, fetchedAt: now.toISOString(), itemCount: 1,
     rows: [{ id: 'api:laox:2', name: 'カイ', modelNumber: '236/172', price: 140000, imageUrl: null }],
   });
@@ -178,7 +253,7 @@ test('a same-day-only policy excludes the previous API business date', async () 
 });
 
 test('API prices enter Tokyo pricing with the existing discount and product matching', async () => {
-  jest.mocked(fetchBlueRocketPsaPrices).mockResolvedValue(parseBlueRocketPsaPrices({
+  mockBlueRocketStores(parseBlueRocketPsaPrices({
     storeId: 'laox', storeCode: 'laox', businessDate: '2026-09-09', fetchedAt: SAME_DAY,
     items: [
       { productId: 99, name: 'PSA10 カイ SAR [s12a 236/172]', cardNumber: '236/172',

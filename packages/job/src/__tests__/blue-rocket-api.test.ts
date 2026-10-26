@@ -1,5 +1,6 @@
 import {
-  BLUE_ROCKET_PRICES_API_URL, blueRocketPsaCandidates, fetchBlueRocketPsaPrices, parseBlueRocketPsaPrices,
+  BLUE_ROCKET_AKIHABARA_PRICES_API_URL, BLUE_ROCKET_PRICES_API_URL, blueRocketPsaCandidates,
+  fetchBlueRocketPsaPrices, parseBlueRocketPsaPrices,
 } from '../lib/blue-rocket';
 import { fetchWithRetry } from '../lib/fetch-with-retry';
 
@@ -25,6 +26,17 @@ test('reads the live API shape and retains its business date and stable product 
     rows: [{ id: 'api:laox:37489', name: 'MカメックスEX', modelNumber: '074/072',
       price: 24000, imageUrl: 'https://cdn.example/card.webp' }],
   });
+});
+
+test('retains the requested Akihabara store in the response and product provenance', () => {
+  const response = payload([item({ productId: 7 })], {
+    storeId: 'akihabara', storeCode: 'akihabara', storeName: '秋葉原店',
+  });
+  expect(parseBlueRocketPsaPrices(response, 'akihabara')).toMatchObject({
+    storeId: 'akihabara', rows: [{ id: 'api:akihabara:7' }],
+  });
+  expect(() => parseBlueRocketPsaPrices(response)).toThrow('店舗・営業日・データ形式');
+  expect(() => parseBlueRocketPsaPrices(payload(), 'akihabara')).toThrow('店舗・営業日・データ形式');
 });
 
 test('handles PSA10 prefixes with full-width or missing spaces and an explicit grade label', () => {
@@ -99,6 +111,18 @@ test('fetches only the public Laox JSON API without credentials', async () => {
   });
   expect(fetchWithRetry).toHaveBeenCalledTimes(1);
   expect(fetchWithRetry).toHaveBeenCalledWith(BLUE_ROCKET_PRICES_API_URL, {
+    method: 'GET', headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+  }, { timeoutMs: 10_000, maxRetries: 1, baseDelayMs: 500 });
+});
+
+test('fetches and validates the public Akihabara JSON API when requested', async () => {
+  jest.mocked(fetchWithRetry).mockResolvedValue(new Response(JSON.stringify(payload([item()], {
+    storeId: 'akihabara', storeCode: 'akihabara', storeName: '秋葉原店',
+  }))));
+  await expect(fetchBlueRocketPsaPrices('akihabara')).resolves.toMatchObject({
+    storeId: 'akihabara', rows: [expect.objectContaining({ id: 'api:akihabara:37489' })],
+  });
+  expect(fetchWithRetry).toHaveBeenCalledWith(BLUE_ROCKET_AKIHABARA_PRICES_API_URL, {
     method: 'GET', headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
   }, { timeoutMs: 10_000, maxRetries: 1, baseDelayMs: 500 });
 });

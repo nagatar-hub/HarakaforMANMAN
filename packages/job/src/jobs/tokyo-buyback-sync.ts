@@ -9,8 +9,9 @@ import {
 } from '@haraka/shared';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { isBoxRow } from '../lib/box-row.js';
-import { BLUE_ROCKET_PRICES_API_URL, blueRocketPsaCandidates, fetchBlueRocketPsaPrices,
-  type BlueRocketPsaPrices } from '../lib/blue-rocket.js';
+import { BLUE_ROCKET_AKIHABARA_PRICES_API_URL, BLUE_ROCKET_PRICES_API_URL, blueRocketPsaCandidates,
+  fetchBlueRocketPsaPrices, type BlueRocketPsaPrices, type BlueRocketPsaRow,
+  type BlueRocketStore } from '../lib/blue-rocket.js';
 import {
   EXTORECA_BOX_SHEET_URL, EXTORECA_PSA_SHEET_URL, extorecaPsaCandidates,
   fetchExtorecaBoxSheet, fetchExtorecaPsaSheet, type ExtorecaRow,
@@ -54,7 +55,7 @@ export function tokyoComparableOrigins(origins: ComparedOrigin[], guard: TokyoOu
   });
 }
 
-// 買取チェッカーからはブルーロケットの BOX だけを取る（PSA10 はラオックス店の公開買取API）。
+// 買取チェッカーからはブルーロケットの BOX だけを取る（PSA10 はラオックス店・秋葉原店の公開買取API）。
 // トレカバンク・アヴィリールはラインアップにも価格比較にも使わない（2026-09-26 決定）。
 const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = { 11: 'blue_rocket' };
 const CHECKER_BOX_CONDITION_ID = 2;
@@ -289,27 +290,46 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   // Pull the public catalog first; Tokyo order-list names and model numbers never leave Haraka.
   const sourceProducts = await fetchShinsokuPostalProducts();
   const fetchedAt = now.toISOString();
-  // ブルーロケットの PSA10 は公開APIから取る。失敗時はこのソースだけ比較から外す。
+  // ブルーロケットの PSA10 は2店舗の公開APIから取る。片方の失敗・期限切れはもう片方に影響させない。
+  const blueRocketStores: BlueRocketStore[] = ['laox', 'akihabara'];
+  const blueRocketResponses = await Promise.allSettled([
+    fetchBlueRocketPsaPrices(), fetchBlueRocketPsaPrices('akihabara'),
+  ]);
   let blueRocketPsa: ReturnType<typeof blueRocketPsaCandidates> = { used: [], skipped: [] };
-  let blueRocketPrices: BlueRocketPsaPrices | null = null;
-  let blueRocketPsaError: string | null = null;
-  try {
-    blueRocketPrices = await fetchBlueRocketPsaPrices();
-    // 取得時刻ではなくAPIの対象営業日で鮮度を判定する（古い価格を今日の価格にしない）。
-    if (!withinPriceAge(`${blueRocketPrices.businessDate}T00:00:00+09:00`, businessDate, settings.tokyo_price_max_age_days)) {
-      throw new Error(`ブルーロケット買取APIの営業日が許容範囲外です: ${blueRocketPrices.businessDate}`);
+  const blueRocketPrices: Partial<Record<BlueRocketStore, BlueRocketPsaPrices>> = {};
+  const blueRocketErrors: Partial<Record<BlueRocketStore, string>> = {};
+  const blueRocketBest = new Map<string, { row: BlueRocketPsaRow; fetchedAt: string }>();
+  for (const [index, response] of blueRocketResponses.entries()) {
+    const store = blueRocketStores[index];
+    if (response.status === 'rejected') {
+      blueRocketErrors[store] = response.reason instanceof Error ? response.reason.message : String(response.reason);
+      continue;
     }
-    blueRocketPsa = blueRocketPsaCandidates(blueRocketPrices.rows, [
-      ...candidates.filter(row => row.source === 'kecak'),
-      ...sourceProducts,
-    ]);
-  } catch (error) {
-    blueRocketPsaError = error instanceof Error ? error.message : String(error);
-    console.warn(`[tokyo-buyback] ${blueRocketPsaError}`);
+    const prices = response.value;
+    blueRocketPrices[store] = prices;
+    // 取得時刻ではなく店舗ごとの対象営業日で鮮度を判定する（古い価格を今日の価格にしない）。
+    if (!withinPriceAge(`${prices.businessDate}T00:00:00+09:00`, businessDate, settings.tokyo_price_max_age_days)) {
+      blueRocketErrors[store] = `ブルーロケット買取APIの営業日が許容範囲外です: ${prices.businessDate}`;
+      continue;
+    }
+    for (const row of prices.rows) {
+      const identity = postalProductIdentity({ franchise: 'Pokemon', name: row.name,
+        modelNumber: row.modelNumber, productType: 'PSA10' });
+      const current = blueRocketBest.get(identity);
+      // 店舗順はラオックスが先なので、同額なら従来店舗を維持する。
+      if (!current || row.price > current.row.price) blueRocketBest.set(identity, { row, fetchedAt: prices.fetchedAt });
+    }
   }
+  for (const [store, error] of Object.entries(blueRocketErrors)) console.warn(`[tokyo-buyback] ${store}: ${error}`);
+  const blueRocketRows = [...blueRocketBest.values()];
+  blueRocketPsa = blueRocketPsaCandidates(blueRocketRows.map(entry => entry.row), [
+    ...candidates.filter(row => row.source === 'kecak'),
+    ...sourceProducts,
+  ]);
+  const blueRocketFetchedAt = new Map(blueRocketRows.map(entry => [entry.row.id, entry.fetchedAt]));
   candidates.push(...blueRocketPsa.used.map(row => ({
     source: 'blue_rocket' as const, id: row.id, franchise: 'Pokemon', name: row.name, modelNumber: row.modelNumber,
-    productType: 'PSA10' as const, sourcePrice: row.price, imageUrl: row.imageUrl, observedAt: blueRocketPrices!.fetchedAt,
+    productType: 'PSA10' as const, sourcePrice: row.price, imageUrl: row.imageUrl, observedAt: blueRocketFetchedAt.get(row.id)!,
   })));
   const extorecaTabs = await Promise.allSettled([fetchExtorecaBoxSheet(), fetchExtorecaPsaSheet()]);
   let extorecaBox: ExtorecaRow[] = [];
@@ -342,10 +362,21 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     business_date: businessDate, settings,
     report: { pricing_version: 2, source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
       checker_completed_at: checker.completed_at, source_counts: sourceCounts, shinsoku_count: sourceProducts.length,
-      blue_rocket_psa: { url: BLUE_ROCKET_PRICES_API_URL, store_id: blueRocketPrices?.storeId ?? 'laox',
-        business_date: blueRocketPrices?.businessDate ?? null, fetched_at: blueRocketPrices?.fetchedAt ?? null,
-        received_count: blueRocketPrices?.itemCount ?? 0,
-        used: blueRocketPsa.used.length, skipped: blueRocketPsa.skipped, error: blueRocketPsaError },
+      blue_rocket_psa: { url: BLUE_ROCKET_PRICES_API_URL, store_id: blueRocketPrices.laox?.storeId ?? 'laox',
+        business_date: blueRocketPrices.laox?.businessDate ?? null, fetched_at: blueRocketPrices.laox?.fetchedAt ?? null,
+        received_count: blueRocketStores.reduce((count, store) => count + (blueRocketPrices[store]?.itemCount ?? 0), 0),
+        used: blueRocketPsa.used.length, skipped: blueRocketPsa.skipped,
+        error: blueRocketStores.filter(store => blueRocketErrors[store])
+          .map(store => `${store}: ${blueRocketErrors[store]}`).join('; ') || null,
+        stores: Object.fromEntries(blueRocketStores.map(store => [store, {
+          url: store === 'laox' ? BLUE_ROCKET_PRICES_API_URL : BLUE_ROCKET_AKIHABARA_PRICES_API_URL,
+          store_id: blueRocketPrices[store]?.storeId ?? store,
+          business_date: blueRocketPrices[store]?.businessDate ?? null,
+          fetched_at: blueRocketPrices[store]?.fetchedAt ?? null,
+          received_count: blueRocketPrices[store]?.itemCount ?? 0,
+          selected_count: blueRocketPsa.used.filter(row => row.id.startsWith(`api:${store}:`)).length,
+          error: blueRocketErrors[store] ?? null,
+        }])) },
       extoreca: {
         box: { url: EXTORECA_BOX_SHEET_URL, used: extorecaBox.length, error: extorecaErrors.box },
         psa: { url: EXTORECA_PSA_SHEET_URL, used: extorecaPsa.used.length, skipped: extorecaPsa.skipped, error: extorecaErrors.psa },
