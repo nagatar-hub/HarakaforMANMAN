@@ -1,9 +1,13 @@
 import { postalProductIdentity } from '@haraka/shared';
 import { fetchWithRetry } from './fetch-with-retry.js';
 
-/** ラオックス店の公開買取API。東京満満では従来どおりポケカPSA10だけを比較に使う。 */
+/** ブルーロケットの公開買取API。東京満満では従来どおりポケカPSA10だけを比較に使う。 */
 export const BLUE_ROCKET_PRICES_API_URL =
   'https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=laox';
+export const BLUE_ROCKET_AKIHABARA_PRICES_API_URL =
+  'https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=akihabara';
+
+export type BlueRocketStore = 'laox' | 'akihabara';
 
 export type BlueRocketPsaRow = {
   id: string;
@@ -14,7 +18,7 @@ export type BlueRocketPsaRow = {
 };
 
 export type BlueRocketPsaPrices = {
-  storeId: 'laox';
+  storeId: BlueRocketStore;
   businessDate: string;
   fetchedAt: string;
   itemCount: number;
@@ -56,8 +60,8 @@ function validBusinessDate(value: unknown): value is string {
 }
 
 /** APIは他作品・素体・停止中の価格も含み得るので、掲載可能なポケカPSA10だけに絞る。 */
-export function parseBlueRocketPsaPrices(payload: unknown): BlueRocketPsaPrices {
-  if (!record(payload) || payload.storeId !== 'laox' || payload.storeCode !== 'laox'
+export function parseBlueRocketPsaPrices(payload: unknown, store: BlueRocketStore = 'laox'): BlueRocketPsaPrices {
+  if (!record(payload) || payload.storeId !== store || payload.storeCode !== store
     || !validBusinessDate(payload.businessDate) || typeof payload.fetchedAt !== 'string'
     || !/^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(payload.fetchedAt)
     || !Number.isFinite(Date.parse(payload.fetchedAt)) || !Array.isArray(payload.items)) {
@@ -89,10 +93,10 @@ export function parseBlueRocketPsaPrices(payload: unknown): BlueRocketPsaPrices 
     const key = postalProductIdentity({ franchise: 'Pokemon', name, modelNumber, productType: 'PSA10' });
     const current = best.get(key);
     if (!current || item.price > current.price) best.set(key, {
-      id: `api:laox:${item.productId}`, name, modelNumber, price: item.price, imageUrl,
+      id: `api:${store}:${item.productId}`, name, modelNumber, price: item.price, imageUrl,
     });
   }
-  return { storeId: 'laox', businessDate: payload.businessDate, fetchedAt: payload.fetchedAt,
+  return { storeId: store, businessDate: payload.businessDate, fetchedAt: payload.fetchedAt,
     itemCount: payload.items.length, rows: [...best.values()] };
 }
 
@@ -118,10 +122,11 @@ export function blueRocketPsaCandidates(rows: BlueRocketPsaRow[], lineup: Lineup
   return { used, skipped };
 }
 
-export async function fetchBlueRocketPsaPrices(): Promise<BlueRocketPsaPrices> {
-  const response = await fetchWithRetry(BLUE_ROCKET_PRICES_API_URL, {
+export async function fetchBlueRocketPsaPrices(store: BlueRocketStore = 'laox'): Promise<BlueRocketPsaPrices> {
+  const url = store === 'laox' ? BLUE_ROCKET_PRICES_API_URL : BLUE_ROCKET_AKIHABARA_PRICES_API_URL;
+  const response = await fetchWithRetry(url, {
     method: 'GET', headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
   }, { timeoutMs: 10_000, maxRetries: 1, baseDelayMs: 500 });
   if (!response.ok) throw new Error(`ブルーロケット買取APIの取得失敗: HTTP ${response.status}`);
-  return parseBlueRocketPsaPrices(await response.json());
+  return parseBlueRocketPsaPrices(await response.json(), store);
 }
