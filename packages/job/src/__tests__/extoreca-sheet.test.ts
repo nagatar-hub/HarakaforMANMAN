@@ -3,7 +3,7 @@ import {
   calculateTokyoExtorecaBoxPrice, compareTokyoSourceProducts, type buildTokyoBuybackSnapshot,
   type TokyoCandidate,
 } from '../jobs/tokyo-buyback-sync';
-import { extorecaPsaCandidates, parseExtorecaSheet } from '../lib/extoreca-sheet';
+import { extorecaPsaCandidates, fetchExtorecaBoxSheet, fetchExtorecaPsaSheet, parseExtorecaSheet } from '../lib/extoreca-sheet';
 import { buildTokyoPreparedCards } from '../lib/tokyo-normal-cards';
 import { buildTokyoBuybackSheetValues } from '../lib/buyback-sheet';
 import { buildTokyoPelekaCatalog } from '../lib/peleka-catalog';
@@ -25,6 +25,29 @@ const boxCandidate = (source: TokyoCandidate['source'], sourcePrice: number | nu
   franchise = 'Pokemon', productType: TokyoCandidate['productType'] = 'BOX', id = source): TokyoCandidate => ({
   source, id, franchise, name: '境界テスト', modelNumber: productType === 'PSA10' ? '001/001' : null,
   productType, sourcePrice,
+});
+
+describe('Extoreca CSV fetch', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  test.each([
+    ['BOX', '0', fetchExtorecaBoxSheet],
+    ['PSA10', '1475300317', fetchExtorecaPsaSheet],
+  ] as const)('fetches %s with an explicit header row to preserve numeric-column labels', async (productType, gid, fetchSheet) => {
+    const csv = '10/27,商品名,レアリティ,識別番号,希望卸金額(エクス),希望個数,残注数\n'
+      + ',対象商品,SAR,001/SV-P,12000,50,2';
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(csv));
+    const rows = await fetchSheet();
+    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(url.searchParams.get('headers')).toBe('1');
+    expect(url.searchParams.get('gid')).toBe(gid);
+    expect(rows).toEqual([expect.objectContaining({
+      id: `sheet:${productType.toLowerCase()}:2`, name: '対象商品', price: 12000, productType,
+    })]);
+
+    fetchMock.mockResolvedValue(new Response(csv.replace('希望卸金額(エクス)', '')));
+    await expect(fetchSheet()).rejects.toThrow('ヘッダーが見つかりません');
+  });
 });
 
 test('BOX uses only 希望卸金額(エクス), excludes examples and applies the existing 10% rounding', () => {
