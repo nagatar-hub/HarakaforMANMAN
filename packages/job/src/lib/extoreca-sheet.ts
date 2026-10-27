@@ -4,10 +4,11 @@ import { fetchWithRetry } from './fetch-with-retry.js';
 import { parseCsv } from './public-csv-sheet.js';
 
 const SHEET_ID = '1you9cwtDUuNSu4QHuwMK-4vZP_4V-3mWW7uJvKFa31s';
+// Without headers=1, gviz can infer numeric columns and discard their text headers.
 export const EXTORECA_BOX_SHEET_URL =
-  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=0`;
+  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=0&headers=1`;
 export const EXTORECA_PSA_SHEET_URL =
-  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=1475300317`;
+  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=1475300317&headers=1`;
 
 export type ExtorecaRow = {
   id: string;
