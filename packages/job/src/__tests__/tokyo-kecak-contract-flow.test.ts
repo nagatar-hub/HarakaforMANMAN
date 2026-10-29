@@ -49,7 +49,10 @@ test('the five-source comparison flows through one high/low pick into the unchan
 
   const payload = buildTokyoPelekaCatalog({ runId: '00000000-0000-4000-8000-000000000002', snapshotId: result.snapshot.id,
     businessDate: '2026-09-09', generatedAt: '2026-09-09T05:00:00Z', cards: prepared as PreparedCardRow[],
-    shinsokuPrices: new Map([['IADB1', 60000], ['IAP1', 12000]]) });
+    pricingSources: new Map(compared.products.map(product => [product.id, product.origins.map(origin => ({
+      source: origin.source, rawPrice: origin.rawPrice, baselineHighRate: origin.highRate,
+      baselineHighPrice: origin.highPrice, baselineLowRate: origin.lowRate, baselineLowPrice: origin.lowPrice,
+    }))])) });
   expect(payload.products.map(p => [p.sourceId, p.priceHigh, p.priceLow, p.shinsokuPrice])).toEqual([
     ['IADB1', 57000, 51000, 60000], ['IAP1', 11000, 10000, 12000],
   ]);

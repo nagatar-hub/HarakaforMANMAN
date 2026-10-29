@@ -225,6 +225,7 @@ test('a lone source is judged by the absolute ceiling only, and an over-ceiling 
 
 test('the per-source discount rate applies exactly once to the raw source price', () => {
   expect(tokyoDisplayPrice(100000, 'Pokemon', 'PSA10', 0.07)).toBe(93000);
+  expect(tokyoDisplayPrice(100000, 'Pokemon', 'PSA10', 0.8)).toBe(19000);
   expect(tokyoDisplayPrice(100000, 'Pokemon', 'BOX', 0.07)).toBe(93000);
   expect(tokyoDisplayPrice(10098, 'Pokemon', 'PSA10', 0.05)).toBe(9000);
 });

@@ -163,7 +163,10 @@ test('the margin price survives comparison, prepared cards and Tokyo sheet expor
   expect(values[1][7]).toBe(10400);
   const peleka = buildTokyoPelekaCatalog({
     runId, snapshotId, businessDate: '2026-10-19', generatedAt: '2026-10-19T00:00:00Z',
-    cards: [card as PreparedCardRow], shinsokuPrices: new Map([['shinsoku-box', 10000]]),
+    cards: [card as PreparedCardRow], pricingSources: new Map([['shinsoku-box', compared.products[0].origins.map(origin => ({
+      source: origin.source, rawPrice: origin.rawPrice, baselineHighRate: origin.highRate,
+      baselineHighPrice: origin.highPrice, baselineLowRate: origin.lowRate, baselineLowPrice: origin.lowPrice,
+    }))]]),
   });
   expect(peleka.products[0]).toMatchObject({
     sourceId: 'shinsoku-box', priceHigh: 10400, priceLow: 10400, shinsokuPrice: 10000,
