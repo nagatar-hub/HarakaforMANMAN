@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   AssetProfileRow,
   Database,
@@ -27,6 +27,26 @@ type SupabaseClient = {
   storage: { from: (bucket: string) => any };
 };
 type GeneratedPageInsert = Database['public']['Tables']['generated_page']['Insert'];
+const TOKYO_POSTAL_SOURCE_IMAGE_CACHE_PREFIX = 'cached/tokyo-postal-source-images/v1';
+
+function tokyoPostalSourceImageCacheKey(imageUrl: string): string {
+  const digest = createHash('sha256').update(imageUrl, 'utf8').digest('hex');
+  return `${TOKYO_POSTAL_SOURCE_IMAGE_CACHE_PREFIX}/${digest}.bin`;
+}
+
+async function downloadTokyoPostalSourceImageCache(
+  supabase: SupabaseClient,
+  imageUrl: string,
+): Promise<Buffer | null> {
+  try {
+    const { data, error } = await supabase.storage.from('haraka-images')
+      .download(tokyoPostalSourceImageCacheKey(imageUrl));
+    if (error || !data) return null;
+    return Buffer.from(await data.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
 
 function isBox(card: PreparedCardRow) {
   return card.tag === 'BOX' || card.grade === 'BOX' || card.grade === '未開封BOX';
@@ -162,6 +182,10 @@ export async function renderTokyoPelekaPostalPages(params: {
           const retried = await downloadImagesWithConcurrency('', failedCards.map(card => card.image_url), 2);
           failedCards.forEach((card, index) => downloadedById.set(card.id, retried[index]));
         }
+        await Promise.all(missingCards.filter(card => !downloadedById.get(card.id)).map(async card => {
+          const cached = await downloadTokyoPostalSourceImageCache(params.supabase, card.image_url);
+          if (cached) downloadedById.set(card.id, cached);
+        }));
         const cardImages = new Map<string, Buffer>();
         for (const card of orderedCards) {
           const bytes = params.cardImageBuffers?.get(card.id) ?? downloadedById.get(card.id);
