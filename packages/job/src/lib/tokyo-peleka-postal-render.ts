@@ -155,6 +155,13 @@ export async function renderTokyoPelekaPostalPages(params: {
           ? await downloadImagesWithConcurrency('', missingCards.map(card => card.image_url), 8)
           : [];
         const downloadedById = new Map(missingCards.map((card, index) => [card.id, downloaded[index]]));
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const failedCards = missingCards.filter(card => !downloadedById.get(card.id));
+          if (!failedCards.length) break;
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+          const retried = await downloadImagesWithConcurrency('', failedCards.map(card => card.image_url), 2);
+          failedCards.forEach((card, index) => downloadedById.set(card.id, retried[index]));
+        }
         const cardImages = new Map<string, Buffer>();
         for (const card of orderedCards) {
           const bytes = params.cardImageBuffers?.get(card.id) ?? downloadedById.get(card.id);

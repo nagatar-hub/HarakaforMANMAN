@@ -124,3 +124,38 @@ test('invalid cached bytes fail closed without publication or redownload', async
   expect(downloadImagesWithConcurrency).not.toHaveBeenCalled();
   expect(publishTogether).not.toHaveBeenCalled();
 });
+
+test('transient download failure retries only the same failed URL at lower concurrency', async () => {
+  jest.mocked(downloadImagesWithConcurrency)
+    .mockResolvedValueOnce([cardBack, null])
+    .mockResolvedValueOnce([null])
+    .mockResolvedValueOnce([cardBack]);
+
+  const result = await render();
+
+  expect(jest.mocked(downloadImagesWithConcurrency).mock.calls).toEqual([
+    ['', ['https://postal.invalid/2.png', 'https://postal.invalid/1.png'], 8],
+    ['', ['https://postal.invalid/1.png'], 2],
+    ['', ['https://postal.invalid/1.png'], 2],
+  ]);
+  expect(result.count).toBe(1);
+  expect(result.publishTogether).toHaveBeenCalledTimes(1);
+  expect((await sharp(result.uploads[0]).metadata()).format).toBe('png');
+});
+
+test('persistent download failure stops after three attempts without publishing partial pages', async () => {
+  jest.mocked(downloadImagesWithConcurrency)
+    .mockResolvedValueOnce([cardBack, null])
+    .mockResolvedValueOnce([null])
+    .mockResolvedValueOnce([null]);
+  const { supabase, uploads } = boundary();
+  const publishTogether = jest.fn(async () => {});
+
+  await expect(renderTokyoPelekaPostalPages({
+    supabase: supabase as any, runId, snapshot, preparedCards: cards,
+    datePath: '2026/10/06', generationVersion: 1, publishTogether,
+  })).rejects.toThrow('Peleka郵送商品の画像取得失敗: sourceId=source-1');
+  expect(downloadImagesWithConcurrency).toHaveBeenCalledTimes(3);
+  expect(publishTogether).not.toHaveBeenCalled();
+  expect(uploads).toHaveLength(0);
+});
