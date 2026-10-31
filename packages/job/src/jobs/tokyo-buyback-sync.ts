@@ -25,14 +25,14 @@ const KECAK_FRANCHISES = ['Pokemon', 'ONE PIECE', 'DRAGON BALL', 'WEISS SCHWARZ'
 
 type OrderRow = { id: string; excel_product_id: string; franchise: string; card_name: string;
   list_no: string | null; grade: string | null; match_status: string; source_price: number | null;
-  demand?: number | null; db_card_id?: string | null };
+  demand?: number | null; db_card_id?: string | null; db_card?: { tag: string | null } | null };
 type CheckerProduct = { source_product_id: number; category: string; name: string;
   full_name: string | null; model_number: string | null; image_url?: string | null };
 type CheckerOffer = { source_product_id: number; shop_id: number; condition_id: number; edition_id: number;
   edition_name?: string | null; buy_price?: number; source_updated_at?: string | null };
 export type TokyoCandidate = Omit<PostalCandidate, 'source'> & { source: TokyoPriceSource; sourceProductId?: number;
   conditionId?: number; sourcePrice?: number | null; dbCardId?: string | null; imageUrl?: string | null;
-  observedAt?: string | null; priceStale?: boolean };
+  observedAt?: string | null; priceStale?: boolean; matchName?: string };
 type ComparedOrigin = TokyoCandidate & { rawPrice: number; highRate: number; highPrice: number;
   lowRate: number; lowPrice: number; excluded?: true };
 
@@ -89,6 +89,14 @@ const withinPriceAge = (value: string | null | undefined, businessDate?: string,
   return age !== null && age <= maxAgeDays;
 };
 
+// KECAK の ONE PIECE PSA10 は素のカード名で来るため、柄がシンソク表記と一対一に決まる DB タグに限り柄を補って照合する。
+const KECAK_PSA_TAG_LABELS = new Map([
+  ['コミパラ', '(パラレル/漫画背景/漫画絵)'],
+  ['コミパラ/レッド', '(レッドパラレル/漫画背景/漫画絵)'],
+  ['パラレル/手配書', '(パラレル/手配書)'],
+  ['タロット', '(パラレル/SP/タロット柄)'],
+]);
+
 export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[],
   options: { businessDate?: string; kecakObservedAt?: string | null; kecakBusinessDate?: string;
     maxPriceAgeDays?: number } = {}): TokyoCandidate[] {
@@ -102,10 +110,13 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
     if (['excluded', 'invalid'].includes(row.match_status) || isBuiltInOrderListExclusion(row.card_name)) continue;
     const grade = (row.grade ?? '').normalize('NFKC').replace(/\s/g, '').toUpperCase();
     const productType = isBoxRow(row) ? 'BOX' : grade === 'PSA10' ? 'PSA10' : null;
+    const label = productType === 'PSA10' && row.franchise === 'ONE PIECE'
+      ? KECAK_PSA_TAG_LABELS.get(row.db_card?.tag?.trim() ?? '') : undefined;
     if (productType) candidates.push({ source: 'kecak', id: row.excel_product_id,
       franchise: row.franchise, name: row.card_name, modelNumber: row.list_no, productType,
       sourcePrice: kecakPriceIsCurrent ? row.source_price : null, priceStale: !kecakPriceIsCurrent,
-      dbCardId: row.db_card_id, observedAt: options.kecakObservedAt });
+      dbCardId: row.db_card_id, observedAt: options.kecakObservedAt,
+      ...(label ? { matchName: `${row.card_name}${label}` } : {}) });
   }
   const productById = new Map(products.map(product => [product.source_product_id, product]));
   const seen = new Set<string>();
@@ -138,6 +149,8 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
     imageUrl: product.imageUrl, observedAt,
   }))];
   const groups = new Map<string, TokyoCandidate[]>();
+  // 柄を補った名前はシンソクに同じ商品がある時だけ使い、無ければ従来の識別子（＝商品ID）を保つ。
+  const shinsokuIdentities = new Set(shinsokuProducts.map(product => postalProductIdentity(product)));
   const unmatched: { candidate: TokyoCandidate; reason: 'missing_model' | 'invalid_price' | 'stale_price' | 'ambiguous' | 'zero_after_discount' | 'outlier_price' }[] = [];
   for (const candidate of all) {
     if (candidate.productType === 'PSA10' && !candidate.modelNumber?.trim()) {
@@ -149,7 +162,9 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
       unmatched.push({ candidate, reason: candidate.priceStale ? 'stale_price' : 'invalid_price' });
       continue;
     }
-    const identity = postalProductIdentity({ ...candidate, name: tokyoBoxAliasName(candidate) });
+    const tagged = candidate.matchName ? postalProductIdentity({ ...candidate, name: candidate.matchName }) : null;
+    const identity = tagged && shinsokuIdentities.has(tagged) ? tagged
+      : postalProductIdentity({ ...candidate, name: tokyoBoxAliasName(candidate) });
     groups.set(identity, [...(groups.get(identity) ?? []), candidate]);
   }
 
@@ -165,7 +180,8 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
       const candidate = bySource.get(source)?.[0];
       if (!candidate || !validPrice(candidate.sourcePrice)) return [];
       const rates = settings.tokyo_source_discount_rates[source];
-      return [{ ...candidate, rawPrice: candidate.sourcePrice,
+      const { matchName: _matchName, ...origin } = candidate;
+      return [{ ...origin, rawPrice: candidate.sourcePrice,
         highRate: rates.high, highPrice: tokyoDisplayPrice(candidate.sourcePrice, candidate.franchise as Franchise, candidate.productType, rates.high),
         lowRate: rates.low, lowPrice: tokyoDisplayPrice(candidate.sourcePrice, candidate.franchise as Franchise, candidate.productType, rates.low) }];
     });
@@ -268,7 +284,7 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   }
   const [{ data: config, error: configError }, orderRows, products, offers] = await Promise.all([
     db.from('store_config').select('settings').eq('store', TOKYO_BUYBACK_STORE).single(),
-    allRows<OrderRow>(db, 'order_list_item', { import_id: order.id }, 'id'),
+    allRows<OrderRow>(db, 'order_list_item', { import_id: order.id }, 'id', '*, db_card(tag)'),
     allRows<CheckerProduct>(db, 'kaitori_checker_product_snapshot', { run_id: checker.id, store: CHECKER_STORE }, 'source_product_id'),
     allRows<CheckerOffer>(db, 'kaitori_checker_offer_snapshot', { run_id: checker.id, store: CHECKER_STORE }, 'source_product_id,shop_id,condition_id,edition_id'),
   ]);

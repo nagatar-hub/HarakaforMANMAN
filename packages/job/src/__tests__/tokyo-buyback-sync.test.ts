@@ -111,6 +111,39 @@ test('a Blue Rocket BOX publishes on its own and only Shinsoku supplies the cata
     selected_high_source: 'shinsoku' });
 });
 
+test('KECAK ONE PIECE PSA10 joins the Shinsoku variant only when its DB tag fixes the label', () => {
+  const row = (id: string, card_name: string, list_no: string, tag: string | null) => ({ id, excel_product_id: id,
+    franchise: 'ONE PIECE', card_name, list_no, grade: 'PSA10', match_status: 'matched', source_price: 120000,
+    db_card: tag === null ? null : { tag } });
+  const shinsoku = (id: string, name: string, modelNumber: string): ShinsokuPostalProduct => ({
+    id, franchise: 'ONE PIECE', name, modelNumber, productType: 'PSA10', price: 98000, imageUrl: null });
+  const official = [
+    shinsoku('IAO-sabo', 'サボ(パラレル/漫画背景/漫画絵)', 'OP13-120'),
+    shinsoku('IAO-sabo-red', 'サボ(レッドパラレル/漫画背景/漫画絵)', 'OP13-120'),
+    shinsoku('IAO-ace-red', 'ポートガス・Ｄ・エース(レッドパラレル/漫画背景/漫画絵)', 'OP13-119'),
+    shinsoku('IAO-zoro', 'ロロノア・ゾロ(コンパス背景)', 'OP06-118'),
+  ];
+  const result = compareTokyoSourceProducts(tokyoProductCandidates([
+    row('k-sabo', 'サボ', 'OP13-120', 'コミパラ'),
+    row('k-ace', 'ポートガス・D・エース', 'OP13-119', 'コミパラ/レッド'),
+    row('k-zoro', 'ロロノア・ゾロ', 'OP06-118', '2周年'),
+  ], [], []), official, SETTINGS, OBSERVED_AT);
+  const sources = (id: string) => result.products.find(product => product.id === id)?.origins.map(origin => origin.source);
+  expect(sources('IAO-sabo')).toEqual(['kecak', 'shinsoku']);
+  expect(sources('IAO-sabo-red')).toEqual(['shinsoku']);
+  expect(sources('IAO-ace-red')).toEqual(['kecak', 'shinsoku']);
+  expect(sources('IAO-zoro')).toEqual(['shinsoku']);
+  expect(result.products.find(product => product.id === 'IAO-sabo')?.name).toBe('サボ(パラレル/漫画背景/漫画絵)');
+  expect(result.products.flatMap(product => product.origins).some(origin => 'matchName' in origin)).toBe(false);
+  expect(result.products.filter(product => product.id.startsWith('TOKYO_')).map(product => product.name)).toEqual(['ロロノア・ゾロ']);
+
+  // Shinsoku に同じ柄が無ければ、タグ付きでも従来の識別子＝商品IDのまま。
+  const alone = (tag: string | null) => compareTokyoSourceProducts(
+    tokyoProductCandidates([row('k-uta', 'ウタ', 'EB03-061', tag)], [], []), official, SETTINGS, OBSERVED_AT)
+    .products.find(product => product.origins.some(origin => origin.source === 'kecak'))?.id;
+  expect(alone('コミパラ')).toBe(alone(null));
+});
+
 test('the two reviewed Tokyo BOX aliases merge sources, keep canonical names and preserve ambiguity', () => {
   const box = (source: 'kecak' | 'blue_rocket', id: string, franchise: string, name: string, sourcePrice: number): TokyoCandidate => ({
     source, id, franchise, name, modelNumber: null, productType: 'BOX', sourcePrice,

@@ -83,6 +83,18 @@ test('Tokyo BOX aliases cover only the two reviewed products and their canonical
   }
 });
 
+test('Tokyo BOX aliases merge the reviewed STORY BOOSTER 01 and Heroines Edition spellings with Shinsoku', () => {
+  const key = (franchise: string, name: string) => postalProductIdentity({
+    franchise, name: tokyoBoxAliasName({ franchise, name, productType: 'BOX' }), modelNumber: null, productType: 'BOX',
+  });
+  expect(key('DRAGON BALL', '[1BOX]STORY BOOSTER 01')).toBe(key('DRAGON BALL', 'STORY BOOSTER 01 ST01'));
+  expect(key('ONE PIECE', 'エクストラブースター ONE PIECE Heroines Edition'))
+    .toBe(key('ONE PIECE', 'EB03 Heroines edition ヒロインズエディション'));
+  expect(key('DRAGON BALL', '[1BOX]STORY BOOSTER 02')).not.toBe(key('DRAGON BALL', 'STORY BOOSTER 01 ST01'));
+  expect(key('Pokemon', 'エクストラブースター ONE PIECE Heroines Edition'))
+    .not.toBe(key('Pokemon', 'EB03 Heroines edition ヒロインズエディション'));
+});
+
 test('Weiss Shinsoku ゲーム版 label is the same BOX as the plain title, not The Animation', () => {
   const box = (name: string) => postalProductIdentity({ franchise: 'WEISS SCHWARZ', name, modelNumber: null, productType: 'BOX' });
   expect(box('ブルーアーカイブ　ゲーム版')).toBe(box('[1BOX]ブルーアーカイブ(初版再販問わず)'));
