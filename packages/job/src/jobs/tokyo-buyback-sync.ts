@@ -96,6 +96,15 @@ const KECAK_PSA_TAG_LABELS = new Map([
   ['パラレル/手配書', '(パラレル/手配書)'],
   ['タロット', '(パラレル/SP/タロット柄)'],
 ]);
+// タグで柄が決まらない KECAK の DB カードは、画像で同一と確認したシンソク商品へ個別に寄せる（2026-10-31 確認）。
+const KECAK_PSA_REVIEWED_SHINSOKU = new Map([
+  ['db760ce6-2f1c-4c7f-9dbb-6f10307efdea', 'IAO2300025603'], // OP05-060 紫ルフィリーダーパラレル
+  ['618d8e52-5ed6-4cfe-b0b8-a35626618753', 'IAO2500002145'], // OP06-118 2周年ゾロ
+  ['c5a2eb2a-d968-47e2-b28b-8489ebb9ccd7', 'IAO2600003872'], // P-055 バスケルフィ
+  ['08b09c7a-e9ac-4d19-820f-204dd30346db', 'IAO2600005097'], // OP12-034 3周年ペローナ
+  ['c1bca4ed-18d3-4144-a3ec-873c09e25f72', 'IAO2500002757'], // OP08-067 フラシプリン
+  ['6487f3dc-ce27-4d7d-b1bc-79d64c723566', 'IAO2600006892'], // EB02-010 ドジャースルフィ
+]);
 
 export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[],
   options: { businessDate?: string; kecakObservedAt?: string | null; kecakBusinessDate?: string;
@@ -149,8 +158,11 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
     imageUrl: product.imageUrl, observedAt,
   }))];
   const groups = new Map<string, TokyoCandidate[]>();
-  // 柄を補った名前はシンソクに同じ商品がある時だけ使い、無ければ従来の識別子（＝商品ID）を保つ。
-  const shinsokuIdentities = new Set(shinsokuProducts.map(product => postalProductIdentity(product)));
+  // KECAK をシンソク商品へ寄せるのは、価格のあるシンソク商品がちょうど1件ある識別子だけ。無ければ従来の識別子（＝商品ID）を保つ。
+  const shinsokuIdentityById = new Map(shinsokuProducts.filter(product => validPrice(product.price))
+    .map(product => [product.id, postalProductIdentity(product)]));
+  const shinsokuIdentityCount = new Map<string, number>();
+  for (const identity of shinsokuIdentityById.values()) shinsokuIdentityCount.set(identity, (shinsokuIdentityCount.get(identity) ?? 0) + 1);
   const unmatched: { candidate: TokyoCandidate; reason: 'missing_model' | 'invalid_price' | 'stale_price' | 'ambiguous' | 'zero_after_discount' | 'outlier_price' }[] = [];
   for (const candidate of all) {
     if (candidate.productType === 'PSA10' && !candidate.modelNumber?.trim()) {
@@ -162,8 +174,10 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
       unmatched.push({ candidate, reason: candidate.priceStale ? 'stale_price' : 'invalid_price' });
       continue;
     }
-    const tagged = candidate.matchName ? postalProductIdentity({ ...candidate, name: candidate.matchName }) : null;
-    const identity = tagged && shinsokuIdentities.has(tagged) ? tagged
+    const reviewed = candidate.dbCardId ? KECAK_PSA_REVIEWED_SHINSOKU.get(candidate.dbCardId) : undefined;
+    const target = reviewed ? shinsokuIdentityById.get(reviewed)
+      : candidate.matchName ? postalProductIdentity({ ...candidate, name: candidate.matchName }) : undefined;
+    const identity = target && shinsokuIdentityCount.get(target) === 1 ? target
       : postalProductIdentity({ ...candidate, name: tokyoBoxAliasName(candidate) });
     groups.set(identity, [...(groups.get(identity) ?? []), candidate]);
   }
