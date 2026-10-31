@@ -104,6 +104,9 @@ const KECAK_PSA_REVIEWED_SHINSOKU = new Map([
   ['08b09c7a-e9ac-4d19-820f-204dd30346db', 'IAO2600005097'], // OP12-034 3周年ペローナ
   ['c1bca4ed-18d3-4144-a3ec-873c09e25f72', 'IAO2500002757'], // OP08-067 フラシプリン
   ['6487f3dc-ce27-4d7d-b1bc-79d64c723566', 'IAO2600006892'], // EB02-010 ドジャースルフィ
+  ['adb91b84-e0b0-422d-8a5a-03781718b907', 'IAO2600004003'], // OP02-001 赤ニューゲートリーダーパラレル
+  ['926efc8e-274f-4b75-98c4-0e19e6a6825a', 'IAO2600004002'], // OP08-001 赤緑チョッパーリーダーパラレル
+  ['7aa0c0b9-4cd2-4e09-9a16-cccbcdae8a1e', 'IAO2400003813'], // OP09-022 緑紫リムリーダーパラレル
 ]);
 
 export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[],
