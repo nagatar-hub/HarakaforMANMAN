@@ -107,6 +107,12 @@ const KECAK_PSA_REVIEWED_SHINSOKU = new Map([
   ['adb91b84-e0b0-422d-8a5a-03781718b907', 'IAO2600004003'], // OP02-001 赤ニューゲートリーダーパラレル
   ['926efc8e-274f-4b75-98c4-0e19e6a6825a', 'IAO2600004002'], // OP08-001 赤緑チョッパーリーダーパラレル
   ['7aa0c0b9-4cd2-4e09-9a16-cccbcdae8a1e', 'IAO2400003813'], // OP09-022 緑紫リムリーダーパラレル
+  ['0edc94bf-19c4-4548-bb42-7d1e6cabd05b', 'IAO2400000042'], // OP05-069-M コミパラロー
+  ['3b5d39f8-e2b2-4c43-97d3-60c5bd1961db', 'IAO2400000305'], // ST01-012-P 手配書ルフィ
+  ['8c16f6c4-44d8-4b4e-86e5-5a6d6bb0add1', 'IAO2400000178'], // OP06-101-P お祭りおナミ
+  ['3c08a750-ebab-4c14-9461-864558050f78', 'IAO2400000702'], // OP02-013-P 和柄エース
+  ['09227b9f-dd5a-4685-8ddd-377bab44d482', 'IAO2500000215'], // EB01-056 フランぺ（シンソクは EB01-056[OP10]）
+  ['e1058b1a-0af4-4467-bf46-a3a794b779ef', 'IAO2400000661'], // OP01-016-R 中国赤ナミ
 ]);
 
 export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[],
