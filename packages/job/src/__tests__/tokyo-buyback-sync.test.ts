@@ -111,6 +111,64 @@ test('a Blue Rocket BOX publishes on its own and only Shinsoku supplies the cata
     selected_high_source: 'shinsoku' });
 });
 
+test('KECAK ONE PIECE PSA10 joins the Shinsoku variant only when its DB tag fixes the label', () => {
+  const row = (id: string, card_name: string, list_no: string, tag: string | null) => ({ id, excel_product_id: id,
+    franchise: 'ONE PIECE', card_name, list_no, grade: 'PSA10', match_status: 'matched', source_price: 120000,
+    db_card: tag === null ? null : { tag } });
+  const shinsoku = (id: string, name: string, modelNumber: string): ShinsokuPostalProduct => ({
+    id, franchise: 'ONE PIECE', name, modelNumber, productType: 'PSA10', price: 98000, imageUrl: null });
+  const official = [
+    shinsoku('IAO-sabo', 'サボ(パラレル/漫画背景/漫画絵)', 'OP13-120'),
+    shinsoku('IAO-sabo-red', 'サボ(レッドパラレル/漫画背景/漫画絵)', 'OP13-120'),
+    shinsoku('IAO-ace-red', 'ポートガス・Ｄ・エース(レッドパラレル/漫画背景/漫画絵)', 'OP13-119'),
+    shinsoku('IAO-zoro', 'ロロノア・ゾロ(コンパス背景)', 'OP06-118'),
+  ];
+  const result = compareTokyoSourceProducts(tokyoProductCandidates([
+    row('k-sabo', 'サボ', 'OP13-120', 'コミパラ'),
+    row('k-ace', 'ポートガス・D・エース', 'OP13-119', 'コミパラ/レッド'),
+    row('k-zoro', 'ロロノア・ゾロ', 'OP06-118', '2周年'),
+  ], [], []), official, SETTINGS, OBSERVED_AT);
+  const sources = (id: string) => result.products.find(product => product.id === id)?.origins.map(origin => origin.source);
+  expect(sources('IAO-sabo')).toEqual(['kecak', 'shinsoku']);
+  expect(sources('IAO-sabo-red')).toEqual(['shinsoku']);
+  expect(sources('IAO-ace-red')).toEqual(['kecak', 'shinsoku']);
+  expect(sources('IAO-zoro')).toEqual(['shinsoku']);
+  expect(result.products.find(product => product.id === 'IAO-sabo')?.name).toBe('サボ(パラレル/漫画背景/漫画絵)');
+  expect(result.products.flatMap(product => product.origins).some(origin => 'matchName' in origin)).toBe(false);
+  expect(result.products.filter(product => product.id.startsWith('TOKYO_')).map(product => product.name)).toEqual(['ロロノア・ゾロ']);
+
+  // Shinsoku に同じ柄が無ければ、タグ付きでも従来の識別子＝商品IDのまま。
+  const alone = (tag: string | null) => compareTokyoSourceProducts(
+    tokyoProductCandidates([row('k-uta', 'ウタ', 'EB03-061', tag)], [], []), official, SETTINGS, OBSERVED_AT)
+    .products.find(product => product.origins.some(origin => origin.source === 'kecak'))?.id;
+  expect(alone('コミパラ')).toBe(alone(null));
+
+  // 価格の無いシンソク商品や、同じ識別子のシンソク商品が2件ある時も寄せない（KECAK 単独の商品IDを変えず、曖昧で消さない）。
+  const kecakId = (official: ShinsokuPostalProduct[]) => compareTokyoSourceProducts(
+    tokyoProductCandidates([row('k-uta', 'ウタ', 'EB03-061', 'コミパラ')], [], []), official, SETTINGS, OBSERVED_AT)
+    .products.find(product => product.origins.some(origin => origin.source === 'kecak'))?.id;
+  const uta = shinsoku('IAO-uta', 'ウタ(パラレル/漫画背景/漫画絵)', 'EB03-061');
+  expect(kecakId([uta])).toBe('IAO-uta');
+  expect(kecakId([{ ...uta, price: null }])).toBe(alone(null));
+  expect(kecakId([uta, { ...uta, id: 'IAO-uta-2', price: 97000 }])).toBe(alone(null));
+});
+
+test('reviewed KECAK DB cards join their image-confirmed Shinsoku product by id', () => {
+  const kecak = tokyoProductCandidates([{ id: 'k-p055', excel_product_id: 'k-p055', franchise: 'ONE PIECE',
+    card_name: 'Monkey.D.Luffy', list_no: 'P-055', grade: 'PSA10', match_status: 'matched', source_price: 45000,
+    db_card_id: 'c5a2eb2a-d968-47e2-b28b-8489ebb9ccd7', db_card: { tag: 'プロモ' } }], [], []);
+  const basket: ShinsokuPostalProduct = { id: 'IAO2600003872', franchise: 'ONE PIECE',
+    name: 'モンキー・D・ルフィ(英語版/COLLEGE BASKETBALL US VOYAGE)', modelNumber: 'P-055', productType: 'PSA10', price: 34000, imageUrl: null };
+  const merged = compareTokyoSourceProducts(kecak, [basket], SETTINGS, OBSERVED_AT).products;
+  expect(merged).toEqual([expect.objectContaining({ id: 'IAO2600003872', name: basket.name,
+    origins: [expect.objectContaining({ source: 'kecak' }), expect.objectContaining({ source: 'shinsoku' })] })]);
+  const kecakOnly = compareTokyoSourceProducts([{ ...kecak[0], dbCardId: null }], [basket], SETTINGS, OBSERVED_AT)
+    .products.find(product => product.origins[0].source === 'kecak')!.id;
+  expect(kecakOnly).toMatch(/^TOKYO_/);
+  expect(compareTokyoSourceProducts(kecak, [{ ...basket, price: null }], SETTINGS, OBSERVED_AT)
+    .products.find(product => product.origins[0].source === 'kecak')!.id).toBe(kecakOnly);
+});
+
 test('the two reviewed Tokyo BOX aliases merge sources, keep canonical names and preserve ambiguity', () => {
   const box = (source: 'kecak' | 'blue_rocket', id: string, franchise: string, name: string, sourcePrice: number): TokyoCandidate => ({
     source, id, franchise, name, modelNumber: null, productType: 'BOX', sourcePrice,

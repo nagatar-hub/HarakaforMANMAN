@@ -25,14 +25,14 @@ const KECAK_FRANCHISES = ['Pokemon', 'ONE PIECE', 'DRAGON BALL', 'WEISS SCHWARZ'
 
 type OrderRow = { id: string; excel_product_id: string; franchise: string; card_name: string;
   list_no: string | null; grade: string | null; match_status: string; source_price: number | null;
-  demand?: number | null; db_card_id?: string | null };
+  demand?: number | null; db_card_id?: string | null; db_card?: { tag: string | null } | null };
 type CheckerProduct = { source_product_id: number; category: string; name: string;
   full_name: string | null; model_number: string | null; image_url?: string | null };
 type CheckerOffer = { source_product_id: number; shop_id: number; condition_id: number; edition_id: number;
   edition_name?: string | null; buy_price?: number; source_updated_at?: string | null };
 export type TokyoCandidate = Omit<PostalCandidate, 'source'> & { source: TokyoPriceSource; sourceProductId?: number;
   conditionId?: number; sourcePrice?: number | null; dbCardId?: string | null; imageUrl?: string | null;
-  observedAt?: string | null; priceStale?: boolean };
+  observedAt?: string | null; priceStale?: boolean; matchName?: string };
 type ComparedOrigin = TokyoCandidate & { rawPrice: number; highRate: number; highPrice: number;
   lowRate: number; lowPrice: number; excluded?: true };
 
@@ -89,6 +89,23 @@ const withinPriceAge = (value: string | null | undefined, businessDate?: string,
   return age !== null && age <= maxAgeDays;
 };
 
+// KECAK の ONE PIECE PSA10 は素のカード名で来るため、柄がシンソク表記と一対一に決まる DB タグに限り柄を補って照合する。
+const KECAK_PSA_TAG_LABELS = new Map([
+  ['コミパラ', '(パラレル/漫画背景/漫画絵)'],
+  ['コミパラ/レッド', '(レッドパラレル/漫画背景/漫画絵)'],
+  ['パラレル/手配書', '(パラレル/手配書)'],
+  ['タロット', '(パラレル/SP/タロット柄)'],
+]);
+// タグで柄が決まらない KECAK の DB カードは、画像で同一と確認したシンソク商品へ個別に寄せる（2026-10-31 確認）。
+const KECAK_PSA_REVIEWED_SHINSOKU = new Map([
+  ['db760ce6-2f1c-4c7f-9dbb-6f10307efdea', 'IAO2300025603'], // OP05-060 紫ルフィリーダーパラレル
+  ['618d8e52-5ed6-4cfe-b0b8-a35626618753', 'IAO2500002145'], // OP06-118 2周年ゾロ
+  ['c5a2eb2a-d968-47e2-b28b-8489ebb9ccd7', 'IAO2600003872'], // P-055 バスケルフィ
+  ['08b09c7a-e9ac-4d19-820f-204dd30346db', 'IAO2600005097'], // OP12-034 3周年ペローナ
+  ['c1bca4ed-18d3-4144-a3ec-873c09e25f72', 'IAO2500002757'], // OP08-067 フラシプリン
+  ['6487f3dc-ce27-4d7d-b1bc-79d64c723566', 'IAO2600006892'], // EB02-010 ドジャースルフィ
+]);
+
 export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[],
   options: { businessDate?: string; kecakObservedAt?: string | null; kecakBusinessDate?: string;
     maxPriceAgeDays?: number } = {}): TokyoCandidate[] {
@@ -102,10 +119,13 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
     if (['excluded', 'invalid'].includes(row.match_status) || isBuiltInOrderListExclusion(row.card_name)) continue;
     const grade = (row.grade ?? '').normalize('NFKC').replace(/\s/g, '').toUpperCase();
     const productType = isBoxRow(row) ? 'BOX' : grade === 'PSA10' ? 'PSA10' : null;
+    const label = productType === 'PSA10' && row.franchise === 'ONE PIECE'
+      ? KECAK_PSA_TAG_LABELS.get(row.db_card?.tag?.trim() ?? '') : undefined;
     if (productType) candidates.push({ source: 'kecak', id: row.excel_product_id,
       franchise: row.franchise, name: row.card_name, modelNumber: row.list_no, productType,
       sourcePrice: kecakPriceIsCurrent ? row.source_price : null, priceStale: !kecakPriceIsCurrent,
-      dbCardId: row.db_card_id, observedAt: options.kecakObservedAt });
+      dbCardId: row.db_card_id, observedAt: options.kecakObservedAt,
+      ...(label ? { matchName: `${row.card_name}${label}` } : {}) });
   }
   const productById = new Map(products.map(product => [product.source_product_id, product]));
   const seen = new Set<string>();
@@ -138,6 +158,11 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
     imageUrl: product.imageUrl, observedAt,
   }))];
   const groups = new Map<string, TokyoCandidate[]>();
+  // KECAK をシンソク商品へ寄せるのは、価格のあるシンソク商品がちょうど1件ある識別子だけ。無ければ従来の識別子（＝商品ID）を保つ。
+  const shinsokuIdentityById = new Map(shinsokuProducts.filter(product => validPrice(product.price))
+    .map(product => [product.id, postalProductIdentity(product)]));
+  const shinsokuIdentityCount = new Map<string, number>();
+  for (const identity of shinsokuIdentityById.values()) shinsokuIdentityCount.set(identity, (shinsokuIdentityCount.get(identity) ?? 0) + 1);
   const unmatched: { candidate: TokyoCandidate; reason: 'missing_model' | 'invalid_price' | 'stale_price' | 'ambiguous' | 'zero_after_discount' | 'outlier_price' }[] = [];
   for (const candidate of all) {
     if (candidate.productType === 'PSA10' && !candidate.modelNumber?.trim()) {
@@ -149,7 +174,11 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
       unmatched.push({ candidate, reason: candidate.priceStale ? 'stale_price' : 'invalid_price' });
       continue;
     }
-    const identity = postalProductIdentity({ ...candidate, name: tokyoBoxAliasName(candidate) });
+    const reviewed = candidate.dbCardId ? KECAK_PSA_REVIEWED_SHINSOKU.get(candidate.dbCardId) : undefined;
+    const target = reviewed ? shinsokuIdentityById.get(reviewed)
+      : candidate.matchName ? postalProductIdentity({ ...candidate, name: candidate.matchName }) : undefined;
+    const identity = target && shinsokuIdentityCount.get(target) === 1 ? target
+      : postalProductIdentity({ ...candidate, name: tokyoBoxAliasName(candidate) });
     groups.set(identity, [...(groups.get(identity) ?? []), candidate]);
   }
 
@@ -165,7 +194,8 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
       const candidate = bySource.get(source)?.[0];
       if (!candidate || !validPrice(candidate.sourcePrice)) return [];
       const rates = settings.tokyo_source_discount_rates[source];
-      return [{ ...candidate, rawPrice: candidate.sourcePrice,
+      const { matchName: _matchName, ...origin } = candidate;
+      return [{ ...origin, rawPrice: candidate.sourcePrice,
         highRate: rates.high, highPrice: tokyoDisplayPrice(candidate.sourcePrice, candidate.franchise as Franchise, candidate.productType, rates.high),
         lowRate: rates.low, lowPrice: tokyoDisplayPrice(candidate.sourcePrice, candidate.franchise as Franchise, candidate.productType, rates.low) }];
     });
@@ -268,7 +298,7 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   }
   const [{ data: config, error: configError }, orderRows, products, offers] = await Promise.all([
     db.from('store_config').select('settings').eq('store', TOKYO_BUYBACK_STORE).single(),
-    allRows<OrderRow>(db, 'order_list_item', { import_id: order.id }, 'id'),
+    allRows<OrderRow>(db, 'order_list_item', { import_id: order.id }, 'id', '*, db_card(tag)'),
     allRows<CheckerProduct>(db, 'kaitori_checker_product_snapshot', { run_id: checker.id, store: CHECKER_STORE }, 'source_product_id'),
     allRows<CheckerOffer>(db, 'kaitori_checker_offer_snapshot', { run_id: checker.id, store: CHECKER_STORE }, 'source_product_id,shop_id,condition_id,edition_id'),
   ]);
