@@ -222,6 +222,33 @@ test('the two reviewed Tokyo BOX aliases merge sources, keep canonical names and
   expect(ambiguous.unmatched.map(row => row.reason)).toEqual(['ambiguous', 'ambiguous']);
 });
 
+test('the reviewed ONE PIECE Heroines BOX aliases stay separate and use their Shinsoku catalog ids', () => {
+  const box = (id: string, name: string, sourcePrice: number): TokyoCandidate => ({
+    source: 'blue_rocket', id, franchise: 'ONE PIECE', name, modelNumber: null, productType: 'BOX', sourcePrice,
+  });
+  const result = compareTokyoSourceProducts([
+    box('27386:2:0', 'エクストラブースター ONE PIECE Heroines Edition【EB-03】', 11500),
+    box('34005:2:0', 'エクストラブースター ONE PIECE Heroines Edition vol.2【EB-05】', 13000),
+  ], [
+    { id: 'IAO2500004120', franchise: 'ONE PIECE', name: 'EB03 Heroines edition ヒロインズエディション',
+      modelNumber: null, productType: 'BOX', price: 11600, imageUrl: 'eb03.jpg' },
+    { id: 'IAX2600019047', franchise: 'ONE PIECE', name: 'EB05 Heroines Edition Vol.2　ヒロインズエディション Vol.2',
+      modelNumber: null, productType: 'BOX', price: 12000, imageUrl: 'eb05.jpg' },
+  ], SETTINGS, OBSERVED_AT);
+
+  expect(result.products).toEqual([
+    expect.objectContaining({ id: 'IAO2500004120', name: 'EB03 Heroines edition ヒロインズエディション',
+      source_price: 11600, price_high: 11000, selected_high_source: 'shinsoku',
+      origins: [expect.objectContaining({ source: 'blue_rocket', rawPrice: 11500 }),
+        expect.objectContaining({ source: 'shinsoku', rawPrice: 11600 })] }),
+    expect.objectContaining({ id: 'IAX2600019047', name: 'EB05 Heroines Edition Vol.2　ヒロインズエディション Vol.2',
+      source_price: 13000, price_high: 11000, selected_high_source: 'blue_rocket',
+      origins: [expect.objectContaining({ source: 'blue_rocket', rawPrice: 13000 }),
+        expect.objectContaining({ source: 'shinsoku', rawPrice: 12000 })] }),
+  ]);
+  expect(result.unmatched).toEqual([]);
+});
+
 test.each([null, 0, -1, 1.5, NaN, Infinity, 100000001])('an invalid price %s never reaches a published product', price => {
   const result = compareTokyoSourceProducts([], [{ ...OFFICIAL, price }], SETTINGS, OBSERVED_AT);
   expect(result.products).toEqual([]);

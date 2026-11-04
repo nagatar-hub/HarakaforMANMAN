@@ -51,6 +51,8 @@ const TOKYO_BOX_NAME_ALIASES = new Map<string, string>([
   ['DRAGON BALL', 'FB11  BRIGHTNESS OF HOPE', 'BRIGHTNESS OF HOPE FB11'],
   ['DRAGON BALL', '[1BOX]STORY BOOSTER 01', 'STORY BOOSTER 01 ST01'],
   ['ONE PIECE', 'エクストラブースター ONE PIECE Heroines Edition', 'EB03 Heroines edition ヒロインズエディション'],
+  ['ONE PIECE', 'エクストラブースター ONE PIECE Heroines Edition【EB-03】', 'EB03 Heroines edition ヒロインズエディション'],
+  ['ONE PIECE', 'エクストラブースター ONE PIECE Heroines Edition vol.2【EB-05】', 'EB05 Heroines Edition Vol.2　ヒロインズエディション Vol.2'],
   ['Pokemon', '[1BOX]30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー'],
   ['Pokemon', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー プレミアムデッキ', '30th CELEBRATION プレミアムデッキセット エーフィ・ブラッキー'],
 ].map(([franchise, name, canonical]) => [JSON.stringify([franchise, normalize(name)]), canonical]));
