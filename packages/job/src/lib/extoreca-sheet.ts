@@ -1,5 +1,6 @@
 import { isBuiltInOrderListExclusion, postalProductIdentity } from '@haraka/shared';
 import { blueRocketModelNumber } from './blue-rocket.js';
+import { fetchMetadataAccessToken } from './cloud-run.js';
 import { fetchWithRetry } from './fetch-with-retry.js';
 import { parseCsv } from './public-csv-sheet.js';
 
@@ -79,13 +80,21 @@ export function extorecaPsaCandidates(rows: ExtorecaRow[], lineup: LineupCard[])
   return { used, skipped };
 }
 
-async function fetchSheet(url: string, productType: 'BOX' | 'PSA10'): Promise<ExtorecaRow[]> {
-  const response = await fetchWithRetry(url, { method: 'GET' }, { timeoutMs: 30_000 });
+async function fetchSheet(url: string, productType: 'BOX' | 'PSA10', isDefault = false): Promise<ExtorecaRow[]> {
+  let response = await fetchWithRetry(url, { method: 'GET' }, { timeoutMs: 30_000 });
+  if (isDefault && (response.status === 401 || response.status === 403)) {
+    const token = await fetchMetadataAccessToken();
+    response = await fetchWithRetry(url, {
+      method: 'GET', headers: { Authorization: `Bearer ${token}` }, redirect: 'error',
+    }, { timeoutMs: 30_000 });
+  }
   if (!response.ok) throw new Error(`エクストレカ${productType}表の取得失敗: HTTP ${response.status}`);
   const rows = parseExtorecaSheet(await response.text(), productType);
   if (productType === 'BOX' && !rows.length) throw new Error('エクストレカBOX表に価格行がありません');
   return rows;
 }
 
-export const fetchExtorecaBoxSheet = (url = EXTORECA_BOX_SHEET_URL) => fetchSheet(url, 'BOX');
-export const fetchExtorecaPsaSheet = (url = EXTORECA_PSA_SHEET_URL) => fetchSheet(url, 'PSA10');
+export const fetchExtorecaBoxSheet = (url = EXTORECA_BOX_SHEET_URL) =>
+  fetchSheet(url, 'BOX', url === EXTORECA_BOX_SHEET_URL);
+export const fetchExtorecaPsaSheet = (url = EXTORECA_PSA_SHEET_URL) =>
+  fetchSheet(url, 'PSA10', url === EXTORECA_PSA_SHEET_URL);
