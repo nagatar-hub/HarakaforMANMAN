@@ -1,11 +1,20 @@
 import {
   buildCurrentTokyoPelekaCatalog,
   buildTokyoPelekaCatalog,
+  loadTokyoPricingSources,
   loadTokyoShinsokuPrices,
+  publishCurrentTokyoPelekaCatalog,
   publishTokyoPelekaCatalog,
 } from '../lib/peleka-catalog';
 
-const prices = new Map([['source-1', 12000], ['source-2', 31000]]);
+const pricingSource = (source: 'kecak' | 'shinsoku', rawPrice: number) => ({
+  source, rawPrice, baselineHighRate: 0.05, baselineHighPrice: Math.floor(rawPrice * 0.95 / 1000) * 1000,
+  baselineLowRate: 0.05, baselineLowPrice: Math.floor(rawPrice * 0.95 / 1000) * 1000,
+});
+const prices = new Map([
+  ['source-1', [pricingSource('kecak', 12000)]],
+  ['source-2', [pricingSource('shinsoku', 31000)]],
+]);
 
 const card = (overrides: Record<string, unknown> = {}) => ({
   id: 'prepared-1', run_id: 'run-1', source_shinsoku_id: 'source-2', raw_import_id: null,
@@ -19,7 +28,7 @@ const card = (overrides: Record<string, unknown> = {}) => ({
 test('builds a deterministic Tokyo-only payload from the exact listed cards', () => {
   const payload = buildTokyoPelekaCatalog({ runId: 'run-1', snapshotId: 'snapshot-1', businessDate: '2026-09-08',
     generatedAt: '2026-09-08T01:00:00Z', cards: [card(), card({ id: 'prepared-2', source_shinsoku_id: 'source-1',
-      card_name: 'BOX', grade: '未開封BOX', tag: 'BOX', list_no: null })], shinsokuPrices: prices });
+      card_name: 'BOX', grade: '未開封BOX', tag: 'BOX', list_no: null })], pricingSources: prices });
   expect(payload.store).toBe('manman-akihabara');
   expect(payload.products.map(product => product.sourceId)).toEqual(['source-1', 'source-2']);
   expect(payload.products[0].productType).toBe('BOX');
@@ -29,12 +38,12 @@ test('builds a deterministic Tokyo-only payload from the exact listed cards', ()
 
 test('rejects duplicate identities and a failed receiver response', async () => {
   expect(() => buildTokyoPelekaCatalog({ runId: 'run', snapshotId: 'snapshot', businessDate: '2026-09-08',
-    generatedAt: '2026-09-08T01:00:00Z', cards: [card(), card({ id: 'prepared-2' })], shinsokuPrices: prices })).toThrow('sourceId重複');
+    generatedAt: '2026-09-08T01:00:00Z', cards: [card(), card({ id: 'prepared-2' })], pricingSources: prices })).toThrow('sourceId重複');
   const originalFetch = global.fetch;
   global.fetch = jest.fn(async () => new Response('rejected', { status: 409 }));
   try {
     const payload = buildTokyoPelekaCatalog({ runId: 'run', snapshotId: 'snapshot', businessDate: '2026-09-08',
-      generatedAt: '2026-09-08T01:00:00Z', cards: [card()], shinsokuPrices: prices });
+      generatedAt: '2026-09-08T01:00:00Z', cards: [card()], pricingSources: prices });
     await expect(publishTokyoPelekaCatalog('https://example.invalid/catalog', 'secret', payload))
       .rejects.toThrow('HTTP 409 rejected');
     expect(global.fetch).toHaveBeenCalledWith('https://example.invalid/catalog', expect.objectContaining({
@@ -53,14 +62,16 @@ test('builds a revisioned payload from the database-allocated full-run snapshot'
     error: null,
   });
   const from = jest.fn(() => ({ select: () => ({ eq: () => ({ in: async () => ({
-    data: [{ id: 'source-2', origins: [{ source: 'shinsoku', rawPrice: 31000 }] }], error: null,
+    data: [{ id: 'source-2', origins: [{ source: 'shinsoku', rawPrice: 31000,
+      highRate: 0.05, highPrice: 29000, lowRate: 0.05, lowPrice: 29000 }] }], error: null,
   }) }) }) }));
   const payload = await buildCurrentTokyoPelekaCatalog({ rpc, from }, 'run-1');
   expect(rpc).toHaveBeenCalledWith('allocate_tokyo_peleka_catalog_revision', { p_run_id: 'run-1' });
   expect(payload).toEqual(expect.objectContaining({ runId: 'run-1', revision: 3, count: 1 }));
 
   expect(from).toHaveBeenCalledWith('tokyo_buyback_product');
-  expect(payload.products[0]).toMatchObject({ sourceId: 'source-2', priceHigh: 30000, shinsokuPrice: 31000 });
+  expect(payload.products[0]).toMatchObject({ sourceId: 'source-2', priceHigh: 30000, shinsokuPrice: 31000,
+    pricingSources: [pricingSource('shinsoku', 31000)] });
 
   await buildCurrentTokyoPelekaCatalog({ rpc, from }, 'run-1', 'page-1');
   expect(rpc).toHaveBeenLastCalledWith('allocate_tokyo_peleka_catalog_revision', {
@@ -68,13 +79,17 @@ test('builds a revisioned payload from the database-allocated full-run snapshot'
   });
 });
 
-test('lists only cards with a Shinsoku price and sends that raw price', () => {
+test('lists every card with valid saved pricing sources and keeps Shinsoku optional', () => {
   const payload = buildTokyoPelekaCatalog({ runId: 'run', snapshotId: 'snapshot', businessDate: '2026-09-08',
-    generatedAt: '2026-09-08T01:00:00Z', shinsokuPrices: new Map([['source-2', 31000]]),
+    generatedAt: '2026-09-08T01:00:00Z', pricingSources: new Map([
+      ['source-2', [pricingSource('shinsoku', 31000)]],
+      ['TOKYO_kecak', [pricingSource('kecak', 30000)]],
+    ]),
     cards: [card(), card({ id: 'prepared-kecak-only', source_shinsoku_id: 'TOKYO_kecak' })] });
   expect(payload.products.map(product => [product.sourceId, product.priceHigh, product.shinsokuPrice]))
-    .toEqual([['source-2', 30000, 31000]]);
-  expect(payload.count).toBe(1);
+    .toEqual([['source-2', 30000, 31000], ['TOKYO_kecak', 30000, undefined]]);
+  expect(payload.products[1]).not.toHaveProperty('shinsokuPrice');
+  expect(payload.count).toBe(2);
 });
 
 test('reads Shinsoku raw prices from the snapshot and ignores missing or outlier-excluded ones', async () => {
@@ -95,4 +110,51 @@ test('reads Shinsoku raw prices from the snapshot and ignores missing or outlier
   const result = await loadTokyoShinsokuPrices(supabase, 'snapshot-1', ids);
   expect([...result]).toEqual([['IA1', 40000]]);
   expect(inCalls.map(call => call.length)).toEqual([100, 4]);
+});
+
+test('reads only complete, non-excluded saved pricing origins in stable source order', async () => {
+  const supabase = { from: () => ({ select: () => ({ eq: () => ({ in: async () => ({ data: [{ id: 'TOKYO_x', origins: [
+    { source: 'shinsoku', rawPrice: 12000, highRate: 0.05, highPrice: 11000, lowRate: 0.05, lowPrice: 11000 },
+    { source: 'kecak', rawPrice: 10000, highRate: 0.05, highPrice: 9000, lowRate: 0.05, lowPrice: 9000 },
+    { source: 'blue_rocket', rawPrice: 500000, highRate: 0.10, highPrice: 450000, lowRate: 0.10, lowPrice: 450000, excluded: true },
+    { source: 'avirile', rawPrice: 0, highRate: 0.10, highPrice: 0, lowRate: 0.10, lowPrice: 0, excluded: true },
+  ] }], error: null }) }) }) }) };
+  const result = await loadTokyoPricingSources(supabase, 'snapshot-1', ['TOKYO_x']);
+  expect(result.get('TOKYO_x')?.map(source => source.source)).toEqual(['kecak', 'shinsoku']);
+});
+
+test('fails closed when a non-excluded saved pricing origin is malformed', async () => {
+  const supabase = { from: () => ({ select: () => ({ eq: () => ({ in: async () => ({ data: [{ id: 'TOKYO_x', origins: [
+    { source: 'kecak', rawPrice: 10000, highRate: 0.05, highPrice: 9000, lowRate: 0.05 },
+  ] }], error: null }) }) }) }) };
+  await expect(loadTokyoPricingSources(supabase, 'snapshot-1', ['TOKYO_x']))
+    .rejects.toThrow('価格ソースデータが不正です');
+});
+
+test('publishes a KECAK-only Dragon PSA from the allocated current snapshot', async () => {
+  const sourceId = 'TOKYO_gogeta';
+  const imageUrl = 'https://fexadnveyuqduiujewrc.supabase.co/storage/v1/object/public/cards/e13bf30e-c07d-46f9-9b84-580a9ef17046.png';
+  const rpc = jest.fn().mockResolvedValue({ data: {
+    runId: 'run-gogeta', snapshotId: 'snapshot-gogeta', businessDate: '2026-11-15',
+    generatedAt: '2026-11-16T00:00:00Z', revision: 4,
+    cards: [card({ id: 'prepared-gogeta', source_shinsoku_id: sourceId, franchise: 'DRAGON BALL',
+      card_name: 'ゴジータ：BR', list_no: 'FB09-121', image_url: imageUrl, price_high: 230000, price_low: 230000 })],
+  }, error: null });
+  const from = jest.fn(() => ({ select: () => ({ eq: () => ({ in: async () => ({ data: [{ id: sourceId, origins: [{
+    source: 'kecak', rawPrice: 249900, highRate: 0.05, highPrice: 230000, lowRate: 0.05, lowPrice: 230000,
+  }] }], error: null }) }) }) }));
+  const originalFetch = global.fetch;
+  global.fetch = jest.fn(async () => new Response(null, { status: 200 }));
+  try {
+    const payload = await publishCurrentTokyoPelekaCatalog({ rpc, from }, 'run-gogeta',
+      'https://example.invalid/catalog', 'secret', 'page-gogeta');
+    expect(rpc).toHaveBeenCalledWith('allocate_tokyo_peleka_catalog_revision', {
+      p_run_id: 'run-gogeta', p_regenerating_page_id: 'page-gogeta',
+    });
+    expect(payload.products).toEqual([expect.objectContaining({ sourceId, imageUrl, priceHigh: 230000,
+      priceLow: 230000, pricingSources: [expect.objectContaining({ source: 'kecak', rawPrice: 249900 })] })]);
+    expect(payload.products[0]).not.toHaveProperty('shinsokuPrice');
+    const sent = JSON.parse(String((jest.mocked(global.fetch).mock.calls[0][1] as RequestInit).body));
+    expect(sent.products).toEqual(payload.products);
+  } finally { global.fetch = originalFetch; }
 });
