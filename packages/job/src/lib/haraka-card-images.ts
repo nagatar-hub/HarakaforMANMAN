@@ -23,7 +23,8 @@ function imageUrl(value: string | null): string | null {
   } catch { return null; }
 }
 
-export function harakaImageUrl(row: DbCardRow): string | null {
+export function harakaImageUrl(row: DbCardRow | string | null): string | null {
+  if (typeof row === 'string' || row === null) return imageUrl(row);
   return imageUrl(row.alt_image_url) ?? (row.image_status === 'dead' ? null : imageUrl(row.image_url));
 }
 

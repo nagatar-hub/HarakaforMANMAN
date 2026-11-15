@@ -25,14 +25,15 @@ const KECAK_FRANCHISES = ['Pokemon', 'ONE PIECE', 'DRAGON BALL', 'WEISS SCHWARZ'
 
 type OrderRow = { id: string; excel_product_id: string; franchise: string; card_name: string;
   list_no: string | null; grade: string | null; match_status: string; source_price: number | null;
-  demand?: number | null; db_card_id?: string | null; db_card?: { tag: string | null } | null };
+  rarity?: string | null; image_url?: string | null; demand?: number | null;
+  db_card_id?: string | null; db_card?: { tag: string | null } | null };
 type CheckerProduct = { source_product_id: number; category: string; name: string;
   full_name: string | null; model_number: string | null; image_url?: string | null };
 type CheckerOffer = { source_product_id: number; shop_id: number; condition_id: number; edition_id: number;
   edition_name?: string | null; buy_price?: number; source_updated_at?: string | null };
 export type TokyoCandidate = Omit<PostalCandidate, 'source'> & { source: TokyoPriceSource; sourceProductId?: number;
   conditionId?: number; sourcePrice?: number | null; dbCardId?: string | null; imageUrl?: string | null;
-  observedAt?: string | null; priceStale?: boolean; matchName?: string };
+  rarity?: string | null; observedAt?: string | null; priceStale?: boolean; matchName?: string };
 type ComparedOrigin = TokyoCandidate & { rawPrice: number; highRate: number; highPrice: number;
   lowRate: number; lowPrice: number; excluded?: true };
 
@@ -134,6 +135,8 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
       franchise: row.franchise, name: row.card_name, modelNumber: row.list_no, productType,
       sourcePrice: kecakPriceIsCurrent ? row.source_price : null, priceStale: !kecakPriceIsCurrent,
       dbCardId: row.db_card_id, observedAt: options.kecakObservedAt,
+      ...(productType === 'PSA10' && row.franchise === 'DRAGON BALL' && ('image_url' in row || 'rarity' in row)
+        ? { imageUrl: row.image_url ?? null, rarity: row.rarity ?? null } : {}),
       ...(label ? { matchName: `${row.card_name}${label}` } : {}) });
   }
   const productById = new Map(products.map(product => [product.source_product_id, product]));
@@ -195,7 +198,9 @@ export function compareTokyoSourceProducts(candidates: TokyoCandidate[], shinsok
   for (const [identity, group] of groups) {
     const bySource = new Map<TokyoPriceSource, TokyoCandidate[]>();
     for (const candidate of group) bySource.set(candidate.source, [...(bySource.get(candidate.source) ?? []), candidate]);
-    if ([...bySource.values()].some(rows => new Set(rows.map(row => `${row.id}:${row.sourcePrice}`)).size > 1)) {
+    if ([...bySource.values()].some(rows => new Set(rows.map(row => `${row.id}:${row.sourcePrice}`)).size > 1
+      || rows[0]?.source === 'kecak' && rows[0].franchise === 'DRAGON BALL' && rows[0].productType === 'PSA10'
+      && rows.some(row => row.imageUrl !== rows[0].imageUrl || row.rarity !== rows[0].rarity))) {
       unmatched.push(...group.map(candidate => ({ candidate, reason: 'ambiguous' as const })));
       continue;
     }

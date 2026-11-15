@@ -105,6 +105,16 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
       && new URL(importedPrimaryImage).hostname === 'fexadnveyuqduiujewrc.supabase.co'
       && new URL(importedPrimaryImage).pathname.startsWith('/storage/v1/object/public/cards/')
       ? importedPrimaryImage : null;
+    const dragonSourceOrigins = !box && product.franchise === 'DRAGON BALL' && Array.isArray(product.origins)
+      ? product.origins.filter(origin => origin.source === 'kecak' && ('imageUrl' in origin || 'rarity' in origin))
+      : [];
+    const dragonSourceEvidencePresent = dragonSourceOrigins.length > 0;
+    const dragonSourceEvidence = dragonSourceOrigins[0] && dragonSourceOrigins.every(origin =>
+      origin.imageUrl === dragonSourceOrigins[0].imageUrl && origin.rarity === dragonSourceOrigins[0].rarity)
+      ? dragonSourceOrigins[0] : null;
+    const dragonSourceImageValue = typeof dragonSourceEvidence?.imageUrl === 'string' ? dragonSourceEvidence.imageUrl : null;
+    const dragonSourceRarity = typeof dragonSourceEvidence?.rarity === 'string' ? dragonSourceEvidence.rarity : null;
+    const dragonSourceImage = harakaImageUrl(dragonSourceImageValue);
     const directShinsokuImage = !box && ['DRAGON BALL', 'WEISS SCHWARZ'].includes(product.franchise)
       && Array.isArray(product.origins) && product.origins.some(origin => origin.source === 'shinsoku')
       ? product.image_url : null;
@@ -148,10 +158,12 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
     return {
       run_id: runId, raw_import_id: null, source_shinsoku_id: product.id,
       franchise: product.franchise, card_name: product.name, grade: box ? '未開封BOX' : 'PSA10',
-      list_no: product.model_number, image_url: verifiedImage ?? importedImage ?? harakaImage.imageUrl ?? directShinsokuImage ?? (box ? product.image_url : null),
-      alt_image_url: !verifiedImage && importedImage ? importedFallbackImage : null,
+      list_no: product.model_number,
+      image_url: dragonSourceEvidencePresent ? dragonSourceImage
+        : verifiedImage ?? importedImage ?? harakaImage.imageUrl ?? directShinsokuImage ?? (box ? product.image_url : null),
+      alt_image_url: !dragonSourceEvidencePresent && !verifiedImage && importedImage ? importedFallbackImage : null,
       db_card_id: dbCardId,
-      rarity: null, rarity_icon_url: null, tag,
+      rarity: dragonSourceEvidencePresent ? dragonSourceRarity : null, rarity_icon_url: null, tag,
       price_high: product.price_high,
       price_low: product.price_low,
       image_status: 'unchecked',
