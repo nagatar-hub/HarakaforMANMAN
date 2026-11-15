@@ -11,8 +11,20 @@ export type PelekaCatalogProduct = {
   imageUrl: string;
   priceHigh: number;
   priceLow: number;
-  /** シンソク郵送買取の元価格。Peleka は Haraka の掲載価格ではなくこれに自店の価格倍率を掛ける。 */
-  shinsokuPrice: number;
+  /** 旧Peleka receiver用。新receiverはpricingSourcesを優先する。 */
+  shinsokuPrice?: number;
+  pricingSources: TokyoPelekaPricingSource[];
+};
+
+const TOKYO_PRICE_SOURCES = ['kecak', 'blue_rocket', 'extoreca', 'toreca_bank', 'avirile', 'shinsoku'] as const;
+type TokyoPriceSource = typeof TOKYO_PRICE_SOURCES[number];
+export type TokyoPelekaPricingSource = {
+  source: TokyoPriceSource;
+  rawPrice: number;
+  baselineHighRate: number;
+  baselineHighPrice: number;
+  baselineLowRate: number;
+  baselineLowPrice: number;
 };
 
 export function buildTokyoPelekaCatalog(params: {
@@ -22,19 +34,20 @@ export function buildTokyoPelekaCatalog(params: {
   generatedAt: string;
   revision?: number;
   cards: PreparedCardRow[];
-  /** スナップショット商品ID -> シンソク元価格。シンソクに価格が無い商品は Peleka に載せない。 */
-  shinsokuPrices: ReadonlyMap<string, number>;
+  /** スナップショット商品ID -> 比較済みの有効な価格ソース。 */
+  pricingSources: ReadonlyMap<string, TokyoPelekaPricingSource[]>;
 }) {
-  const products: PelekaCatalogProduct[] = params.cards.flatMap(card => {
+  const products: PelekaCatalogProduct[] = params.cards.map(card => {
     const sourceId = card.source_shinsoku_id?.trim();
-    const shinsokuPrice = sourceId ? params.shinsokuPrices.get(sourceId) : undefined;
-    if (shinsokuPrice === undefined) return [];
+    const pricingSources = sourceId ? params.pricingSources.get(sourceId) : undefined;
     const imageUrl = (card.image_url || card.alt_image_url)?.trim();
     if (!sourceId || !imageUrl || !card.card_name.trim() || !card.price_high
-      || card.price_low === null || card.price_low === undefined || card.price_low < 0 || card.price_low > card.price_high) {
+      || card.price_low === null || card.price_low === undefined || card.price_low < 0 || card.price_low > card.price_high
+      || !pricingSources?.length) {
       throw new Error(`Peleka掲載商品データが不完全です: prepared_card=${card.id}`);
     }
-    return [{
+    const shinsokuPrice = pricingSources.find(source => source.source === 'shinsoku')?.rawPrice;
+    return {
       sourceId,
       franchise: card.franchise,
       productType: card.tag === 'BOX' || card.grade === 'BOX' || card.grade === '未開封BOX' ? 'BOX' as const : 'PSA10' as const,
@@ -43,8 +56,9 @@ export function buildTokyoPelekaCatalog(params: {
       imageUrl,
       priceHigh: card.price_high,
       priceLow: card.price_low,
-      shinsokuPrice,
-    }];
+      ...(shinsokuPrice === undefined ? {} : { shinsokuPrice }),
+      pricingSources,
+    };
   }).sort((a, b) => a.sourceId.localeCompare(b.sourceId));
   if (new Set(products.map(product => product.sourceId)).size !== products.length) {
     throw new Error('Peleka掲載商品にsourceId重複があります');
@@ -64,6 +78,45 @@ export function buildTokyoPelekaCatalog(params: {
 
 const validSourcePrice = (value: unknown): value is number => typeof value === 'number'
   && Number.isSafeInteger(value) && value > 0 && value <= 100_000_000;
+const validBaselinePrice = (value: unknown): value is number => typeof value === 'number'
+  && Number.isSafeInteger(value) && value >= 0 && value <= 100_000_000;
+const validRate = (value: unknown): value is number => typeof value === 'number'
+  && Number.isFinite(value) && value >= 0 && value <= 1;
+
+export async function loadTokyoPricingSources(
+  supabase: { from: unknown },
+  snapshotId: string,
+  sourceIds: string[],
+): Promise<Map<string, TokyoPelekaPricingSource[]>> {
+  const pricing = new Map<string, TokyoPelekaPricingSource[]>();
+  const ids = [...new Set(sourceIds)];
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const { data, error } = await (supabase.from as (table: string) => {
+      select: (columns: string) => { eq: (column: string, value: string) => {
+        in: (column: string, values: string[]) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> } };
+    })('tokyo_buyback_product').select('id,origins').eq('snapshot_id', snapshotId).in('id', ids.slice(offset, offset + 100));
+    if (error) throw new Error(`価格ソースの取得失敗: ${error.message}`);
+    for (const row of (data ?? []) as { id: string; origins: unknown }[]) {
+      if (!Array.isArray(row.origins)) continue;
+      const sources: TokyoPelekaPricingSource[] = [];
+      for (const origin of row.origins) {
+        if (!origin || typeof origin !== 'object') throw new Error(`価格ソースデータが不正です: product=${row.id}`);
+        const value = origin as Record<string, unknown>;
+        if (value.excluded === true) continue;
+        if (!TOKYO_PRICE_SOURCES.includes(value.source as TokyoPriceSource)
+          || !validSourcePrice(value.rawPrice) || !validRate(value.highRate) || !validRate(value.lowRate)
+          || !validBaselinePrice(value.highPrice) || !validBaselinePrice(value.lowPrice)
+          || value.lowPrice > value.highPrice) throw new Error(`価格ソースデータが不正です: product=${row.id}`);
+        sources.push({ source: value.source as TokyoPriceSource, rawPrice: value.rawPrice,
+          baselineHighRate: value.highRate, baselineHighPrice: value.highPrice,
+          baselineLowRate: value.lowRate, baselineLowPrice: value.lowPrice });
+      }
+      sources.sort((a, b) => TOKYO_PRICE_SOURCES.indexOf(a.source) - TOKYO_PRICE_SOURCES.indexOf(b.source));
+      if (sources.length && new Set(sources.map(source => source.source)).size === sources.length) pricing.set(row.id, sources);
+    }
+  }
+  return pricing;
+}
 
 /** 比較で外れ値として除外されたシンソク価格は使わない（価格無しと同じ扱い）。 */
 export async function loadTokyoShinsokuPrices(
@@ -112,9 +165,9 @@ export async function buildCurrentTokyoPelekaCatalog(
   );
   if (error || !data) throw new Error(`Pelekaカタログスナップショット取得失敗: ${error?.message ?? '該当なし'}`);
   const snapshot = data as TokyoPelekaCatalogSnapshot;
-  const shinsokuPrices = await loadTokyoShinsokuPrices(supabase, snapshot.snapshotId,
+  const pricingSources = await loadTokyoPricingSources(supabase, snapshot.snapshotId,
     snapshot.cards.flatMap(card => card.source_shinsoku_id?.trim() ? [card.source_shinsoku_id.trim()] : []));
-  return buildTokyoPelekaCatalog({ ...snapshot, shinsokuPrices });
+  return buildTokyoPelekaCatalog({ ...snapshot, pricingSources });
 }
 
 export async function publishTokyoPelekaCatalog(
