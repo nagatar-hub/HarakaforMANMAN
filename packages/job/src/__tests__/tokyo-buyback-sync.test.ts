@@ -169,6 +169,86 @@ test('reviewed KECAK DB cards join their image-confirmed Shinsoku product by id'
     .products.find(product => product.origins[0].source === 'kecak')!.id).toBe(kecakOnly);
 });
 
+test('DRAGON BALL PSA keeps the exact KECAK row image and rarity with its rounded price', () => {
+  const sourceImage = 'https://fexadnveyuqduiujewrc.supabase.co/storage/v1/object/public/cards/e13bf30e-c07d-46f9-9b84-580a9ef17046.png';
+  const wrongImage = 'https://fexadnveyuqduiujewrc.supabase.co/storage/v1/object/public/cards/1843d25e-14f3-48e0-a01c-2365db66c4ec.20260318_7cd34b.jpg';
+  const candidates = tokyoProductCandidates([{
+    id: 'order-row', excel_product_id: '1e25f3a6-ede6-4e46-be77-46332c6418e6', franchise: 'DRAGON BALL',
+    card_name: 'ゴジータ：BR', list_no: 'FB09-121', grade: 'PSA10', match_status: 'matched', source_price: 249900,
+    image_url: sourceImage, rarity: 'SCR☆☆', db_card_id: '194b1b23-db17-4754-9ef7-ccd5d5158429',
+  }], [], []);
+  expect(candidates[0]).toMatchObject({ imageUrl: sourceImage, rarity: 'SCR☆☆' });
+
+  const result = compareTokyoSourceProducts(candidates, [], SETTINGS, OBSERVED_AT);
+  expect(result.products[0]).toMatchObject({ source_price: 249900, price_high: 230000, price_low: 230000,
+    origins: [expect.objectContaining({ imageUrl: sourceImage, rarity: 'SCR☆☆' })] });
+  const mapping = {
+    provider: 'tcgmp', provider_product_id: '123', source_shinsoku_id: result.products[0].id,
+    franchise: 'DRAGON BALL', product_type: 'psa', name: 'ゴジータ：BR', model_number: 'FB09-121',
+    tcgmp_product_id: '123', tcgmp_sku: 'sku', sha256: 'a'.repeat(64),
+    image_url: `https://abyecthqjjssegwazhwm.supabase.co/storage/v1/object/public/haraka-images/card-images/manman-akihabara/tcgmp/${'a'.repeat(64)}.png`,
+    verified_at: '2026-11-15T00:00:00Z',
+    evidence: { no_sample: true, no_slab: true, variant_confirmed: true, note: 'reviewed' },
+  } as any;
+  const dbCard = { id: '194b1b23-db17-4754-9ef7-ccd5d5158429', store: 'manman-akihabara',
+    franchise: 'DRAGON BALL', card_name: 'ゴジータ：BR', grade: 'PSA10', list_no: 'FB09-121',
+    image_url: wrongImage, alt_image_url: null, image_status: 'alive', tag: 'TOP' } as any;
+  const [prepared] = buildTokyoPreparedCards('run', {
+    snapshot: { store: 'manman-akihabara', business_date: '2026-11-15', settings: SETTINGS },
+    products: result.products,
+  } as any, [mapping], [dbCard]);
+  expect(prepared).toMatchObject({ image_url: sourceImage, alt_image_url: null, rarity: 'SCR☆☆',
+    db_card_id: dbCard.id, tag: 'TOP', price_high: 230000, price_low: 230000 });
+});
+
+test('DRAGON BALL PSA source evidence fails closed when unsafe or conflicting, while legacy snapshots keep fallback', () => {
+  const safeImage = 'https://fexadnveyuqduiujewrc.supabase.co/storage/v1/object/public/cards/source.png';
+  const dbImage = 'https://fexadnveyuqduiujewrc.supabase.co/storage/v1/object/public/cards/db.png';
+  const row = { id: 'db', store: 'manman-akihabara', franchise: 'DRAGON BALL', card_name: 'ゴジータ：BR',
+    grade: 'PSA10', list_no: 'FB09-121', image_url: dbImage, alt_image_url: null, image_status: 'alive', tag: 'TOP' } as any;
+  const product = { id: 'dragon', franchise: 'DRAGON BALL', product_type: 'psa', name: 'ゴジータ：BR',
+    model_number: 'FB09-121', image_url: null, source_price: 249900, price_high: 230000, price_low: 230000 };
+  const prepare = (origins: object[]) => buildTokyoPreparedCards('run', {
+    snapshot: { store: 'manman-akihabara', business_date: '2026-11-15', settings: SETTINGS },
+    products: [{ ...product, origins }],
+  } as any, [], [row])[0];
+  const [legacyCandidate] = tokyoProductCandidates([{ id: 'legacy', excel_product_id: 'legacy', franchise: 'DRAGON BALL',
+    card_name: 'ゴジータ：BR', list_no: 'FB09-121', grade: 'PSA10', match_status: 'matched', source_price: 249900,
+    db_card_id: 'db' }], [], []);
+  expect(legacyCandidate).not.toHaveProperty('imageUrl');
+  expect(legacyCandidate).not.toHaveProperty('rarity');
+  expect(prepare([legacyCandidate])).toMatchObject({ image_url: dbImage, rarity: null });
+  expect(prepare([{ source: 'kecak', id: 'unsafe', dbCardId: 'db', imageUrl: 'http://evil.test/card.png', rarity: 'SCR☆☆' }]))
+    .toMatchObject({ image_url: null, alt_image_url: null, rarity: 'SCR☆☆', db_card_id: 'db' });
+
+  const conflict = compareTokyoSourceProducts([
+    { source: 'kecak', id: 'same', franchise: 'DRAGON BALL', name: 'ゴジータ：BR', modelNumber: 'FB09-121',
+      productType: 'PSA10', sourcePrice: 249900, imageUrl: safeImage, rarity: 'SCR☆☆' },
+    { source: 'kecak', id: 'same', franchise: 'DRAGON BALL', name: 'ゴジータ：BR', modelNumber: 'FB09-121',
+      productType: 'PSA10', sourcePrice: 249900, imageUrl: dbImage, rarity: 'SCR★' },
+  ], [], SETTINGS, OBSERVED_AT);
+  expect(conflict.products).toEqual([]);
+  expect(conflict.unmatched.map(entry => entry.reason)).toEqual(['ambiguous', 'ambiguous']);
+});
+
+test('KECAK source image and rarity remain absent from non-Dragon-PSA candidates and snapshots', () => {
+  const image_url = 'https://fexadnveyuqduiujewrc.supabase.co/storage/v1/object/public/cards/source.png';
+  const base = { grade: 'PSA10', match_status: 'matched', source_price: 10000, image_url, rarity: 'source-rarity' };
+  const candidates = tokyoProductCandidates([
+    { ...base, id: 'p', excel_product_id: 'p', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172' },
+    { ...base, id: 'o', excel_product_id: 'o', franchise: 'ONE PIECE', card_name: 'ウタ', list_no: 'OP09-002' },
+    { ...base, id: 'w', excel_product_id: 'w', franchise: 'WEISS SCHWARZ', card_name: 'ヴァイス', list_no: 'W/001' },
+    { ...base, id: 'b', excel_product_id: 'b', franchise: 'DRAGON BALL', card_name: '[1BOX]BOX', list_no: null,
+      grade: '未開封BOX' },
+  ], [], []);
+  for (const candidate of candidates) {
+    expect(candidate).not.toHaveProperty('imageUrl');
+    expect(candidate).not.toHaveProperty('rarity');
+  }
+  expect(compareTokyoSourceProducts(candidates, [], SETTINGS, OBSERVED_AT).products.map(product => product.image_url))
+    .toEqual([null, null, null, null]);
+});
+
 test('the two reviewed Tokyo BOX aliases merge sources, keep canonical names and preserve ambiguity', () => {
   const box = (source: 'kecak' | 'blue_rocket', id: string, franchise: string, name: string, sourcePrice: number): TokyoCandidate => ({
     source, id, franchise, name, modelNumber: null, productType: 'BOX', sourcePrice,
@@ -220,6 +300,33 @@ test('the two reviewed Tokyo BOX aliases merge sources, keep canonical names and
   ], [], SETTINGS, OBSERVED_AT);
   expect(ambiguous.products).toEqual([]);
   expect(ambiguous.unmatched.map(row => row.reason)).toEqual(['ambiguous', 'ambiguous']);
+});
+
+test('the reviewed ONE PIECE Heroines BOX aliases stay separate and use their Shinsoku catalog ids', () => {
+  const box = (id: string, name: string, sourcePrice: number): TokyoCandidate => ({
+    source: 'blue_rocket', id, franchise: 'ONE PIECE', name, modelNumber: null, productType: 'BOX', sourcePrice,
+  });
+  const result = compareTokyoSourceProducts([
+    box('27386:2:0', 'エクストラブースター ONE PIECE Heroines Edition【EB-03】', 11500),
+    box('34005:2:0', 'エクストラブースター ONE PIECE Heroines Edition vol.2【EB-05】', 13000),
+  ], [
+    { id: 'IAO2500004120', franchise: 'ONE PIECE', name: 'EB03 Heroines edition ヒロインズエディション',
+      modelNumber: null, productType: 'BOX', price: 11600, imageUrl: 'eb03.jpg' },
+    { id: 'IAX2600019047', franchise: 'ONE PIECE', name: 'EB05 Heroines Edition Vol.2　ヒロインズエディション Vol.2',
+      modelNumber: null, productType: 'BOX', price: 12000, imageUrl: 'eb05.jpg' },
+  ], SETTINGS, OBSERVED_AT);
+
+  expect(result.products).toEqual([
+    expect.objectContaining({ id: 'IAO2500004120', name: 'EB03 Heroines edition ヒロインズエディション',
+      source_price: 11600, price_high: 11000, selected_high_source: 'shinsoku',
+      origins: [expect.objectContaining({ source: 'blue_rocket', rawPrice: 11500 }),
+        expect.objectContaining({ source: 'shinsoku', rawPrice: 11600 })] }),
+    expect.objectContaining({ id: 'IAX2600019047', name: 'EB05 Heroines Edition Vol.2　ヒロインズエディション Vol.2',
+      source_price: 13000, price_high: 11000, selected_high_source: 'blue_rocket',
+      origins: [expect.objectContaining({ source: 'blue_rocket', rawPrice: 13000 }),
+        expect.objectContaining({ source: 'shinsoku', rawPrice: 12000 })] }),
+  ]);
+  expect(result.unmatched).toEqual([]);
 });
 
 test.each([null, 0, -1, 1.5, NaN, Infinity, 100000001])('an invalid price %s never reaches a published product', price => {

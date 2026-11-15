@@ -3,10 +3,13 @@ import {
   calculateTokyoExtorecaBoxPrice, compareTokyoSourceProducts, type buildTokyoBuybackSnapshot,
   type TokyoCandidate,
 } from '../jobs/tokyo-buyback-sync';
+import { fetchMetadataAccessToken } from '../lib/cloud-run';
 import { extorecaPsaCandidates, fetchExtorecaBoxSheet, fetchExtorecaPsaSheet, parseExtorecaSheet } from '../lib/extoreca-sheet';
 import { buildTokyoPreparedCards } from '../lib/tokyo-normal-cards';
 import { buildTokyoBuybackSheetValues } from '../lib/buyback-sheet';
 import { buildTokyoPelekaCatalog } from '../lib/peleka-catalog';
+
+jest.mock('../lib/cloud-run', () => ({ fetchMetadataAccessToken: jest.fn() }));
 
 const boxCsv = `案内,この行は説明です
 ,商品名,レアリティ,識別番号,希望卸金額（エクス）,納品済,希望個数,残注数,希望納期,卸金額,在庫数,備考
@@ -28,6 +31,7 @@ const boxCandidate = (source: TokyoCandidate['source'], sourcePrice: number | nu
 });
 
 describe('Extoreca CSV fetch', () => {
+  beforeEach(() => jest.mocked(fetchMetadataAccessToken).mockReset());
   afterEach(() => jest.restoreAllMocks());
 
   test.each([
@@ -47,6 +51,38 @@ describe('Extoreca CSV fetch', () => {
 
     fetchMock.mockResolvedValue(new Response(csv.replace('希望卸金額(エクス)', '')));
     await expect(fetchSheet()).rejects.toThrow('ヘッダーが見つかりません');
+  });
+
+  test.each([
+    ['BOX', 401, fetchExtorecaBoxSheet,
+      '商品名,レアリティ,識別番号,希望卸金額(エクス)\n対象BOX,BOX,,12000', 1],
+    ['PSA10', 403, fetchExtorecaPsaSheet,
+      '商品名,レアリティ,識別番号,希望卸金額(エクス)', 0],
+  ] as const)('retries the fixed %s gviz URL with the attached service account after an anonymous auth failure',
+  async (_productType, status, fetchSheet, csv, expectedRows) => {
+    jest.mocked(fetchMetadataAccessToken).mockResolvedValue('metadata-token');
+    const fetchMock = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status }))
+      .mockResolvedValueOnce(new Response(csv));
+
+    await expect(fetchSheet()).resolves.toHaveLength(expectedRows);
+    expect(fetchMetadataAccessToken).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][1]).not.toHaveProperty('headers.Authorization');
+    expect(fetchMock.mock.calls[1][0]).toBe(fetchMock.mock.calls[0][0]);
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({
+      method: 'GET', redirect: 'error', headers: { Authorization: 'Bearer metadata-token' },
+    });
+  });
+
+  test('keeps custom URLs anonymous and never falls back with a bearer token', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 403 }));
+    await expect(fetchExtorecaBoxSheet('https://example.com/custom.csv'))
+      .rejects.toThrow('エクストレカBOX表の取得失敗: HTTP 403');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMetadataAccessToken).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls[0][0]).toBe('https://example.com/custom.csv');
+    expect(fetchMock.mock.calls[0][1]).not.toHaveProperty('headers.Authorization');
   });
 });
 
