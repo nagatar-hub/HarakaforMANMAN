@@ -1,8 +1,0 @@
-# This release preserves the deployed API's other modules and never updates shared tags.
-steps:
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-f', 'Dockerfile.tokyo-peleka', '-t', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-api:${_TAG}', '.']
-substitutions:
-  _TAG: 'tokyo-peleka-manual'
-images:
-  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-api:${_TAG}'
