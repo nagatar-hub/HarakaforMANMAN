@@ -7,7 +7,7 @@ export type CoverageCard = {
   id: string; franchise: string; card_name: string; list_no: string | null; grade: string | null;
   tag: string | null; rarity: string | null; image_url: string | null; alt_image_url: string | null;
   excel_product_id: string | null; source: string; db_card?: { card_name: string } | null;
-  raw_import: { source_price: number | null; price_source: string | null } | null;
+  raw_import: { source_price: number | null; price_source: string | null; raw_row?: Record<string, unknown> | null } | null;
 };
 export type OriparkCoverage = { runId: string; businessDate: string; fingerprint: string; cards: CoverageCard[] };
 export type CoverageItem = { oriparkCardId: string; productId: string; imageUrl: string;
@@ -34,7 +34,7 @@ export async function loadOriparkCoverage(db: SupabaseClient): Promise<OriparkCo
   const [catalog, cards, order] = await Promise.all([
     pages<{ status: string; kind: string; card_ids: string[] }>(db, 'generated_page', run.id, 'id,status,kind,card_ids'),
     pages<CoverageCard>(db, 'prepared_card', run.id,
-      'id,franchise,card_name,list_no,grade,tag,rarity,image_url,alt_image_url,excel_product_id,source,raw_import(source_price,price_source),db_card(card_name)'),
+      'id,franchise,card_name,list_no,grade,tag,rarity,image_url,alt_image_url,excel_product_id,source,raw_import(source_price,price_source,raw_row),db_card(card_name)'),
     db.from('order_list_import').select('business_date').eq('id', run.order_list_import_id).eq('store', 'oripark').single(),
   ]);
   if (order.error || !order.data) throw new Error('Oripark掲載基準の業務日がありません');
@@ -85,7 +85,14 @@ export function completeOriparkCoverage(result: Comparison, baseline: OriparkCov
     }
     if (!matches.length) {
       if (!Number.isInteger(age) || age < 0 || age > maxAgeDays) throw new Error(`Oripark補完価格の鮮度が不足しています: ${baseline.businessDate} ${card.card_name}`);
-      const source = card.raw_import?.price_source === 'order_list' ? 'kecak' : card.raw_import?.price_source;
+      // Oripark keeps order_list as the import origin even when its BOX price
+      // was replaced. The price provenance, not the import origin, selects Tokyo's rate.
+      const override = typeOf(card) === 'BOX' ? card.raw_import?.raw_row?.pokemon_box_price_source : null;
+      if (override != null && override !== 'BOX_PRICE_DB') {
+        throw new Error(`Oripark補完商品の元価格を特定できません: ${card.id}`);
+      }
+      const source = override === 'BOX_PRICE_DB' ? 'shinsoku'
+        : card.raw_import?.price_source === 'order_list' ? 'kecak' : card.raw_import?.price_source;
       if (!['kecak', 'shinsoku', 'extoreca'].includes(source ?? '') || !card.excel_product_id) throw new Error(`Oripark補完商品の元価格を特定できません: ${card.id}`);
       const single = compareOne({ source: source as TokyoCandidate['source'], id: card.excel_product_id,
         franchise: card.franchise, name: card.card_name, modelNumber: card.list_no, productType: typeOf(card),
