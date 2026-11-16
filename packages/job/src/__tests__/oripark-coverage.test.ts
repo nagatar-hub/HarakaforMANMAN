@@ -1,6 +1,6 @@
 import { normalizeStorePricingSettings } from '@haraka/shared';
 import { compareTokyoSourceProducts } from '../jobs/tokyo-buyback-sync';
-import { assertOriparkCoverage, completeOriparkCoverage, coverageMatches, type CoverageCard } from '../lib/oripark-coverage';
+import { assertOriparkCoverage, completeOriparkCoverage, coverageMatches, loadOriparkCoverage, type CoverageCard } from '../lib/oripark-coverage';
 import { buildTokyoPreparedCards } from '../lib/tokyo-normal-cards';
 
 const settings = normalizeStorePricingSettings({});
@@ -58,4 +58,57 @@ test('ambiguous identities fail instead of selecting an arbitrary Tokyo product'
     modelNumber: '236/172', productType: 'PSA10', sourcePrice: 150000 }]);
   result.products.push({ ...result.products[0], id: 'b' });
   expect(() => completeOriparkCoverage(result, baseline(), '2026-11-16', 1, c => compare([c]))).toThrow('複数商品');
+});
+
+test('supplemented overridden BOX prices use Shinsoku rates and provenance, not order-list rates', () => {
+  const custom = normalizeStorePricingSettings({});
+  custom.tokyo_source_discount_rates.kecak = { high: 0.1, low: 0.2 };
+  custom.tokyo_source_discount_rates.shinsoku = { high: 0.3, low: 0.4 };
+  const compareBox = (rows: any[] = []) => compareTokyoSourceProducts(rows, [], custom, '2026-11-16T02:00:00Z');
+  const box: CoverageCard = { ...card, card_name: 'テストBOX', tag: 'BOX', grade: 'BOX', list_no: null,
+    raw_import: { source_price: 10000, price_source: 'order_list', raw_row: {
+      pokemon_box_price_source: 'BOX_PRICE_DB', pokemon_box_original_order_list_price: 20000,
+    } } };
+  const result = compareBox();
+  completeOriparkCoverage(result, baseline([box]), '2026-11-16', 1, c => compareBox([c]));
+  const expected = compareBox([{ source: 'shinsoku', id: box.excel_product_id, franchise: box.franchise,
+    name: box.card_name, modelNumber: null, productType: 'BOX', sourcePrice: 10000 }]).products[0];
+  expect(result.products[0]).toMatchObject({ source_price: 10000, selected_high_source: 'shinsoku',
+    selected_low_source: 'shinsoku', price_high: expected.price_high, price_low: expected.price_low });
+  expect(result.products[0].origins[0]).toMatchObject({ source: 'shinsoku', rawPrice: 10000, highRate: 0.3, lowRate: 0.4 });
+  const ordinary = { ...box, raw_import: { source_price: 10000, price_source: 'order_list', raw_row: null } };
+  const ordinaryResult = compareBox();
+  completeOriparkCoverage(ordinaryResult, baseline([ordinary]), '2026-11-16', 1, c => compareBox([c]));
+  expect(ordinaryResult.products[0].selected_high_source).toBe('kecak');
+  expect(ordinaryResult.products[0].price_high).not.toBe(result.products[0].price_high);
+});
+
+test.each(['missing', 'unrecognized'])('BOX override %s cannot silently use the KECAK rate', marker => {
+  const box: CoverageCard = { ...card, tag: 'BOX', grade: 'BOX', list_no: null,
+    raw_import: { source_price: 10000, price_source: 'order_list', raw_row: { pokemon_box_price_source: marker } } };
+  expect(() => completeOriparkCoverage(compare(), baseline([box]), '2026-11-16', 1, c => compare([c])))
+    .toThrow('元価格を特定できません');
+});
+
+
+test('published coverage loads and fingerprints price override metadata', async () => {
+  const raw = { source_price: 10000, price_source: 'order_list', raw_row: { pokemon_box_price_source: 'BOX_PRICE_DB' } };
+  const published = { ...card, raw_import: raw };
+  const select = jest.fn();
+  const db = { from: (table: string) => {
+    const query: any = {};
+    for (const method of ['eq', 'not', 'order', 'limit']) query[method] = () => query;
+    query.select = (columns: string) => { select(table, columns); return query; };
+    query.maybeSingle = async () => ({ data: { id: 'ori-run', order_list_import_id: 'order' } });
+    query.single = async () => ({ data: { business_date: '2026-11-16' } });
+    query.range = async () => ({ data: table === 'generated_page'
+      ? [{ status: 'generated', kind: 'store', card_ids: [card.id] }] : [published] });
+    return query;
+  } };
+  const first = await loadOriparkCoverage(db as any);
+  expect(select).toHaveBeenCalledWith('prepared_card', expect.stringContaining('raw_import(source_price,price_source,raw_row)'));
+  expect(first.cards[0].raw_import?.raw_row).toEqual(raw.raw_row);
+  raw.raw_row.pokemon_box_price_source = 'missing';
+  const changed = await loadOriparkCoverage(db as any);
+  expect(changed.fingerprint).not.toBe(first.fingerprint);
 });
