@@ -12,6 +12,7 @@
  */
 
 import sharp from 'sharp';
+import { assertOriparkCoverage, readCoverageReport } from '../lib/oripark-coverage.js';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
 import {
@@ -204,6 +205,14 @@ export async function runGenerate() {
   const generationVersion = Date.now();
 
   try {
+    const coverageSnapshot = tokyoSnapshot ? await supabase.from('tokyo_buyback_snapshot').select('report')
+      .eq('id', run.tokyo_snapshot_id!).eq('store', STORE_NAME).single() : null;
+    if (coverageSnapshot?.error) throw new Error(`掲載網羅情報の取得失敗: ${coverageSnapshot.error.message}`);
+    const coverage = readCoverageReport(coverageSnapshot?.data?.report);
+    if (tokyoSnapshot && process.env.TOKYO_ORIPARK_COVERAGE_ENABLED === 'true' && !coverage) {
+      throw new Error('Oripark網羅情報がありません。東京の商品同期を先に実行してください');
+    }
+    let excludedImageCount = 0;
     const displayDate = tokyoSnapshot
       ? await (async () => {
         const { data, error } = await supabase.from('tokyo_buyback_snapshot').select('business_date')
@@ -256,6 +265,7 @@ export async function runGenerate() {
       }
       if (tokyoSnapshot) {
         const visible = await prepareTokyoRenderableCards(cards);
+        excludedImageCount += cards.length - visible.cards.length;
         pricedCardsByFranchise.set(franchise, visible.cards);
         for (const [id, bytes] of visible.buffers) tokyoImageBuffers.set(id, bytes);
         console.log(`[generate] ${franchise}: 画像あり ${visible.cards.length}件、画像なし・取得失敗 ${cards.length - visible.cards.length}件を掲載除外`);
@@ -264,6 +274,13 @@ export async function runGenerate() {
           cards, boxPrices, pricingSettings!, STORE_NAME === 'manman-akihabara',
         ));
       }
+    }
+
+    if (tokyoSnapshot) {
+      const { error } = await supabase.from('run').update({ total_image_ng: excludedImageCount })
+        .eq('id', run.id).eq('store', STORE_NAME).eq('generate_claim_token', expectedClaimToken);
+      if (error) throw new Error(`画像除外件数の保存失敗: ${error.message}`);
+      if (coverage) assertOriparkCoverage(coverage, [...pricedCardsByFranchise.values()].flat());
     }
 
     // ---- 2. Storage クリーンアップ ----

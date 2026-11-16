@@ -9,6 +9,7 @@ import {
 } from '@haraka/shared';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { isBoxRow } from '../lib/box-row.js';
+import { completeOriparkCoverage, loadOriparkCoverage } from '../lib/oripark-coverage.js';
 import { BLUE_ROCKET_AKIHABARA_PRICES_API_URL, BLUE_ROCKET_PRICES_API_URL, blueRocketPsaCandidates,
   fetchBlueRocketPsaPrices, type BlueRocketPsaPrices, type BlueRocketPsaRow,
   type BlueRocketStore } from '../lib/blue-rocket.js';
@@ -400,11 +401,14 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     ? sourceProducts.filter(product => validPrice(product.price)).length
     : candidates.filter(row => row.source === source && validPrice(row.sourcePrice)).length]));
   const result = compareTokyoSourceProducts(candidates, sourceProducts, settings, fetchedAt);
+  const coverage = process.env.TOKYO_ORIPARK_COVERAGE_ENABLED === 'true'
+    ? completeOriparkCoverage(result, await loadOriparkCoverage(db), businessDate,
+      settings.tokyo_price_max_age_days, candidate => compareTokyoSourceProducts([candidate], [], settings, fetchedAt)) : null;
   if (!result.products.length) throw new Error('当日価格で掲載可能な商品がありません');
   return { snapshot: { id: randomUUID(), store: TOKYO_BUYBACK_STORE, order_list_import_id: order.id,
     checker_run_id: checker.id, checker_source_store: CHECKER_STORE, fetched_at: fetchedAt,
     business_date: businessDate, settings,
-    report: { pricing_version: 2, source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
+    report: { pricing_version: 2, ...(coverage ? { oripark_coverage: coverage } : {}), source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
       checker_completed_at: checker.completed_at, source_counts: sourceCounts, shinsoku_count: sourceProducts.length,
       blue_rocket_psa: { url: BLUE_ROCKET_PRICES_API_URL, store_id: blueRocketPrices.laox?.storeId ?? 'laox',
         business_date: blueRocketPrices.laox?.businessDate ?? null, fetched_at: blueRocketPrices.laox?.fetchedAt ?? null,
@@ -442,7 +446,9 @@ export async function runTokyoBuybackSync(options: { dryRun?: boolean } = {}) {
     const { data, error } = await db.rpc('publish_tokyo_buyback_snapshot', { p_snapshot: snapshot.snapshot, p_products: snapshot.products });
     if (error || data !== snapshot.snapshot.id) throw new Error(`東京価格の反映失敗: ${error?.message ?? 'snapshot mismatch'}`);
   }
-  const { unmatched, ...summary } = snapshot.snapshot.report;
-  console.log(JSON.stringify({ dry_run: options.dryRun === true, ...summary, snapshot_id: snapshot.snapshot.id }));
+  const { unmatched, oripark_coverage: coverage, ...summary } = snapshot.snapshot.report;
+  console.log(JSON.stringify({ dry_run: options.dryRun === true, ...summary,
+    oripark_coverage: coverage ? { runId: coverage.runId, count: coverage.items.length, fingerprint: coverage.fingerprint } : null,
+    snapshot_id: snapshot.snapshot.id }));
   return snapshot;
 }
