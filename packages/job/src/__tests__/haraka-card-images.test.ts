@@ -9,6 +9,18 @@ const row = (patch: Partial<DbCardRow> = {}): DbCardRow => ({ id: 'db-1', store:
   image_status: null, ...patch } as DbCardRow);
 const product = { id: 'source-1', franchise: 'Pokemon', name: 'マリオピカチュウ', model_number: '294/XY-P', product_type: 'psa' };
 
+test('ordinary exact DB matches keep a safe primary fallback when Cardrush alt returns 403', () => {
+  const cardrush = 'https://www.cardrush-pokemon.jp/data/cardrushpokemon/product/card.jpg';
+  const snapshot = { snapshot: { store: 'manman-akihabara', business_date: '2026-11-17' },
+    products: [{ ...product, price_high: 9000, price_low: 8000 }] } as any;
+  const candidate = row({ card_name: product.name, alt_image_url: cardrush });
+  expect(buildTokyoPreparedCards('run', snapshot, [], [candidate])[0]).toMatchObject({
+    image_url: cardrush, alt_image_url: url, db_card_id: 'db-1', price_high: 9000, price_low: 8000 });
+  expect(buildTokyoPreparedCards('run', snapshot, [], [{ ...candidate, image_status: 'dead' }])[0].alt_image_url).toBeNull();
+  expect(buildTokyoPreparedCards('run', snapshot, [], [{ ...candidate, store: 'oripark' }])[0].alt_image_url).toBeNull();
+  expect(buildTokyoPreparedCards('run', snapshot, [], [candidate, row({ id: 'other', card_name: product.name, image_url: alternate })])[0].alt_image_url).toBeNull();
+});
+
 test('full number and relaxed name match raw image; name-only or numerator-only never adopts', () => {
   expect(findHarakaImage(product, [row()])).toMatchObject({ status: 'matched', imageUrl: url, dbCardId: 'db-1' });
   for (const list_no of ['', '294/SM-P', '293/XY-P']) {

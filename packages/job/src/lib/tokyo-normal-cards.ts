@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { buildTokyoBuybackSnapshot } from '../jobs/tokyo-buyback-sync.js';
 import { findHarakaImage, harakaImageUrl } from './haraka-card-images.js';
 import { readCoverageReport } from './oripark-coverage.js';
+import { hasAssistantImageEvidence } from './tokyo-reviewed-image-evidence.js';
 
 type TokyoSnapshot = Awaited<ReturnType<typeof buildTokyoBuybackSnapshot>>;
 
@@ -100,13 +101,16 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
     const importedDbCard = importedDbCardId ? dbRows.find(row => row.id === importedDbCardId
       && row.store === 'manman-akihabara' && row.franchise === product.franchise) : undefined;
     const importedImage = importedDbCard ? harakaImageUrl(importedDbCard) : null;
-    const importedPrimaryImage = importedDbCard && importedImage === importedDbCard.alt_image_url
-      ? harakaImageUrl({ ...importedDbCard, alt_image_url: null }) : null;
-    const importedFallbackImage = importedImage && importedPrimaryImage
-      && new URL(importedImage).hostname === 'www.cardrush-pokemon.jp'
-      && new URL(importedPrimaryImage).hostname === 'fexadnveyuqduiujewrc.supabase.co'
-      && new URL(importedPrimaryImage).pathname.startsWith('/storage/v1/object/public/cards/')
-      ? importedPrimaryImage : null;
+    const matchedDbCard = importedImage ? importedDbCard : dbRows.find(row => row.id === harakaImage.dbCardId
+      && row.store === 'manman-akihabara' && row.franchise === product.franchise);
+    const matchedImage = importedImage ?? harakaImage.imageUrl;
+    const matchedPrimaryImage = matchedDbCard && matchedImage === matchedDbCard.alt_image_url
+      ? harakaImageUrl({ ...matchedDbCard, alt_image_url: null }) : null;
+    const matchedFallbackImage = matchedImage && matchedPrimaryImage
+      && new URL(matchedImage).hostname === 'www.cardrush-pokemon.jp'
+      && new URL(matchedPrimaryImage).hostname === 'fexadnveyuqduiujewrc.supabase.co'
+      && new URL(matchedPrimaryImage).pathname.startsWith('/storage/v1/object/public/cards/')
+      ? matchedPrimaryImage : null;
     const dragonSourceOrigins = !box && product.franchise === 'DRAGON BALL' && Array.isArray(product.origins)
       ? product.origins.filter(origin => origin.source === 'kecak' && ('imageUrl' in origin || 'rarity' in origin))
       : [];
@@ -129,7 +133,7 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
     const legacyCardrushYugiohNullModel = mapping?.provider === 'cardrush' && !box
       && mapping.franchise === 'YU-GI-OH!' && mapping.model_number === null;
     const verifiedImage = mapping && mapping.franchise === product.franchise && mapping.product_type === product.product_type
-      && (mapping.name === product.name || /^IA[A-Z]\d+$/.test(product.id)
+      && (mapping.name === product.name || mapping.provider !== 'reviewed' && /^IA[A-Z]\d+$/.test(product.id)
       && postalProductIdentity({ franchise: mapping.franchise, name: mapping.name, modelNumber: mapping.model_number,
         productType: box ? 'BOX' : 'PSA10' }) === postalProductIdentity({ franchise: product.franchise, name: product.name,
         modelNumber: product.model_number, productType: box ? 'BOX' : 'PSA10' }))
@@ -137,11 +141,13 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
       && mapping.evidence.no_slab === true && mapping.evidence.variant_confirmed === true
       && typeof mapping.evidence.note === 'string' && mapping.evidence.note.trim().length > 0
       && /^[0-9a-f]{64}$/.test(mapping.sha256)
-      && ['tcgmp', 'haraka', 'onphalos', 'cardrush'].includes(mapping.provider)
+      && ['tcgmp', 'haraka', 'onphalos', 'cardrush', 'reviewed'].includes(mapping.provider)
+      && (mapping.provider !== 'reviewed' || hasAssistantImageEvidence(mapping))
       && (mapping.model_number !== null || box || exactCardrushNullModel || pixelExactOnphalos || legacyCardrushYugiohNullModel)
       && (mapping.provider !== 'onphalos' || (!box && product.franchise === 'Pokemon'))
-      && (!box || ['haraka', 'cardrush'].includes(mapping.provider))
-      && (mapping.provider === 'haraka' ? /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mapping.provider_product_id) : /^\d{1,200}$/.test(mapping.provider_product_id))
+      && (!box || ['haraka', 'cardrush', 'reviewed'].includes(mapping.provider))
+      && (mapping.provider === 'reviewed' ? mapping.provider_product_id === product.id
+        : mapping.provider === 'haraka' ? /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mapping.provider_product_id) : /^\d{1,200}$/.test(mapping.provider_product_id))
       && Number.isFinite(Date.parse(mapping.verified_at))
       && (mapping.provider === 'tcgmp' ? mapping.tcgmp_product_id === mapping.provider_product_id && !!mapping.tcgmp_sku : mapping.tcgmp_product_id === null && mapping.tcgmp_sku === null)
       && ['jpg', 'png', 'webp'].some(extension => mapping.image_url === `https://abyecthqjjssegwazhwm.supabase.co/storage/v1/object/public/haraka-images/card-images/manman-akihabara/${mapping.provider}/${mapping.sha256}.${extension}`)
@@ -154,7 +160,7 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
       verifiedImage && (product.franchise === 'Pokemon'
         && typeof mapping!.evidence.tag_basis === 'string' && mapping!.evidence.tag_basis.trim().length > 0
         && typeof mapping!.evidence.tag_plan_sha256 === 'string' && /^[0-9a-f]{64}$/.test(mapping!.evidence.tag_plan_sha256)
-        || (product.franchise === 'ONE PIECE' && mapping!.provider === 'cardrush' && typeof mapping!.evidence.source_title === 'string'
+        || (product.franchise === 'ONE PIECE' && ['cardrush', 'reviewed'].includes(mapping!.provider) && typeof mapping!.evidence.source_title === 'string'
           && mapping!.evidence.source_title.trim().length > 0 && mapping!.evidence.source_title.length <= 1000))
         ? mapping!.evidence.tag : null);
     const evidence = coverage?.items.filter(item => item.productId === product.id) ?? [];
@@ -167,7 +173,7 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
       franchise: product.franchise, card_name: product.name, grade: box ? '未開封BOX' : 'PSA10',
       list_no: product.model_number,
       image_url: primaryImage ?? coverageImage,
-      alt_image_url: (!dragonSourceEvidencePresent && !verifiedImage && importedImage ? importedFallbackImage : null)
+      alt_image_url: (!dragonSourceEvidencePresent && !verifiedImage ? matchedFallbackImage : null)
         ?? (coverageImage && coverageImage !== primaryImage ? coverageImage : evidence[0]?.altImageUrl ?? null),
       db_card_id: dbCardId,
       rarity: dragonSourceEvidencePresent ? dragonSourceRarity : evidence[0]?.rarity ?? null,

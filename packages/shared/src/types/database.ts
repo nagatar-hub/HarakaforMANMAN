@@ -614,7 +614,7 @@ export type TokyoBuybackProductRow = {
 
 export type TokyoCardImageMappingRow = {
   source_shinsoku_id: string; franchise: CustomBuybackFranchise; product_type: CustomBuybackProductType; name: string; model_number: string | null;
-  provider: 'tcgmp' | 'haraka' | 'onphalos' | 'cardrush'; provider_product_id: string;
+  provider: 'tcgmp' | 'haraka' | 'onphalos' | 'cardrush' | 'reviewed'; provider_product_id: string;
   tcgmp_product_id: string | null; tcgmp_sku: string | null; image_url: string; sha256: string;
   verified_at: string; evidence: Record<string, unknown>;
 };
