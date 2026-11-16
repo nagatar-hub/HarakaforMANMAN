@@ -2,10 +2,11 @@
  * Watchdog ジョブ — 満満のオーダーリスト画像生成を監視し、安全に再実行する。
  *
  * 画像生成は 1 Run / 1 Task。generate_claim_token を fencing token として使い、
- * 同じ Run の二重起動を防ぐ。Oripark の Run は一切参照・更新しない。
+ * 同じ Run の二重起動を防ぐ。coverageモードではOriparkの公開済み商品を参照し、東京の不足を補う。
  */
 
 import { randomUUID } from 'node:crypto';
+import { reconcileTokyoCoverage } from './reconcile-tokyo-coverage.js';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import { runCloudRunJob, fetchMetadataAccessToken } from '../lib/cloud-run.js';
@@ -82,6 +83,8 @@ async function launchGenerate(run: ClaimedRun): Promise<void> {
         { name: 'RUN_ID', value: run.id },
         { name: 'GENERATE_CLAIM_TOKEN', value: run.generate_claim_token },
         { name: 'STORE_NAME', value: STORE_NAME },
+        ...(process.env.DISCORD_NOTIFICATIONS_DISABLED === 'true'
+          ? [{ name: 'DISCORD_NOTIFICATIONS_DISABLED', value: 'true' }] : []),
       ],
     }],
     tokenFetcher: fetchMetadataAccessToken,
@@ -151,10 +154,13 @@ async function recoverGlobalStaleGenerationClaims(
 export async function runWatchdog() {
   const supabase = await createSupabaseClientFromSecrets();
   const now = new Date();
+  const coverageMode = STORE_NAME === 'manman-akihabara' && process.env.WATCHDOG_MODE === 'coverage'
+    && process.env.TOKYO_ORIPARK_COVERAGE_ENABLED === 'true';
 
   // 日次検索より先に、全期間のstale claimを回収する。
   const globalRecovery = await recoverGlobalStaleGenerationClaims(supabase, now);
   if (globalRecovery.launchErrors.length > 0) throw globalRecovery.launchErrors[0];
+  if (coverageMode && await reconcileTokyoCoverage(supabase, now)) return;
   if (process.env.WATCHDOG_MODE?.trim().toLowerCase() === 'recovery') {
     console.log('[watchdog] recovery-only完了');
     return;
@@ -183,7 +189,8 @@ export async function runWatchdog() {
     .select('*')
     .eq('store', STORE_NAME)
     .eq('order_list_import_id', latestImport.id)
-    .gte('started_at', todayStart.toISOString())
+    // A coverage sync started just before midnight must still reach generation.
+    .gte('started_at', new Date(todayStart.getTime() - (coverageMode ? 86400000 : 0)).toISOString())
     .order('started_at', { ascending: false })
     .returns<RunRow[]>() : { data: [], error: null };
 

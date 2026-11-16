@@ -102,6 +102,42 @@ function database(tables: Record<string, any[]>) {
   return { db, uploads, bucket };
 }
 
+test.each([false, true])('coverage guard preserves published pages when report/image is missing (report=%s)', async withReport => {
+  jest.resetModules();
+  const keys = ['STORE_NAME', 'RUN_ID', 'GENERATE_CLAIM_TOKEN', 'TOKYO_ORIPARK_COVERAGE_ENABLED'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  Object.assign(process.env, { STORE_NAME: 'manman-akihabara', RUN_ID: runId,
+    GENERATE_CLAIM_TOKEN: token, TOKYO_ORIPARK_COVERAGE_ENABLED: 'true' });
+  const report = withReport ? { oripark_coverage: { version: 1, runId: 'oripark', fingerprint: 'fp', items: [
+    { oriparkCardId: 'ori-card', productId: 'source', imageUrl: 'https://local.invalid/broken.png' },
+  ] } } : {};
+  const oldPages = [{ id: 'old-page', run_id: runId, kind: 'store', status: 'generated', card_ids: ['card'] }];
+  const tables: Record<string, any[]> = {
+    run: [{ id: runId, store: 'manman-akihabara', status: 'running', generate_claim_token: token,
+      plan_done_at: 'ready', generate_done_at: null, tokyo_snapshot_id: 'snapshot' }],
+    tokyo_buyback_snapshot: [{ id: 'snapshot', store: 'manman-akihabara', business_date: '2026-11-16', report }],
+    prepared_card: [{ id: 'card', run_id: runId, franchise: 'Pokemon', source_shinsoku_id: 'source',
+      price_source: 'shinsoku', image_url: null, alt_image_url: null }],
+    generated_page: [...oldPages],
+  };
+  const boundary = database(tables); mockDb = boundary.db;
+  const quiet = jest.spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    const { runGenerate } = require('../jobs/generate');
+    await expect(runGenerate()).rejects.toThrow(withReport ? '欠落' : '網羅情報がありません');
+    expect(tables.generated_page).toEqual(oldPages);
+    expect(boundary.uploads).toHaveLength(0);
+    expect(require('../lib/peleka-catalog').publishCurrentTokyoPelekaCatalog).not.toHaveBeenCalled();
+    expect(tables.run[0].status).toBe('failed');
+    if (withReport) expect(tables.run[0].total_image_ng).toBe(1);
+  } finally {
+    quiet.mockRestore();
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test.each([1000, 1001, 1045])('Tokyo prepared_card pagination loads all %i rows in stable id order', async count => {
   jest.resetModules();
   const rows = Array.from({ length: count }, (_, index) => ({

@@ -2,6 +2,7 @@ import { postalProductIdentity, type Database, type DbCardRow, type TokyoCardIma
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { buildTokyoBuybackSnapshot } from '../jobs/tokyo-buyback-sync.js';
 import { findHarakaImage, harakaImageUrl } from './haraka-card-images.js';
+import { readCoverageReport } from './oripark-coverage.js';
 
 type TokyoSnapshot = Awaited<ReturnType<typeof buildTokyoBuybackSnapshot>>;
 
@@ -84,6 +85,7 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
   if (result.snapshot.store !== 'manman-akihabara') throw new Error('Tokyo snapshot required');
   const images = new Map(mappings.map(mapping => [mapping.source_shinsoku_id, mapping]));
   if (images.size !== mappings.length) throw new Error('Duplicate Tokyo image mapping');
+  const coverage = readCoverageReport(result.snapshot.report);
   return result.products.map(product => {
     if (!Number.isSafeInteger(product.price_high) || product.price_high <= 0
       || !Number.isSafeInteger(product.price_low) || product.price_low < 0 || product.price_low > product.price_high
@@ -155,15 +157,21 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
         || (product.franchise === 'ONE PIECE' && mapping!.provider === 'cardrush' && typeof mapping!.evidence.source_title === 'string'
           && mapping!.evidence.source_title.trim().length > 0 && mapping!.evidence.source_title.length <= 1000))
         ? mapping!.evidence.tag : null);
+    const evidence = coverage?.items.filter(item => item.productId === product.id) ?? [];
+    const coverageImage = evidence[0]?.imageUrl ?? null;
+    if (new Set(evidence.map(item => item.imageUrl)).size > 1) throw new Error(`Oripark補完画像が曖昧です: ${product.id}`);
+    const primaryImage = dragonSourceEvidencePresent ? dragonSourceImage
+      : verifiedImage ?? importedImage ?? harakaImage.imageUrl ?? directShinsokuImage ?? (box ? product.image_url : null);
     return {
       run_id: runId, raw_import_id: null, source_shinsoku_id: product.id,
       franchise: product.franchise, card_name: product.name, grade: box ? '未開封BOX' : 'PSA10',
       list_no: product.model_number,
-      image_url: dragonSourceEvidencePresent ? dragonSourceImage
-        : verifiedImage ?? importedImage ?? harakaImage.imageUrl ?? directShinsokuImage ?? (box ? product.image_url : null),
-      alt_image_url: !dragonSourceEvidencePresent && !verifiedImage && importedImage ? importedFallbackImage : null,
+      image_url: primaryImage ?? coverageImage,
+      alt_image_url: (!dragonSourceEvidencePresent && !verifiedImage && importedImage ? importedFallbackImage : null)
+        ?? (coverageImage && coverageImage !== primaryImage ? coverageImage : evidence[0]?.altImageUrl ?? null),
       db_card_id: dbCardId,
-      rarity: dragonSourceEvidencePresent ? dragonSourceRarity : null, rarity_icon_url: null, tag,
+      rarity: dragonSourceEvidencePresent ? dragonSourceRarity : evidence[0]?.rarity ?? null,
+      rarity_icon_url: null, tag: tag === 'PSA10' ? evidence[0]?.tag ?? tag : tag,
       price_high: product.price_high,
       price_low: product.price_low,
       image_status: 'unchecked',
