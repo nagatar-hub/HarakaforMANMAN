@@ -45,7 +45,7 @@ test.each([{}, { ...shop(), id: 3 }, { ...shop(), products: null }])('rejects wr
   expect(() => parseCheckerShop(value, 11, [2])).toThrow('店舗・商品一覧');
 });
 
-test.each([{ product_id: 'bad' }, { edition_id: '-1' }, { buy_price: '100.5' }, { buy_price: 'NaN' },
+test.each([{ product_id: 'bad' }, { edition_id: '-1' }, { buy_price: '100.5' }, { buy_price: 'NaN' }, { buy_price: '' },
   { buy_price: true }, { buy_price: [40000] }])(
   'rejects malformed required product/price data: %j', patch => {
     expect(() => parseCheckerShop(shop([{ ...box, ...patch }]), 11, [2])).toThrow('商品・価格');
@@ -53,6 +53,18 @@ test.each([{ product_id: 'bad' }, { edition_id: '-1' }, { buy_price: '100.5' }, 
 
 test('conflicting duplicates fail rather than silently choosing a price', () => {
   expect(() => parseCheckerShop(shop([box, { ...box, buy_price: '50000' }]), 11, [2])).toThrow('価格が重複');
+});
+
+test('unavailable PSA cards with null prices do not discard a shop and variant metadata survives', () => {
+  const psa = { ...box, product_id: '12984', condition_id: '1', name: 'ニンフィアGX', model_number: '057/051',
+    rarity: 'SR', aspect: '中国語版', holo_type: 'マスターボールミラー' };
+  const result = parseCheckerShop(shop([box, psa,
+    { ...psa, product_id: '12985', buy_price: null, ask_flag: null, price_updated_at: null },
+    { ...psa, product_id: '12986', buy_price: 0 }, { ...psa, product_id: '12987', buy_price: '0.00' },
+    { ...psa, condition_id: '3' }]), 11, [1, 2]);
+  expect(result.offers.map(row => row.condition_id)).toEqual([2, 1]);
+  expect(result.products[1]).toMatchObject({ source_product_id: 12984, rarity: 'SR', aspect: '中国語版',
+    holo_type: 'マスターボールミラー', model_number: '057/051' });
 });
 
 test('invalid update timestamps remain unusable and are never replaced with fetch time', () => {

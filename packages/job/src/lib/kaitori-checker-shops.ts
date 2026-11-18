@@ -4,7 +4,8 @@ import { getSecret } from './secret-manager.js';
 
 export const KAITORI_CHECKER_API_BASE = 'https://apn.kaitori-checker.com';
 export type CheckerProduct = { source_product_id: number; category: string; name: string;
-  full_name: string | null; model_number: string | null; image_url: string | null };
+  full_name: string | null; model_number: string | null; image_url: string | null;
+  rarity?: string | null; holo_type?: string | null; aspect?: string | null };
 export type CheckerOffer = { source_product_id: number; shop_id: number; condition_id: number; edition_id: number;
   shop_name: string; edition_name: string | null; buy_price: number; source_updated_at: string | null };
 
@@ -46,16 +47,19 @@ export function parseCheckerShop(value: unknown, shopId: number, conditionIds: r
       ? 0 : id(row.edition_id);
     const price = typeof row.buy_price === 'number' || (typeof row.buy_price === 'string' && row.buy_price.trim())
       ? Number(row.buy_price) : NaN;
-    // A published zero price is unavailable, not a zero-yen purchase offer.
-    if (row.buy_price === 0 || (typeof row.buy_price === 'string' && /^0(?:\.0+)?$/.test(row.buy_price))) continue;
+    // The shop endpoint includes unavailable cards with null or zero prices.
+    if (row.buy_price === null || row.buy_price === 0
+      || (typeof row.buy_price === 'string' && /^0(?:\.0+)?$/.test(row.buy_price))) continue;
     if (productId === null || !name || editionId === null
       || !Number.isSafeInteger(price) || price <= 0 || price > 100_000_000) {
       throw new Error(`買取チェッカーの商品・価格が不正です: shop=${shopId}`);
     }
-    const product: CheckerProduct = { source_product_id: productId, category, name, full_name: null,
-      model_number: text(row.model_number), image_url: text(row.image_url) };
+    const product: CheckerProduct = { source_product_id: productId, category, name, full_name: text(row.full_name),
+      model_number: text(row.model_number), image_url: text(row.image_url),
+      rarity: text(row.rarity), holo_type: text(row.holo_type), aspect: text(row.aspect) };
     const previous = products.get(productId);
-    if (previous && (previous.name !== name || previous.category !== category || previous.model_number !== product.model_number)) {
+    if (previous && (previous.name !== name || previous.category !== category || previous.model_number !== product.model_number
+      || previous.rarity !== product.rarity || previous.holo_type !== product.holo_type || previous.aspect !== product.aspect)) {
       throw new Error(`買取チェッカーの商品情報が重複しています: shop=${shopId}, product=${productId}`);
     }
     products.set(productId, product);
@@ -124,7 +128,8 @@ export async function fetchCheckerShops(shopIds: readonly number[], conditionIds
       for (const product of result.products) {
         const previous = products.get(product.source_product_id);
         if (previous && (previous.category !== product.category || previous.name !== product.name
-          || previous.model_number !== product.model_number)) {
+          || previous.model_number !== product.model_number || previous.rarity !== product.rarity
+          || previous.holo_type !== product.holo_type || previous.aspect !== product.aspect)) {
           throw new Error(`買取チェッカーの店舗間の商品情報が一致しません: product=${product.source_product_id}`);
         }
         products.set(product.source_product_id, previous ?? product);

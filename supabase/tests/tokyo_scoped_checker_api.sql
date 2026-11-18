@@ -29,7 +29,7 @@ SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot - 'report',pro
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(jsonb_set(snapshot,'{report,checker_api,shop_ids}','[11]'),products,'a4000000-0000-4000-8000-000000000001') FROM scoped_fixture$$,
   '22023','Tokyo scoped checker API evidence required','single-shop evidence cannot silently omit the other Blue Rocket shops');
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(jsonb_set(snapshot,'{report,checker_api,condition_ids}','[1]'),products,'a4000000-0000-4000-8000-000000000001') FROM scoped_fixture$$,
-  '22023','Tokyo scoped checker API evidence required','checker API evidence must be scoped to BOX');
+  '22023','Tokyo scoped checker API evidence required','checker API evidence must retain BOX coverage');
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot || '{"checker_source_store":"oripark"}',products,'a4000000-0000-4000-8000-000000000001') FROM scoped_fixture$$,
   '22023','Tokyo scoped checker API evidence required','live API evidence cannot be attributed to another tenant');
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(jsonb_set(snapshot,'{report,checker_api,api_base}','"https://example.com"'),products,'a4000000-0000-4000-8000-000000000001') FROM scoped_fixture$$,
