@@ -13,7 +13,8 @@ export type GalleryCardPricing = {
 };
 type Card = { id: string; run_id: string; source_shinsoku_id: string | null };
 type Origin = { source?: string; id?: string; sourcePrice?: unknown; rawPrice?: unknown;
-  highRate?: unknown; highPrice?: unknown; lowRate?: unknown; lowPrice?: unknown; excluded?: unknown };
+  highRate?: unknown; highPrice?: unknown; lowRate?: unknown; lowPrice?: unknown; excluded?: unknown;
+  shopId?: unknown; shopName?: unknown };
 const labels: Record<string, string> = {
   kecak: 'KECAK', blue_rocket: 'Blue Rocket', avirile: 'アヴィリール',
   extoreca: 'エクストレカ', toreca_bank: 'トレカバンク', shinsoku: 'シンソク郵送買取',
@@ -22,6 +23,24 @@ const price = (value: unknown): number | null => typeof value === 'number'
   && Number.isSafeInteger(value) && value > 0 && value <= 100_000_000 ? value : null;
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
+const blueRocketShops: Record<number, string> = {
+  11: 'Blue Rocket（ブルロケ）秋葉原店',
+  44: 'Blue Rocket（ブルロケ）郵送買取',
+  51: 'Blue Rocket（ブルロケ）秋葉原LAOX店',
+  54: 'Blue Rocket（ブルロケ）大阪なんば日本橋店',
+  55: 'Blue Rocket（ブルロケ）福岡買取専門店',
+};
+
+/** Use recorded branch provenance; legacy public-API IDs identify two branches exactly. */
+export function tokyoOriginStoreLabel(value: unknown): string | undefined {
+  const origin = object(value);
+  const source = typeof origin.source === 'string' ? origin.source : '';
+  if (source !== 'blue_rocket') return labels[source];
+  if (typeof origin.shopName === 'string' && origin.shopName.trim()) return origin.shopName.trim();
+  if (typeof origin.shopId === 'number') return blueRocketShops[origin.shopId] ?? labels.blue_rocket;
+  const legacyBranch = typeof origin.id === 'string' ? /^api:(laox|akihabara):[1-9]\d*$/.exec(origin.id)?.[1] : null;
+  return legacyBranch ? blueRocketShops[legacyBranch === 'laox' ? 51 : 11] : labels.blue_rocket;
+}
 const rate = (value: unknown): number | null => typeof value === 'number'
   && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 const isTokyoBusinessDate = (value: unknown, businessDate: unknown): boolean => {
@@ -108,7 +127,7 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
       const provenance = object(priceSources[product.id]);
       const productOrigins = origins(product);
       const comparisonRows = productOrigins.flatMap(origin => {
-        const store = labels[origin.source ?? ''];
+        const store = tokyoOriginStoreLabel(origin);
         const rawPrice = price(origin.rawPrice);
         const highRate = rate(origin.highRate);
         const highPrice = price(origin.highPrice);
@@ -139,7 +158,7 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
       const adoptedStore = provenSource ? labels[provenSource] : null;
       const listings: GalleryCardPricing['listings'] = [];
       for (const origin of productOrigins) {
-        const store = labels[origin.source ?? ''];
+        const store = tokyoOriginStoreLabel(origin);
         if (!store) continue;
         if (origin.source === 'kecak' && !hasCurrentKecakPrices) continue;
         let amount: number | null = null;

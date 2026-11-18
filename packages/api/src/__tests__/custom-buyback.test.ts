@@ -55,6 +55,28 @@ test('Tokyo catalog carries only the already discounted Shinsoku price and stabl
   assert.deepEqual(parseCustomBuybackCatalogIds({ catalog_ids: ['box-123'] }, 'shinsoku'), { ok: true, value: ['box-123'] });
 });
 
+test('Tokyo catalog uses the adopted Blue Rocket origin branch and preserves other source labels', () => {
+  const row = { snapshot_id: 'snapshot', id: 'psa-1', franchise: 'Pokemon' as const,
+    product_type: 'psa' as const, name: 'カイ', model_number: '236/172', image_url: null,
+    source_price: 10000, price_high: 9500, price_low: 9000,
+    selected_high_source: 'blue_rocket' as const, selected_low_source: 'blue_rocket' as const };
+  for (const [origin, expected] of [
+    [{ source: 'blue_rocket', shopId: 44 }, 'Blue Rocket（ブルロケ）郵送買取'],
+    [{ source: 'blue_rocket', shopId: 54, shopName: '記録時の大阪店名' }, '記録時の大阪店名'],
+    [{ source: 'blue_rocket', id: 'api:laox:123' }, 'Blue Rocket（ブルロケ）秋葉原LAOX店'],
+    [{ source: 'blue_rocket', id: 'api:akihabara:123' }, 'Blue Rocket（ブルロケ）秋葉原店'],
+    [{ source: 'blue_rocket' }, 'Blue Rocket'],
+  ] as const) {
+    const card = mapTokyoCatalogCard({ ...row, origins: [{ source: 'shinsoku' }, origin] }, '2026-11-18');
+    assert.equal(card.shop_name, expected);
+    assert.equal(card.price_high, 9500);
+    assert.equal(card.id, 'psa-1');
+  }
+  assert.equal(mapTokyoCatalogCard({ ...row, selected_high_source: 'kecak', origins: [
+    { source: 'blue_rocket', shopId: 44 }, { source: 'kecak', shopName: 'must not override KECAK' },
+  ] }, '2026-11-18').shop_name, 'KECAK');
+});
+
 afterEach(() => {
   if (originalToken === undefined) delete process.env.ORDER_LIST_IMPORT_API_TOKEN;
   else process.env.ORDER_LIST_IMPORT_API_TOKEN = originalToken;

@@ -19,7 +19,7 @@ const kecak = (price: number) => tokyoProductCandidates([
   { id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172', grade: 'PSA10', match_status: 'matched', source_price: price },
 ], [], []);
 
-test('lineup takes KECAK and only Blue Rocket BOX from the checker; bank, Avirile and checker PSA are ignored', () => {
+test('lineup takes KECAK and Blue Rocket PSA and BOX from the checker; bank and Avirile are ignored', () => {
   const candidates = tokyoProductCandidates([
     { id: 'k1', excel_product_id: 'k1', franchise: 'Pokemon', card_name: 'カイ', list_no: '236/172', grade: 'PSA10', match_status: 'unmatched', source_price: 70000 },
     { id: 'k2', excel_product_id: 'k2', franchise: 'Pokemon', card_name: '素体', list_no: '1', grade: 'S', match_status: 'matched', source_price: 1 },
@@ -35,7 +35,7 @@ test('lineup takes KECAK and only Blue Rocket BOX from the checker; bank, Aviril
     { source_product_id: 3, shop_id: 11, condition_id: 2, edition_id: 0, buy_price: 8500 },
   ]);
   expect(candidates.map(row => [row.source, row.productType, row.sourcePrice])).toEqual([
-    ['kecak', 'PSA10', 70000], ['kecak', 'PSA10', 80000], ['blue_rocket', 'BOX', 8500]]);
+    ['kecak', 'PSA10', 70000], ['kecak', 'PSA10', 80000], ['blue_rocket', 'PSA10', 9500], ['blue_rocket', 'BOX', 8500]]);
   expect(candidates.some(row => row.franchise === 'YU-GI-OH!')).toBe(false);
 });
 

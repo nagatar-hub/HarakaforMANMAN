@@ -27,6 +27,7 @@ import { authorizeInternalApiRequest } from '../lib/internal-api-auth.js';
 import { executeCloudRunJob } from '../lib/cloud-run-jobs.js';
 import { isDefinitiveCloudRunJobRejection } from '../lib/cloud-run-errors.js';
 import { STORE_NAME } from '../lib/store-scope.js';
+import { tokyoOriginStoreLabel } from '../lib/gallery-pricing.js';
 
 const BASE_FRANCHISES = new Set<CustomBuybackFranchise>(['Pokemon', 'ONE PIECE', 'YU-GI-OH!']);
 const TOKYO_SHARED_FRANCHISES = new Set<CustomBuybackFranchise>(['WEISS SCHWARZ', 'DRAGON BALL']);
@@ -361,10 +362,10 @@ async function latestTokyoSnapshot(supabase: DbClient): Promise<LatestPriceSnaps
 }
 
 export function mapTokyoCatalogCard(row: TokyoBuybackProductRow, priceDate: string): CustomBuybackCatalogCard {
-  const shopName = ({
-    kecak: 'KECAK', blue_rocket: 'Blue Rocket', extoreca: 'エクストレカ', toreca_bank: 'トレカバンク',
-    avirile: 'アヴィリール', shinsoku: 'シンソク郵送買取',
-  } as const)[row.selected_high_source ?? 'shinsoku'];
+  const source = row.selected_high_source ?? 'shinsoku';
+  const selectedOrigin = Array.isArray(row.origins) ? row.origins.find(origin =>
+    origin && typeof origin === 'object' && origin.source === source) : undefined;
+  const shopName = tokyoOriginStoreLabel(selectedOrigin ?? { source })!;
   return {
     id: row.id, source: 'shinsoku', source_product_id: null, db_card_id: null, excel_product_id: null,
     franchise: row.franchise, card_name: row.name, grade: row.product_type === 'psa' ? 'PSA10' : '未開封BOX',

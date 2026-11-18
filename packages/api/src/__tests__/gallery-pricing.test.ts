@@ -156,6 +156,58 @@ test('five-source snapshots expose the per-store comparison and fall back when a
   } finally { globalThis.fetch = savedFetch; }
 });
 
+test('gallery comparison and adopted prices identify recorded Blue Rocket branches without inventing provenance', async () => {
+  const { galleryRoutes } = await import('../routes/gallery.js');
+  const savedFetch = globalThis.fetch;
+  const cases = [
+    { origin: { shopId: 11 }, store: 'Blue Rocket（ブルロケ）秋葉原店' },
+    { origin: { shopId: 44 }, store: 'Blue Rocket（ブルロケ）郵送買取' },
+    { origin: { shopId: 51 }, store: 'Blue Rocket（ブルロケ）秋葉原LAOX店' },
+    { origin: { shopId: 54 }, store: 'Blue Rocket（ブルロケ）大阪なんば日本橋店' },
+    { origin: { shopId: 55 }, store: 'Blue Rocket（ブルロケ）福岡買取専門店' },
+    { origin: { shopId: 55, shopName: ' 記録時の福岡店名 ' }, store: '記録時の福岡店名' },
+    { origin: { id: 'api:laox:123' }, store: 'Blue Rocket（ブルロケ）秋葉原LAOX店' },
+    { origin: { id: 'api:akihabara:123' }, store: 'Blue Rocket（ブルロケ）秋葉原店' },
+    { origin: { id: 'api:unknown:123' }, store: 'Blue Rocket' },
+    { origin: { id: 'checker:123:2:0', shopName: ' ' }, store: 'Blue Rocket' },
+    { origin: { shopId: 999, id: 'api:laox:123' }, store: 'Blue Rocket' },
+  ];
+  const cards = cases.map((_, index) => ({ id: `card-${index}`, run_id: 'r', source_shinsoku_id: `product-${index}`, price_high: 9500 }));
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    const table = url.pathname.split('/').at(-1);
+    let data: unknown;
+    if (table === 'generated_page') data = { id: 'page', run_id: 'r', card_ids: cards.map(card => card.id) };
+    else if (table === 'run') data = url.searchParams.get('id')?.startsWith('eq.') ? { id: 'r' } : [{ id: 'r', tokyo_snapshot_id: 's' }];
+    else if (table === 'prepared_card') data = cards.map(card => Object.fromEntries(Object.entries(card)
+      .filter(([key]) => url.searchParams.get('select')!.split(',').map(x => x.trim()).includes(key))));
+    else if (table === 'tokyo_buyback_snapshot') data = [{ id: 's', business_date: '2026-11-18', report: {} }];
+    else if (table === 'tokyo_buyback_product') data = cases.map(({ origin }, index) => ({
+      id: `product-${index}`, source_price: 10000, price_high: 9500, price_low: 9000,
+      selected_high_source: 'blue_rocket', selected_low_source: 'blue_rocket', origins: [{
+        source: 'blue_rocket', rawPrice: 10000, highRate: 0.05, highPrice: 9500, lowRate: 0.1, lowPrice: 9000, ...origin,
+      }],
+    }));
+    else throw new Error(`Unexpected table ${table}`);
+    return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const response = await galleryRoutes.request('/gallery/pages/page', { headers: { Authorization: `Bearer ${'t'.repeat(32)}` } });
+    assert.equal(response.status, 200);
+    const payload = await response.json() as { cards: any[] };
+    assert.equal(payload.cards.length, cases.length);
+    for (const [index, { store }] of cases.entries()) {
+      const pricing = payload.cards[index].pricing;
+      assert.deepEqual(pricing.listings, [{ store, price: 10000 }]);
+      assert.deepEqual(pricing.adopted, { store, price: 10000 });
+      assert.deepEqual(pricing.comparison.high, { store, price: 9500 });
+      assert.deepEqual(pricing.comparison.low, { store, price: 9000 });
+      assert.deepEqual(pricing.comparison.rows, [{ store, rawPrice: 10000, highRate: 0.05, highPrice: 9500,
+        lowRate: 0.1, lowPrice: 9000, selectedHigh: true, selectedLow: true, excluded: false }]);
+    }
+  } finally { globalThis.fetch = savedFetch; }
+});
+
 test('postal gallery overlays persisted Peleka values and rejects shared-card editing', async () => {
   const { galleryRoutes } = await import('../routes/gallery.js');
   const savedFetch = globalThis.fetch;
