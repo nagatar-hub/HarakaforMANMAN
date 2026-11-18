@@ -1,9 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fetchShinsokuPostalProducts } from '@haraka/shared';
-import { buildTokyoBuybackSnapshot } from '../jobs/tokyo-buyback-sync';
+import { buildTokyoBuybackSnapshot, tokyoProductCandidates } from '../jobs/tokyo-buyback-sync';
 import { BLUE_ROCKET_AKIHABARA_PRICES_API_URL, BLUE_ROCKET_PRICES_API_URL,
   fetchBlueRocketPsaPrices, parseBlueRocketPsaPrices, type BlueRocketPsaPrices } from '../lib/blue-rocket';
 import { fetchExtorecaBoxSheet, fetchExtorecaPsaSheet } from '../lib/extoreca-sheet';
+import { fetchCheckerShops } from '../lib/kaitori-checker-shops';
+
+jest.mock('../lib/kaitori-checker-shops', () => ({ fetchCheckerShops: jest.fn() }));
 
 jest.mock('@haraka/shared', () => ({
   ...jest.requireActual('@haraka/shared'), fetchShinsokuPostalProducts: jest.fn(),
@@ -77,6 +80,15 @@ function database(checkerRows: object[], offers = OFFERS, extraSettings: object 
 }
 
 beforeEach(() => {
+  jest.mocked(fetchCheckerShops).mockReset().mockResolvedValue({
+    products: [{ source_product_id: 21461, category: 'pokemon', name: 'テラスタルフェスex',
+      model_number: null, full_name: null, image_url: null }],
+    offers: [{ source_product_id: 21461, shop_id: 11, shop_name: 'Blue Rocket 秋葉原', condition_id: 2, edition_id: 0,
+      edition_name: null, buy_price: 40000, source_updated_at: SAME_DAY }],
+    report: { api_base: 'https://apn.kaitori-checker.com', shop_ids: [11, 44, 51, 54, 55], condition_ids: [2],
+      fetched_at: now.toISOString(), product_count: 1, offer_count: 1,
+      shops: [{ shop_id: 11, shop_name: 'Blue Rocket 秋葉原', received_count: 1, offer_count: 1, error: null }] },
+  });
   jest.mocked(fetchShinsokuPostalProducts).mockReset().mockResolvedValue([
     { id: 'IAP1', franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10', price: 123000, imageUrl: null },
   ]);
@@ -86,10 +98,15 @@ beforeEach(() => {
   jest.mocked(fetchExtorecaPsaSheet).mockReset().mockResolvedValue([]);
 });
 
-test.each(['running', 'cancelled', 'failed'])('Tokyo uses the last applied checker while the newest is %s, and compares KECAK, Shinsoku and Blue Rocket', async status => {
+test.each(['running', 'cancelled', 'failed'])('Tokyo fetches only its referenced shop while the global checker is %s', async status => {
   const db = database([completed, { ...completed, id: 'newest', status, created_at: '2026-09-09T02:59:00Z', completed_at: null }]);
   const result = await buildTokyoBuybackSnapshot(db, now);
-  expect(result.snapshot.checker_run_id).toBe('complete');
+  expect(result.snapshot.checker_run_id).toBeNull();
+  expect(result.snapshot.checker_source_store).toBe('manman-akihabara');
+  expect(fetchCheckerShops).toHaveBeenCalledWith([11, 44, 51, 54, 55], [2]);
+  expect(result.snapshot.report.checker_api).toMatchObject({ shop_ids: [11, 44, 51, 54, 55], condition_ids: [2] });
+  expect(jest.mocked(db.from).mock.calls.map(([table]) => table)).not.toEqual(
+    expect.arrayContaining(['kaitori_checker_sync_run']));
   expect(result.snapshot.business_date).toBe('2026-09-09');
   // ブルーロケットはAPIの PSA10 1件 + 買取チェッカーの BOX 1件。トレカバンク・アヴィリールは使わない。
   expect(result.snapshot.report.source_counts).toEqual({
@@ -279,12 +296,51 @@ test('an out-of-range window fails closed before any price is computed', async (
 });
 
 test.each([
-  [[], '最新取得が完了していません'],
-  [[{ ...completed, status: 'running' }], '最新取得が完了していません'],
-  [[{ ...completed, completed_at: '2026-09-08T03:29:59Z' }], '24時間以上'],
-  [[{ ...completed, product_count: 3 }], '保存件数'],
-])('Tokyo still rejects absent, stale, or incomplete checker data', async (rows, message) => {
-  await expect(buildTokyoBuybackSnapshot(database(rows), now)).rejects.toThrow(message);
+  { rows: [] }, { rows: [{ ...completed, status: 'running' }] },
+  { rows: [{ ...completed, completed_at: '2026-09-01T03:29:59Z' }] }, { rows: [{ ...completed, product_count: 3 }] },
+])('Tokyo generates independently of absent, stale, or incomplete global checker data: %j', async ({ rows }) => {
+  const db = database(rows);
+  const result = await buildTokyoBuybackSnapshot(db, now);
+  expect(result.products.find(product => product.product_type === 'box')?.source_price).toBe(40000);
+  expect(jest.mocked(db.from).mock.calls.every(([table]) => !String(table).startsWith('kaitori_checker_'))).toBe(true);
+});
+
+test('a required shop API failure is explicit and cannot reuse old global prices', async () => {
+  jest.mocked(fetchCheckerShops).mockRejectedValue(new Error('買取チェッカーの店舗価格取得失敗: shop=11, HTTP 503'));
+  await expect(buildTokyoBuybackSnapshot(database([completed]), now)).rejects.toThrow('shop=11, HTTP 503');
   expect(fetchShinsokuPostalProducts).not.toHaveBeenCalled();
   expect(fetchBlueRocketPsaPrices).not.toHaveBeenCalled();
+});
+
+test('all five Blue Rocket BOX shops compete by exact product, with stable ties and shop provenance', async () => {
+  const checker = await jest.mocked(fetchCheckerShops)([11, 44, 51, 54, 55], [2]);
+  checker.offers = [55, 51, 44, 54, 11].map(shopId => ({ ...checker.offers[0], shop_id: shopId,
+    shop_name: `Blue Rocket ${shopId}`, buy_price: [51, 55].includes(shopId) ? 50000 : 40000 }));
+  jest.mocked(fetchCheckerShops).mockClear().mockResolvedValue(checker);
+  const result = await buildTokyoBuybackSnapshot(database([]), now);
+  const boxes = result.products.filter(product => product.product_type === 'box');
+  expect(boxes).toHaveLength(1);
+  expect(boxes[0]).toMatchObject({ source_price: 50000, selected_high_source: 'blue_rocket',
+    origins: [expect.objectContaining({ shopId: 51, shopName: 'Blue Rocket 51', rawPrice: 50000 })] });
+});
+
+test('each Blue Rocket shop can supply the winning BOX quote', () => {
+  const products = [{ source_product_id: 1, category: 'pokemon', name: 'BOX', full_name: null, model_number: null }];
+  for (const shopId of [11, 44, 51, 54, 55]) {
+    const candidates = tokyoProductCandidates([], products, [{ source_product_id: 1, shop_id: shopId,
+      condition_id: 2, edition_id: 0, buy_price: 50000, source_updated_at: SAME_DAY }], { businessDate: '2026-09-09' });
+    expect(candidates).toEqual([expect.objectContaining({ source: 'blue_rocket', sourcePrice: 50000, shopId })]);
+  }
+});
+
+test('a stale higher quote cannot beat another shop, and editions remain distinct', () => {
+  const products = [{ source_product_id: 1, category: 'pokemon', name: 'BOX', full_name: null, model_number: null }];
+  const base = { source_product_id: 1, condition_id: 2, edition_id: 0, buy_price: 40000, source_updated_at: SAME_DAY };
+  const candidates = tokyoProductCandidates([], products, [
+    { ...base, shop_id: 11 }, { ...base, shop_id: 44, buy_price: 60000, source_updated_at: PREVIOUS_DAY },
+    { ...base, shop_id: 51, edition_id: 7, edition_name: '別版', buy_price: 50000 },
+  ], { businessDate: '2026-09-09' });
+  expect(candidates.map(row => [row.id, row.shopId, row.sourcePrice])).toEqual([
+    ['1:2:0', 11, 40000], ['1:2:7', 51, 50000],
+  ]);
 });

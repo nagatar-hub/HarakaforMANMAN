@@ -1,6 +1,6 @@
 \set ON_ERROR_STOP on
 BEGIN;
-SELECT plan(26);
+SELECT plan(25);
 INSERT INTO public.order_list_import(id,store,business_date,status,original_filename,original_size_bytes,sha256,storage_path,structural_valid,persistence_complete,heartbeat_at)
 VALUES('91000000-0000-4000-8000-000000000001','manman-akihabara',current_date,'processing','test.xlsx',1,repeat('a',64),'test',true,true,now());
 INSERT INTO public.run(id,store,triggered_by,order_list_import_id)
@@ -19,15 +19,12 @@ CREATE TEMP TABLE fixture AS SELECT jsonb_build_object(
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot,products) FROM fixture$$,'22023','latest complete Tokyo order list required','custom caller still cannot use processing imports');
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot,products,'94000000-0000-4000-8000-000000000002') FROM fixture$$,'22023','active Tokyo sync lease required','wrong run cannot publish processing snapshot');
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot || '{"store":"manman"}'::jsonb,products,'94000000-0000-4000-8000-000000000001') FROM fixture$$,'22023','Tokyo store required','other store cannot use Tokyo publication');
-UPDATE public.kaitori_checker_sync_run SET completed_at=now()-interval '25 hours'
-WHERE id='92000000-0000-4000-8000-000000000001';
-SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot,products,'94000000-0000-4000-8000-000000000001') FROM fixture$$,'22023','latest applied checker run required','completed checker older than 24 hours still rejected');
 UPDATE public.kaitori_checker_sync_run SET completed_at=now(),status='failed'
 WHERE id='92000000-0000-4000-8000-000000000001';
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot,products,'94000000-0000-4000-8000-000000000001') FROM fixture$$,'22023','latest applied checker run required','no applied checker still rejected');
-UPDATE public.kaitori_checker_sync_run SET status='applied'
+UPDATE public.kaitori_checker_sync_run SET status='applied',completed_at=now()-interval '25 hours'
 WHERE id='92000000-0000-4000-8000-000000000001';
-SELECT lives_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot,products,'94000000-0000-4000-8000-000000000001') FROM fixture$$,'claimed normal sync can publish latest applied checker despite newer running row');
+SELECT lives_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot,products,'94000000-0000-4000-8000-000000000001') FROM fixture$$,'claimed normal sync accepts a completed checker older than 24 hours despite newer running row');
 SELECT is((SELECT tokyo_snapshot_id::text FROM run WHERE id='94000000-0000-4000-8000-000000000001'),'93000000-0000-4000-8000-000000000001','run snapshot reference publishes atomically');
 SELECT lives_ok($$INSERT INTO public.prepared_card(run_id,source_shinsoku_id,franchise,card_name,grade,list_no,tag,price_high,price_low,source,price_source)
 VALUES('94000000-0000-4000-8000-000000000001','s1','Pokemon','カイ','PSA10','236/172','PSA10',9300,9300,'shinsoku','shinsoku')$$,'snapshot product enters normal prepared catalog');

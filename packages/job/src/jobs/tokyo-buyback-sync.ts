@@ -9,6 +9,7 @@ import {
 } from '@haraka/shared';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { isBoxRow } from '../lib/box-row.js';
+import { fetchCheckerShops } from '../lib/kaitori-checker-shops.js';
 import { completeOriparkCoverage, loadOriparkCoverage } from '../lib/oripark-coverage.js';
 import { BLUE_ROCKET_AKIHABARA_PRICES_API_URL, BLUE_ROCKET_PRICES_API_URL, blueRocketPsaCandidates,
   fetchBlueRocketPsaPrices, type BlueRocketPsaPrices, type BlueRocketPsaRow,
@@ -19,7 +20,6 @@ import {
 } from '../lib/extoreca-sheet.js';
 
 export const TOKYO_BUYBACK_STORE = 'manman-akihabara';
-const CHECKER_STORE = 'oripark';
 const PAGE_SIZE = 500;
 const MAX_PRICE = 100_000_000;
 const KECAK_FRANCHISES = ['Pokemon', 'ONE PIECE', 'DRAGON BALL', 'WEISS SCHWARZ'];
@@ -31,10 +31,11 @@ type OrderRow = { id: string; excel_product_id: string; franchise: string; card_
 type CheckerProduct = { source_product_id: number; category: string; name: string;
   full_name: string | null; model_number: string | null; image_url?: string | null };
 type CheckerOffer = { source_product_id: number; shop_id: number; condition_id: number; edition_id: number;
-  edition_name?: string | null; buy_price?: number; source_updated_at?: string | null };
+  shop_name?: string; edition_name?: string | null; buy_price?: number; source_updated_at?: string | null };
 export type TokyoCandidate = Omit<PostalCandidate, 'source'> & { source: TokyoPriceSource; sourceProductId?: number;
   conditionId?: number; sourcePrice?: number | null; dbCardId?: string | null; imageUrl?: string | null;
-  rarity?: string | null; observedAt?: string | null; priceStale?: boolean; matchName?: string };
+  rarity?: string | null; observedAt?: string | null; priceStale?: boolean; matchName?: string;
+  shopId?: number; shopName?: string };
 type ComparedOrigin = TokyoCandidate & { rawPrice: number; highRate: number; highPrice: number;
   lowRate: number; lowPrice: number; excluded?: true };
 
@@ -59,7 +60,9 @@ export function tokyoComparableOrigins(origins: ComparedOrigin[], guard: TokyoOu
 
 // 買取チェッカーからはブルーロケットの BOX だけを取る（PSA10 はラオックス店・秋葉原店の公開買取API）。
 // トレカバンク・アヴィリールはラインアップにも価格比較にも使わない（2026-09-26 決定）。
-const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = { 11: 'blue_rocket' };
+const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = {
+  11: 'blue_rocket', 44: 'blue_rocket', 51: 'blue_rocket', 54: 'blue_rocket', 55: 'blue_rocket',
+};
 const CHECKER_BOX_CONDITION_ID = 2;
 const validPrice = (price: number | null | undefined): price is number =>
   Number.isSafeInteger(price) && price! > 0 && price! <= MAX_PRICE;
@@ -141,7 +144,7 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
       ...(label ? { matchName: `${row.card_name}${label}` } : {}) });
   }
   const productById = new Map(products.map(product => [product.source_product_id, product]));
-  const seen = new Set<string>();
+  const checkerCandidates = new Map<string, TokyoCandidate>();
   for (const offer of offers) {
     const source = CHECKER_SOURCES[offer.shop_id];
     if (!source || offer.condition_id !== CHECKER_BOX_CONDITION_ID
@@ -153,13 +156,19 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
     // Different editions must not silently inherit the base product's price.
     const id = `${offer.source_product_id}:${offer.condition_id}:${offer.edition_id}`;
     const key = `${source}:${id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    candidates.push({ source, id, franchise, name: offer.edition_id ? `${product.name} [${offer.edition_name || `edition:${offer.edition_id}`}]` : product.name,
+    const current = checkerCandidates.get(key);
+    // Compare only usable prices from the same exact product/condition/edition.
+    // Ties retain the smaller shop ID so response ordering cannot change provenance.
+    if (current && validPrice(current.sourcePrice) && (!validPrice(offer.buy_price)
+      || current.sourcePrice > offer.buy_price
+      || (current.sourcePrice === offer.buy_price && current.shopId! <= offer.shop_id))) continue;
+    checkerCandidates.set(key, { source, id, franchise, name: offer.edition_id ? `${product.name} [${offer.edition_name || `edition:${offer.edition_id}`}]` : product.name,
       modelNumber: product.model_number, productType: 'BOX',
       sourceProductId: offer.source_product_id, conditionId: offer.condition_id, sourcePrice: offer.buy_price,
-      imageUrl: product.image_url, observedAt: offer.source_updated_at });
+      imageUrl: product.image_url, observedAt: offer.source_updated_at,
+      shopId: offer.shop_id, ...(offer.shop_name ? { shopName: offer.shop_name } : {}) });
   }
+  candidates.push(...checkerCandidates.values());
   return candidates;
 }
 
@@ -301,21 +310,9 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
       throw new Error('東京満満の同期リースを所有するRunが必要です');
     }
   }
-  const { data: checker, error: checkerError } = await db.from('kaitori_checker_sync_run').select('*')
-    .eq('store', CHECKER_STORE).eq('status', 'applied').order('created_at', { ascending: false }).limit(1).maybeSingle();
-  if (checkerError) throw new Error(checkerError.message);
-  if (!checker || checker.status !== 'applied' || !checker.completed_at) {
-    throw new Error('買取チェッカーの最新取得が完了していません');
-  }
-  const checkerAge = now.getTime() - Date.parse(checker.completed_at);
-  if (!Number.isFinite(checkerAge) || checkerAge < -60_000 || checkerAge > 24 * 60 * 60 * 1000) {
-    throw new Error('買取チェッカーの商品一覧が24時間以上更新されていません');
-  }
-  const [{ data: config, error: configError }, orderRows, products, offers] = await Promise.all([
+  const [{ data: config, error: configError }, orderRows] = await Promise.all([
     db.from('store_config').select('settings').eq('store', TOKYO_BUYBACK_STORE).single(),
     allRows<OrderRow>(db, 'order_list_item', { import_id: order.id }, 'id', '*, db_card(tag)'),
-    allRows<CheckerProduct>(db, 'kaitori_checker_product_snapshot', { run_id: checker.id, store: CHECKER_STORE }, 'source_product_id'),
-    allRows<CheckerOffer>(db, 'kaitori_checker_offer_snapshot', { run_id: checker.id, store: CHECKER_STORE }, 'source_product_id,shop_id,condition_id,edition_id'),
   ]);
   if (configError || !config) throw new Error('東京満満の減額設定がありません');
   const settings = normalizeStorePricingSettings(config.settings);
@@ -326,8 +323,8 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   for (const rates of [Object.values(settings.psa10_discount_rates), Object.values(settings.box_discount_rates).flatMap(rate => [rate.shrink, rate.no_shrink])]) {
     if (rates.some(rate => !Number.isFinite(rate) || rate < 0 || rate > 1)) throw new Error('減額率は0〜100%で設定してください');
   }
-  if (products.length !== checker.product_count || offers.length !== checker.offer_count) throw new Error('買取チェッカーの保存件数が完了記録と一致しません');
-  const candidates = tokyoProductCandidates(orderRows, products, offers, {
+  const checker = await fetchCheckerShops(Object.keys(CHECKER_SOURCES).map(Number), [CHECKER_BOX_CONDITION_ID]);
+  const candidates = tokyoProductCandidates(orderRows, checker.products, checker.offers, {
     businessDate, kecakBusinessDate: order.business_date,
     kecakObservedAt: order.created_at ?? `${order.business_date}T00:00:00+09:00`,
     maxPriceAgeDays: settings.tokyo_price_max_age_days,
@@ -406,10 +403,10 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
       settings.tokyo_price_max_age_days, candidate => compareTokyoSourceProducts([candidate], [], settings, fetchedAt)) : null;
   if (!result.products.length) throw new Error('当日価格で掲載可能な商品がありません');
   return { snapshot: { id: randomUUID(), store: TOKYO_BUYBACK_STORE, order_list_import_id: order.id,
-    checker_run_id: checker.id, checker_source_store: CHECKER_STORE, fetched_at: fetchedAt,
+    checker_run_id: null, checker_source_store: TOKYO_BUYBACK_STORE, fetched_at: fetchedAt,
     business_date: businessDate, settings,
     report: { pricing_version: 2, ...(coverage ? { oripark_coverage: coverage } : {}), source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
-      checker_completed_at: checker.completed_at, source_counts: sourceCounts, shinsoku_count: sourceProducts.length,
+      checker_api: checker.report, source_counts: sourceCounts, shinsoku_count: sourceProducts.length,
       blue_rocket_psa: { url: BLUE_ROCKET_PRICES_API_URL, store_id: blueRocketPrices.laox?.storeId ?? 'laox',
         business_date: blueRocketPrices.laox?.businessDate ?? null, fetched_at: blueRocketPrices.laox?.fetchedAt ?? null,
         received_count: blueRocketStores.reduce((count, store) => count + (blueRocketPrices[store]?.itemCount ?? 0), 0),
