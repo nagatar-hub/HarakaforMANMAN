@@ -45,6 +45,13 @@ test('/runs redirects an unauthenticated request to Google operator login', asyn
   expect(location.searchParams.get('target')).toBe('operator');
   expect(location.searchParams.get('return_to')).toBe('/runs?tab=imports');
 });
+test('/post still requires login when optional operator auth is disabled', async () => {
+  process.env.OPERATOR_AUTH_REQUIRED = 'false';
+  const response = await middleware(new NextRequest('http://localhost/post'));
+  expect(response.status).toBe(307);
+  expect(response.headers.get('location')).toContain('/api/auth/google');
+});
+
 test('/runs allows unsigned requests when operator auth is disabled', async () => {
   process.env.OPERATOR_AUTH_REQUIRED = 'false';
 

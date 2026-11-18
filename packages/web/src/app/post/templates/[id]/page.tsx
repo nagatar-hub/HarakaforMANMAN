@@ -19,7 +19,7 @@ type Template = {
   is_default: boolean;
 };
 
-const API_URL = '/api/backend';
+const API_URL = '/api/posting';
 
 function resolvePreview(template: string, variables: Variable[]): string {
   const now = new Date();
@@ -59,8 +59,8 @@ export default function TemplateEditorPage() {
   const fetchData = useCallback(async () => {
     try {
       const [tRes, vRes] = await Promise.all([
-        fetch(`${API_URL}/api/post/templates/${templateId}`),
-        fetch(`${API_URL}/api/post/variables`),
+        fetch(`${API_URL}/post/templates/${templateId}`),
+        fetch(`${API_URL}/post/variables`),
       ]);
       const t = await tRes.json();
       const v = await vRes.json();
@@ -90,7 +90,7 @@ export default function TemplateEditorPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = await fetch(`${API_URL}/api/post/templates/${templateId}`, {
+      const res = await fetch(`${API_URL}/post/templates/${templateId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

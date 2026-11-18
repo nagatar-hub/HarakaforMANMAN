@@ -14,7 +14,7 @@ type Banner = {
   created_at: string;
 };
 
-const API_URL = '/api/backend';
+const API_URL = '/api/posting';
 const FRANCHISE_JA: Readonly<Record<string, string>> = SHARED_FRANCHISE_JA;
 
 export default function BannersPage() {
@@ -28,7 +28,7 @@ export default function BannersPage() {
 
   const fetchBanners = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/post/banners`);
+      const res = await fetch(`${API_URL}/post/banners`);
       const data = await res.json();
       setBanners(data);
     } catch (e) {
@@ -44,7 +44,7 @@ export default function BannersPage() {
     if (!newName.trim() || !newImageUrl.trim()) return;
     setCreating(true);
     try {
-      const res = await fetch(`${API_URL}/api/post/banners`, {
+      const res = await fetch(`${API_URL}/post/banners`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -71,7 +71,7 @@ export default function BannersPage() {
 
   const handleDelete = async (b: Banner) => {
     if (!confirm(`バナー「${b.name}」を削除しますか？`)) return;
-    const res = await fetch(`${API_URL}/api/post/banners/${b.id}`, { method: 'DELETE' });
+    const res = await fetch(`${API_URL}/post/banners/${b.id}`, { method: 'DELETE' });
     if (res.ok) await fetchBanners();
   };
 

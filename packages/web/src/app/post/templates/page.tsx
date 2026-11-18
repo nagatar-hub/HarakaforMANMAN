@@ -15,7 +15,7 @@ type Template = {
   updated_at: string;
 };
 
-const API_URL = '/api/backend';
+const API_URL = '/api/posting';
 const FRANCHISE_JA: Readonly<Record<string, string>> = SHARED_FRANCHISE_JA;
 
 export default function TemplatesPage() {
@@ -28,7 +28,7 @@ export default function TemplatesPage() {
 
   const fetchTemplates = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/post/templates`);
+      const res = await fetch(`${API_URL}/post/templates`);
       const data = await res.json();
       setTemplates(data);
     } catch (e) {
@@ -44,7 +44,7 @@ export default function TemplatesPage() {
     if (!newName.trim() || !newHeader.trim()) return;
     setCreating(true);
     try {
-      const res = await fetch(`${API_URL}/api/post/templates`, {
+      const res = await fetch(`${API_URL}/post/templates`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -69,7 +69,7 @@ export default function TemplatesPage() {
 
   const handleDelete = async (t: Template) => {
     if (!confirm(`テンプレート「${t.name}」を削除しますか？`)) return;
-    const res = await fetch(`${API_URL}/api/post/templates/${t.id}`, { method: 'DELETE' });
+    const res = await fetch(`${API_URL}/post/templates/${t.id}`, { method: 'DELETE' });
     if (res.ok) await fetchTemplates();
   };
 
