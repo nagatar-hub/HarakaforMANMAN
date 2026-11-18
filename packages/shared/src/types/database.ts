@@ -599,7 +599,7 @@ export type KaitoriCheckerCustomBuybackCatalogRow = {
 };
 
 export type TokyoBuybackSnapshotRow = {
-  id: string; store: string; order_list_import_id: string; checker_run_id: string;
+  id: string; store: string; order_list_import_id: string; checker_run_id: string | null;
   checker_source_store: string; fetched_at: string; business_date: string;
   settings: Record<string, unknown>; report: Record<string, unknown>;
 };
