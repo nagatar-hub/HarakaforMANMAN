@@ -17,6 +17,18 @@ function global:gcloud {
   $line = $words -join ' '
   $global:tokyoRepairProbeCalls.Add($line)
   $global:LASTEXITCODE = 0
+  if ($global:tokyoRepairProbeMode -in @('missingController','deniedController')) {
+    if ($line -match '^run jobs describe haraka-tokyo-repair ') {
+      $reason=if ($global:tokyoRepairProbeMode -eq 'missingController') { 'ERROR: (gcloud.run.jobs.describe) Cannot find job [haraka-tokyo-repair].' } else { 'ERROR: (gcloud.run.jobs.describe) PERMISSION_DENIED: missing run.jobs.get.' }
+      Write-Error $reason -ErrorAction Continue
+      $global:LASTEXITCODE=1;return
+    }
+    if ($line -match '^scheduler jobs describe ') {
+      Write-Error 'ERROR: NOT_FOUND: Job not found.' -ErrorAction Continue
+      $global:LASTEXITCODE=1;return
+    }
+    if ($line -match ' add-iam-policy-binding |^run jobs deploy |^scheduler jobs (create|pause|update) ') { '{}';return }
+  }
   if ($line -match '\b(create|update|deploy|resume|pause|add-iam-policy-binding|access|submit|enable)\b') { throw "Unexpected external mutation: $line" }
   $data = switch -Regex ($line) {
     '^projects describe ' { @{projectNumber='569936489397'}; break }
@@ -69,5 +81,12 @@ try {
   Assert-Fails 'modelPayload' 'metadata only' @{Readback=$true}
   $global:tokyoRepairProbeMode='normal'
   & "$PSScriptRoot/provision.ps1" -Readback 6>$null | Out-Null
-  Write-Output 'PASS: 9 provisioning checks (offline contract, read-only default, unrelated repository, role drift, apply gate, digest gate, worker overprivilege, model payload denial, metadata-only grant).'
+  $global:tokyoRepairProbeCalls.Clear();$global:tokyoRepairProbeMode='missingController'
+  $image='asia-northeast1-docker.pkg.dev/spectre-tomstocks-20260227/haraka/haraka-tokyo-repair@sha256:'+('0'*64)
+  & "$PSScriptRoot/provision.ps1" -Apply -DeployController -ControllerImage $image 6>$null | Out-Null
+  if (@($global:tokyoRepairProbeCalls | Where-Object {$_ -match '^run jobs deploy haraka-tokyo-repair '}).Count -ne 1) {throw 'Missing controller must be deployed once.'}
+  $global:tokyoRepairProbeCalls.Clear()
+  Assert-Fails 'deniedController' 'gcloud run jobs describe failed' @{Apply=$true;DeployController=$true;ControllerImage=$image}
+  if (@($global:tokyoRepairProbeCalls | Where-Object {$_ -match '^run jobs deploy '}).Count) {throw 'Permission denied must not be interpreted as an absent job.'}
+  Write-Output 'PASS: 11 provisioning checks (offline contract, read-only default, unrelated repository, role drift, apply gate, digest gate, worker overprivilege, model payload denial, metadata-only grant, native missing-job bootstrap, permission-denied gate).'
 } finally { Remove-Item Function:\gcloud }

@@ -78,7 +78,7 @@ function Invoke-Gcloud([string[]]$Arguments, [switch]$Optional) {
     $code = $LASTEXITCODE
     if ($code -ne 0) {
       $reason = [IO.File]::ReadAllText($errorFile)
-      if ($Optional -and $reason -match '(NOT_FOUND|Not Found|does not exist|was not found|not found)') { return $null }
+      if ($Optional -and $reason -match '(NOT_FOUND|Not Found|does not exist|was not found|not found|Cannot find job)') { return $null }
       throw "gcloud $($Arguments[0..([Math]::Min(2,$Arguments.Length-1))] -join ' ') failed (exit $code). $($reason.Trim())"
     }
     $joined = $result -join "`n"
