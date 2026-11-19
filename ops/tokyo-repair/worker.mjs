@@ -28,8 +28,15 @@ export function assertSourceTree(root){
   }};visit(root);
 }
 export function assertRuntimeBaseline(root,runtime='/opt/runtime'){
+  const contents=file=>{
+    const bytes=fs.readFileSync(file),value=bytes.toString('utf8');
+    if(!Buffer.from(value,'utf8').equals(bytes))throw Error('Runtime baseline is not UTF-8');
+    // Windows release uploads retain CRLF, while the trusted Linux git checkout uses LF.
+    // Normalize only that transport difference; all other content and whitespace remain exact.
+    return value.replace(/\r\n/g,'\n');
+  };
   for(const file of ['package.json','package-lock.json','tsconfig.base.json','packages/shared/package.json','packages/shared/tsconfig.json','packages/job/package.json','packages/job/tsconfig.json']){
-    if(!fs.readFileSync(path.join(runtime,file)).equals(fs.readFileSync(path.join(root,file))))throw Error('Runtime dependency or compiler baseline changed');
+    if(contents(path.join(runtime,file))!==contents(path.join(root,file)))throw Error('Runtime dependency or compiler baseline changed');
   }
 }
 export function attachRuntimeDependencies(root,runtime='/opt/runtime'){
