@@ -11,7 +11,8 @@ export type CoverageCard = {
 };
 export type OriparkCoverage = { runId: string; businessDate: string; fingerprint: string; cards: CoverageCard[] };
 export type CoverageItem = { oriparkCardId: string; productId: string; imageUrl: string;
-  altImageUrl: string | null; tag: string | null; rarity: string | null };
+  altImageUrl: string | null; tag: string | null; rarity: string | null;
+  edition?: { sourceProductId: string; name: string; expansion: string } };
 export type CoverageReport = { version: 1; runId: string; businessDate: string; fingerprint: string; items: CoverageItem[] };
 type Comparison = ReturnType<typeof compareTokyoSourceProducts>;
 
@@ -60,28 +61,100 @@ function keys(card: CoverageCard): Set<string> {
   return new Set(names.map(name => identity({ ...row, name })));
 }
 
+const expansionOf = (card: CoverageCard): string | null => {
+  const value = card.raw_import?.raw_row?.['エキスパンション'];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+};
+const editionImageOf = (card: CoverageCard): string | null => {
+  const raw = card.raw_import?.raw_row;
+  if (raw?.['商品ID'] != null && raw['商品ID'] !== card.excel_product_id) return null;
+  // The source row can prove an image even when the DB matcher supplied another edition's image.
+  const original = raw?.['画像'];
+  const image = typeof original === 'string' && original.trim() ? original.trim() : card.image_url;
+  return image?.startsWith('https://') ? image : null;
+};
+const exactSourceMatch = (card: CoverageCard, product: Comparison['products'][number]): boolean =>
+  card.source === 'order_list' && !!card.excel_product_id && product.franchise === card.franchise
+  && product.product_type === (typeOf(card) === 'BOX' ? 'box' : 'psa')
+  && product.origins.some(origin => origin.source === 'kecak' && origin.id === card.excel_product_id);
+
+/** Published rows with separate source IDs and artwork must not share a name-based price. */
+function separatedEditions(cards: CoverageCard[], products: Comparison['products']): Map<string, NonNullable<CoverageItem['edition']>> {
+  const groups = new Map<string, CoverageCard[]>();
+  for (const card of cards) for (const key of keys(card)) groups.set(key, [...(groups.get(key) ?? []), card]);
+  const peers = new Map<string, Set<CoverageCard>>();
+  for (const group of groups.values()) {
+    if (new Set(group.map(card => card.excel_product_id)).size < 2
+      || new Set(group.map(card => editionImageOf(card) ?? card.image_url ?? card.alt_image_url)).size < 2
+      || group.some(card => card.source !== 'order_list' || typeOf(card) !== 'PSA10' || !card.excel_product_id
+        || card.raw_import?.price_source !== 'order_list' || !expansionOf(card))) continue;
+    const existing = group.map(card => {
+      const matches = products.filter(product => coverageMatches(card, product));
+      const exact = matches.filter(product => exactSourceMatch(card, product));
+      return exact.length === 1 ? exact : matches;
+    });
+    // Existing independent identities already distinguish these rows; do not relabel their editions.
+    if (existing.every(matches => matches.length === 1)
+      && new Set(existing.map(matches => matches[0].id)).size === group.length) continue;
+    if (group.some(card => !editionImageOf(card))) throw new Error('Oripark別版の元商品ID・主画像を確認できません');
+    for (const card of group) {
+      const related = peers.get(card.id) ?? new Set<CoverageCard>();
+      for (const other of group) related.add(other);
+      peers.set(card.id, related);
+    }
+  }
+  return new Map(cards.flatMap(card => {
+    const related = peers.get(card.id);
+    if (!related) return [];
+    const expansion = expansionOf(card)!;
+    const sourceId = card.excel_product_id!;
+    const sharedLabel = [...related].some(other => other.excel_product_id !== sourceId && expansionOf(other) === expansion);
+    const shortId = [...related].some(other => other.excel_product_id !== sourceId
+      && other.excel_product_id!.slice(0, 8) === sourceId.slice(0, 8)) ? sourceId : sourceId.slice(0, 8);
+    const name = `${card.card_name} [${expansion}${sharedLabel ? ` / 元商品ID:${shortId}` : ''}]`;
+    return [[card.id, { sourceProductId: sourceId, expansion, name }] as const];
+  }));
+}
+
 export function coverageMatches(card: CoverageCard, product: Comparison['products'][number]): boolean {
   const productType = product.product_type === 'box' ? 'BOX' : 'PSA10';
   if (product.franchise !== card.franchise || productType !== typeOf(card)) return false;
-  if (card.source === 'order_list' && product.origins.some(o => o.source === 'kecak' && o.id === card.excel_product_id)) return true;
+  if (exactSourceMatch(card, product)) return true;
   const expected = keys(card);
   return [identity({ franchise: product.franchise, name: product.name, modelNumber: product.model_number, productType }),
     ...product.origins.map(o => identity(o))].some(key => expected.has(key));
 }
 
-/** Fill only absent products. Existing Tokyo prices and their selected sources are unchanged. */
+/** Fill absent products. Exact Tokyo source prices stay immutable; colliding editions get their own evidence. */
 export function completeOriparkCoverage(result: Comparison, baseline: OriparkCoverage, businessDate: string,
   maxAgeDays: number, compareOne: (candidate: TokyoCandidate) => Comparison): CoverageReport {
   const age = (Date.parse(`${businessDate}T00:00:00+09:00`) - Date.parse(`${baseline.businessDate}T00:00:00+09:00`)) / 86400000;
+  const editions = separatedEditions(baseline.cards, result.products);
   const items: CoverageItem[] = [];
   for (const card of baseline.cards) {
-    let matches = result.products.filter(product => coverageMatches(card, product));
+    const edition = editions.get(card.id);
+    let matches = result.products.filter(product => edition ? exactSourceMatch(card, product) : coverageMatches(card, product));
     if (matches.length > 1) {
       // A shared source product ID is stronger evidence than names that may collapse variants.
-      const byId = matches.filter(product => card.source === 'order_list'
-        && product.origins.some(o => o.source === 'kecak' && o.id === card.excel_product_id));
+      const byId = matches.filter(product => exactSourceMatch(card, product));
       if (byId.length === 1) matches = byId;
       else throw new Error(`Oripark掲載商品が東京の複数商品に対応します: ${card.id} ${card.card_name}`);
+    }
+    if (edition && matches.length === 1) {
+      const product = matches[0];
+      const own = product.origins.filter(origin => origin.source === 'kecak' && origin.id === edition.sourceProductId);
+      if (product.origins.length !== own.length) {
+        if (own.length !== 1) throw new Error(`Oripark別版の元価格が曖昧です: ${card.id}`);
+        // An exact KECAK ID proves this edition; a generic name match from another source does not.
+        const origin = own[0];
+        const specific = compareOne({ source: origin.source, id: origin.id, franchise: origin.franchise,
+          name: edition.name, modelNumber: origin.modelNumber, productType: origin.productType,
+          observedAt: origin.observedAt, sourcePrice: origin.rawPrice });
+        if (specific.products.length !== 1) throw new Error(`Oripark別版の元価格を比較できません: ${card.id}`);
+        const source = specific.priceSources[specific.products[0].id];
+        Object.assign(product, { ...specific.products[0], id: product.id });
+        result.priceSources[product.id] = source;
+      }
     }
     if (!matches.length) {
       if (!Number.isInteger(age) || age < 0 || age > maxAgeDays) throw new Error(`Oripark補完価格の鮮度が不足しています: ${baseline.businessDate} ${card.card_name}`);
@@ -95,8 +168,17 @@ export function completeOriparkCoverage(result: Comparison, baseline: OriparkCov
         : card.raw_import?.price_source === 'order_list' ? 'kecak' : card.raw_import?.price_source;
       if (!['kecak', 'shinsoku', 'extoreca'].includes(source ?? '') || !card.excel_product_id) throw new Error(`Oripark補完商品の元価格を特定できません: ${card.id}`);
       const single = compareOne({ source: source as TokyoCandidate['source'], id: card.excel_product_id,
-        franchise: card.franchise, name: card.card_name, modelNumber: card.list_no, productType: typeOf(card),
+        franchise: card.franchise, name: edition?.name ?? card.card_name, modelNumber: card.list_no, productType: typeOf(card),
         sourcePrice: card.raw_import!.source_price, observedAt: `${baseline.businessDate}T00:00:00+09:00` });
+      if (edition && single.products.length === 1) {
+        const previousId = single.products[0].id;
+        const productId = `TOKYO_${createHash('sha256').update(JSON.stringify([
+          'oripark-source-edition-v1', card.franchise, typeOf(card), source, card.excel_product_id,
+        ])).digest('hex')}`;
+        single.products[0].id = productId;
+        single.priceSources[productId] = single.priceSources[previousId];
+        if (productId !== previousId) delete single.priceSources[previousId];
+      }
       if (single.products.length !== 1 || result.products.some(p => p.id === single.products[0].id)) {
         throw new Error(`Oripark掲載商品の価格・同一性を補完できません: ${card.id} ${card.card_name}`);
       }
@@ -104,10 +186,15 @@ export function completeOriparkCoverage(result: Comparison, baseline: OriparkCov
       Object.assign(result.priceSources, single.priceSources);
       matches = single.products;
     }
-    const imageUrl = card.image_url || card.alt_image_url;
+    const imageUrl = edition ? editionImageOf(card) : card.image_url || card.alt_image_url;
     if (!imageUrl?.startsWith('https://')) throw new Error(`Oripark掲載画像がありません: ${card.id}`);
+    if (edition) {
+      matches[0].name = edition.name;
+      matches[0].image_url = imageUrl;
+    }
     items.push({ oriparkCardId: card.id, productId: matches[0].id, imageUrl,
-      altImageUrl: card.alt_image_url, tag: card.tag, rarity: card.rarity });
+      altImageUrl: edition ? null : card.alt_image_url, tag: card.tag, rarity: card.rarity,
+      ...(edition ? { edition } : {}) });
   }
   return { version: 1, runId: baseline.runId, businessDate: baseline.businessDate, fingerprint: baseline.fingerprint, items };
 }
@@ -116,13 +203,20 @@ export function readCoverageReport(report: unknown): CoverageReport | null {
   const value = (report as { oripark_coverage?: CoverageReport } | null)?.oripark_coverage;
   if (!value) return null;
   if (value.version !== 1 || !value.runId || !value.fingerprint || !Array.isArray(value.items) || !value.items.length
-    || value.items.some(item => !item.productId || !item.oriparkCardId || !item.imageUrl?.startsWith('https://'))) {
+    || value.items.some(item => !item.productId || !item.oriparkCardId || !item.imageUrl?.startsWith('https://')
+      || item.edition && (!item.edition.sourceProductId || !item.edition.name || !item.edition.expansion))) {
     throw new Error('Oripark掲載網羅レポートが不正です');
   }
   return value;
 }
 
 export function assertOriparkCoverage(report: CoverageReport, cards: Pick<PreparedCardRow, 'source_shinsoku_id'>[]): void {
+  const editionSources = new Map<string, string>();
+  for (const item of report.items) if (item.edition) {
+    const previous = editionSources.get(item.productId);
+    if (previous && previous !== item.edition.sourceProductId) throw new Error(`Oripark別版の商品IDが重複しています: ${item.productId}`);
+    editionSources.set(item.productId, item.edition.sourceProductId);
+  }
   const ids = new Set(cards.map(card => card.source_shinsoku_id));
   const missing = report.items.filter(item => !ids.has(item.productId));
   if (missing.length) throw new Error(`Oripark掲載商品が東京から欠落します: ${missing.length}件 (${missing.slice(0, 5).map(item => item.oriparkCardId).join(',')})`);

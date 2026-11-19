@@ -271,6 +271,11 @@ test('Tokyo normal sync claims then publishes and prepares all snapshot products
     expect(db.rpc).toHaveBeenCalledWith('publish_tokyo_buyback_snapshot',expect.objectContaining({p_run_id:'run-1'}));
     expect(db.rpc).toHaveBeenCalledWith('finalize_order_list_sync',expect.objectContaining({p_import_id:'import-1',p_run_id:'run-1',p_total_prepared:2,p_total_pages:0}));
     expect(db.rpc).not.toHaveBeenCalledWith('fail_order_list_sync',expect.anything());
+
+    db.rpc.mockClear();
+    build.mockResolvedValueOnce({ ...snapshot, products: [{ ...snapshot.products[0], price_high: 0 }] });
+    await expect(runSync()).rejects.toThrow('Invalid Tokyo prepared product');
+    expect(db.rpc).not.toHaveBeenCalledWith('publish_tokyo_buyback_snapshot', expect.anything());
   } finally {
     if(prior.store===undefined) delete process.env.STORE_NAME; else process.env.STORE_NAME=prior.store;
     if(prior.importId===undefined) delete process.env.ORDER_LIST_IMPORT_ID; else process.env.ORDER_LIST_IMPORT_ID=prior.importId;

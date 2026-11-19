@@ -166,18 +166,24 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
     const evidence = coverage?.items.filter(item => item.productId === product.id) ?? [];
     const coverageImage = evidence[0]?.imageUrl ?? null;
     if (new Set(evidence.map(item => item.imageUrl)).size > 1) throw new Error(`Oripark補完画像が曖昧です: ${product.id}`);
+    const edition = evidence[0]?.edition;
+    if (edition && (evidence.some(item => item.edition?.sourceProductId !== edition.sourceProductId
+      || item.edition?.name !== edition.name) || product.name !== edition.name
+      || !product.origins.some(origin => origin.source === 'kecak' && origin.id === edition.sourceProductId))) {
+      throw new Error(`Oripark別版の商品・画像証拠が一致しません: ${product.id}`);
+    }
     const primaryImage = dragonSourceEvidencePresent ? dragonSourceImage
       : verifiedImage ?? importedImage ?? harakaImage.imageUrl ?? directShinsokuImage ?? (box ? product.image_url : null);
     return {
       run_id: runId, raw_import_id: null, source_shinsoku_id: product.id,
       franchise: product.franchise, card_name: product.name, grade: box ? '未開封BOX' : 'PSA10',
       list_no: product.model_number,
-      image_url: primaryImage ?? coverageImage,
-      alt_image_url: (!dragonSourceEvidencePresent && !verifiedImage ? matchedFallbackImage : null)
+      image_url: edition ? coverageImage : primaryImage ?? coverageImage,
+      alt_image_url: edition ? null : (!dragonSourceEvidencePresent && !verifiedImage ? matchedFallbackImage : null)
         ?? (coverageImage && coverageImage !== primaryImage ? coverageImage : evidence[0]?.altImageUrl ?? null),
-      db_card_id: dbCardId,
-      rarity: dragonSourceEvidencePresent ? dragonSourceRarity : evidence[0]?.rarity ?? null,
-      rarity_icon_url: null, tag: tag === 'PSA10' ? evidence[0]?.tag ?? tag : tag,
+      db_card_id: edition ? null : dbCardId,
+      rarity: edition ? evidence[0]?.rarity ?? null : dragonSourceEvidencePresent ? dragonSourceRarity : evidence[0]?.rarity ?? null,
+      rarity_icon_url: null, tag: edition ? evidence[0]?.tag ?? 'PSA10' : tag === 'PSA10' ? evidence[0]?.tag ?? tag : tag,
       price_high: product.price_high,
       price_low: product.price_low,
       image_status: 'unchecked',

@@ -353,12 +353,12 @@ export async function runSync(): Promise<void> {
       const snapshot = await buildTokyoBuybackSnapshot(supabase, new Date(), { claimedImportId: orderListImport.id, runId: run.id });
       const harakaCards = await loadTokyoHarakaCards(supabase);
       const imageMappings = await loadTokyoCardImageMappings(supabase, snapshot);
+      const prepared = buildTokyoPreparedCards(run.id, snapshot, imageMappings, harakaCards);
       await lease.renewNow();
       const { data, error } = await supabase.rpc('publish_tokyo_buyback_snapshot', {
         p_snapshot: snapshot.snapshot, p_products: snapshot.products, p_run_id: run.id,
       });
       if (error || data !== snapshot.snapshot.id) throw new Error(`東京価格反映失敗: ${error?.message ?? 'snapshot mismatch'}`);
-      const prepared = buildTokyoPreparedCards(run.id, snapshot, imageMappings, harakaCards);
       console.log(`[sync] 東京Haraka画像: matched=${prepared.filter(card => card.db_card_id).length}, db_rows=${harakaCards.length}; Sheets鮮度は未検証`);
       const psaCount = prepared.filter(card => card.grade === 'PSA10').length;
       const missingPsaImages = prepared.filter(card => card.grade === 'PSA10' && !card.image_url).length;
