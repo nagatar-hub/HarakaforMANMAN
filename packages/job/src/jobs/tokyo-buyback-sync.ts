@@ -10,6 +10,8 @@ import {
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { isBoxRow } from '../lib/box-row.js';
 import { fetchCheckerShops } from '../lib/kaitori-checker-shops.js';
+import { blueRocketQuantityKey, blueRocketModelQuantityKey, blueRocketSingleQuantityKeys, fetchBlueRocketQuantityQuotes,
+  type BlueRocketQuantityQuote } from '../lib/blue-rocket-quantity.js';
 import { completeOriparkCoverage, loadOriparkCoverage } from '../lib/oripark-coverage.js';
 import {
   EXTORECA_BOX_SHEET_URL, EXTORECA_PSA_SHEET_URL, extorecaPsaCandidates,
@@ -120,6 +122,38 @@ export function selectCheckerPsaCandidates(rows: TokyoCandidate[],
     else skipped.push(row);
   }
   return { used, skipped };
+}
+
+/** Remove single-card quotes before choosing the best branch, so another branch can still win. */
+export function filterSingleQuantityBlueRocketOffers(products: CheckerProduct[], offers: CheckerOffer[],
+  quotes: BlueRocketQuantityQuote[], unavailableShopIds: readonly number[] = []) {
+  const singleKeys = blueRocketSingleQuantityKeys(quotes);
+  const exactKeys = new Set(quotes.filter(quote => quote.identity).map(blueRocketQuantityKey));
+  const singleModelKeys = blueRocketSingleQuantityKeys(quotes, true);
+  const unavailable = new Set(unavailableShopIds);
+  const productById = new Map(products.map(product => [product.source_product_id, product]));
+  const excluded: (CheckerOffer & { quantity_exclusion_reason: 'single_quantity' | 'quantity_api_unavailable' })[] = [];
+  const eligible = offers.filter(offer => {
+    if (CHECKER_SOURCES[offer.shop_id] !== 'blue_rocket' || offer.condition_id !== CHECKER_PSA_CONDITION_ID) return true;
+    if (unavailable.has(offer.shop_id)) {
+      excluded.push({ ...offer, quantity_exclusion_reason: 'quantity_api_unavailable' });
+      return false;
+    }
+    if (!validPrice(offer.buy_price)) return true;
+    const product = productById.get(offer.source_product_id);
+    if (!product) return true;
+    const franchise = ({ pokemon: 'Pokemon', one_piece: 'ONE PIECE' } as Record<string, string>)[product.category];
+    if (!franchise) return true;
+    const identity = postalProductIdentity({ franchise, name: checkerPsaName(product),
+      modelNumber: product.model_number, productType: 'PSA10' });
+    const exactKey = blueRocketQuantityKey({ shopId: offer.shop_id, identity, price: offer.buy_price });
+    const single = exactKeys.has(exactKey) ? singleKeys.has(exactKey)
+      : product.model_number && singleModelKeys.has(blueRocketModelQuantityKey(offer.shop_id, franchise, product.model_number, product.name, offer.buy_price));
+    if (!single) return true;
+    excluded.push({ ...offer, quantity_exclusion_reason: 'single_quantity' });
+    return false;
+  });
+  return { offers: eligible, excluded };
 }
 
 // KECAK の ONE PIECE PSA10 は素のカード名で来るため、柄がシンソク表記と一対一に決まる DB タグに限り柄を補って照合する。
@@ -353,8 +387,13 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
   for (const rates of [Object.values(settings.psa10_discount_rates), Object.values(settings.box_discount_rates).flatMap(rate => [rate.shrink, rate.no_shrink])]) {
     if (rates.some(rate => !Number.isFinite(rate) || rate < 0 || rate > 1)) throw new Error('減額率は0〜100%で設定してください');
   }
-  const checker = await fetchCheckerShops(Object.keys(CHECKER_SOURCES).map(Number), [CHECKER_PSA_CONDITION_ID, CHECKER_BOX_CONDITION_ID]);
-  let candidates = tokyoProductCandidates(orderRows, checker.products, checker.offers, {
+  const [checker, quantities] = await Promise.all([
+    fetchCheckerShops(Object.keys(CHECKER_SOURCES).map(Number), [CHECKER_PSA_CONDITION_ID, CHECKER_BOX_CONDITION_ID]),
+    fetchBlueRocketQuantityQuotes(businessDate, settings.tokyo_price_max_age_days),
+  ]);
+  const quantityFailedShopIds = quantities.report.shops.filter(shop => shop.error).map(shop => shop.shop_id);
+  const quantityFiltered = filterSingleQuantityBlueRocketOffers(checker.products, checker.offers, quantities.quotes, quantityFailedShopIds);
+  let candidates = tokyoProductCandidates(orderRows, checker.products, quantityFiltered.offers, {
     businessDate, kecakBusinessDate: order.business_date,
     kecakObservedAt: order.created_at ?? `${order.business_date}T00:00:00+09:00`,
     maxPriceAgeDays: settings.tokyo_price_max_age_days,
@@ -403,7 +442,11 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     business_date: businessDate, settings,
     report: { pricing_version: 2, ...(coverage ? { oripark_coverage: coverage } : {}), source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
       checker_api: checker.report, source_counts: sourceCounts, shinsoku_count: sourceProducts.length,
-      blue_rocket_psa: { source: 'kaitori_checker', used: blueRocketPsa.used.length, skipped: blueRocketPsa.skipped },
+      blue_rocket_psa: { source: 'kaitori_checker', used: blueRocketPsa.used.length, skipped: blueRocketPsa.skipped,
+        quantity: { ...quantities.report, failed_shop_ids: quantityFailedShopIds,
+          excluded_single_quantity_count: quantityFiltered.excluded.filter(offer => offer.quantity_exclusion_reason === 'single_quantity').length,
+          excluded_quantity_unavailable_count: quantityFiltered.excluded.filter(offer => offer.quantity_exclusion_reason === 'quantity_api_unavailable').length,
+          excluded: quantityFiltered.excluded } },
       extoreca: {
         box: { url: EXTORECA_BOX_SHEET_URL, used: extorecaBox.length, error: extorecaErrors.box },
         psa: { url: EXTORECA_PSA_SHEET_URL, used: extorecaPsa.used.length, skipped: extorecaPsa.skipped, error: extorecaErrors.psa },
