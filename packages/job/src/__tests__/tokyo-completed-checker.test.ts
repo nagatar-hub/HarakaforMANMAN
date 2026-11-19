@@ -1,11 +1,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { fetchShinsokuPostalProducts } from '@haraka/shared';
+import { fetchShinsokuPostalProducts, postalProductIdentity } from '@haraka/shared';
 import { buildTokyoBuybackSnapshot } from '../jobs/tokyo-buyback-sync';
 import { fetchBlueRocketPsaPrices } from '../lib/blue-rocket';
 import { fetchExtorecaBoxSheet, fetchExtorecaPsaSheet } from '../lib/extoreca-sheet';
 import { fetchCheckerShops } from '../lib/kaitori-checker-shops';
+import { fetchBlueRocketQuantityQuotes } from '../lib/blue-rocket-quantity';
 
 jest.mock('../lib/kaitori-checker-shops', () => ({ fetchCheckerShops: jest.fn() }));
+jest.mock('../lib/blue-rocket-quantity', () => ({
+  ...jest.requireActual('../lib/blue-rocket-quantity'), fetchBlueRocketQuantityQuotes: jest.fn(),
+}));
 jest.mock('@haraka/shared', () => ({
   ...jest.requireActual('@haraka/shared'), fetchShinsokuPostalProducts: jest.fn(),
 }));
@@ -69,6 +73,8 @@ function database(checkerRows: object[] = [], extraSettings: object = {}) {
 
 beforeEach(() => {
   jest.mocked(fetchCheckerShops).mockReset().mockResolvedValue(checkerFixture());
+  jest.mocked(fetchBlueRocketQuantityQuotes).mockReset().mockResolvedValue({ quotes: [],
+    report: { shops: [], quantity_unavailable_shop_ids: [44] } });
   jest.mocked(fetchShinsokuPostalProducts).mockReset().mockResolvedValue([
     { id: 'IAP1', franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10', price: 123000, imageUrl: null },
   ]);
@@ -116,6 +122,41 @@ test.each([1, 2])('condition %i keeps the highest branch price and a stable winn
   expect(products).toHaveLength(1);
   expect(products[0].origins.filter(origin => origin.source === 'blue_rocket'))
     .toMatchObject([{ shopId: 51, shopName: 'Shop 51', rawPrice: 150000 }]);
+});
+
+test.each([false, true])('single-card quotes are removed before branch selection; all branches limited: %s', async allSingle => {
+  const checker = checkerFixture();
+  checker.offers[0].buy_price = 150000;
+  checker.offers.push({ ...checker.offers[0], shop_id: 11, shop_name: 'Blue Rocket 秋葉原', buy_price: 140000 });
+  jest.mocked(fetchCheckerShops).mockResolvedValue(checker);
+  const identity = postalProductIdentity({ franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10' });
+  jest.mocked(fetchBlueRocketQuantityQuotes).mockResolvedValue({ quotes: [
+    { shopId: 51, identity, price: 150000, singleQuantity: true, productId: 123 },
+    { shopId: 11, identity, price: 140000, singleQuantity: allSingle, productId: 124 },
+  ], report: { shops: [], quantity_unavailable_shop_ids: [44] } });
+  const result = await buildTokyoBuybackSnapshot(database(), now);
+  const psa = result.products.find(product => product.product_type === 'psa')!;
+  expect(psa.source_price).toBe(allSingle ? 130000 : 140000);
+  expect(psa.origins.find(origin => origin.source === 'blue_rocket')).toEqual(allSingle ? undefined
+    : expect.objectContaining({ shopId: 11, rawPrice: 140000 }));
+  expect(result.products.find(product => product.product_type === 'box')).toMatchObject({ source_price: 40000 });
+  expect(result.snapshot.report.blue_rocket_psa.quantity.excluded_single_quantity_count).toBe(allSingle ? 2 : 1);
+});
+
+test.each(['HTTP 503', 'ブルーロケット募集数APIの営業日が許容範囲外です'])('quantity API failure %s removes only that branch PSA', async error => {
+  const checker = checkerFixture();
+  checker.offers[0].buy_price = 150000;
+  checker.offers.push({ ...checker.offers[0], shop_id: 44, shop_name: 'Blue Rocket 郵送', buy_price: 140000 });
+  jest.mocked(fetchCheckerShops).mockResolvedValue(checker);
+  jest.mocked(fetchBlueRocketQuantityQuotes).mockResolvedValue({ quotes: [], report: {
+    shops: [{ shop_id: 51, store_code: 'laox', parsed_quote_count: 0, error }], quantity_unavailable_shop_ids: [44],
+  } });
+  const result = await buildTokyoBuybackSnapshot(database(), now);
+  expect(result.products[0]).toMatchObject({ source_price: 140000 });
+  expect(result.products[0].origins.find(origin => origin.source === 'blue_rocket')).toMatchObject({ shopId: 44 });
+  expect(result.products.find(product => product.product_type === 'box')).toMatchObject({ source_price: 40000 });
+  expect(result.snapshot.report.blue_rocket_psa.quantity).toMatchObject({ failed_shop_ids: [51],
+    excluded_single_quantity_count: 0, excluded_quantity_unavailable_count: 1 });
 });
 
 test('one unavailable branch is reported while another branch still publishes', async () => {
