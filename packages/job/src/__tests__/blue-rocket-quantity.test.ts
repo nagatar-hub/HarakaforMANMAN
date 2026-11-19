@@ -18,19 +18,19 @@ const offer = (shop_id: number, buy_price = 150000) => ({ source_product_id: 7, 
 beforeEach(() => jest.mocked(fetchWithRetry).mockReset());
 
 test.each([{ remainingQty: 1 }, { remainingQty: 16, boost: { remainingQty: 1 }, normalPrice: 145000 }])(
-  'a one-card quote is excluded before selecting another branch: %j', patch => {
+  'a one-card Showa-dori quote is excluded without using another branch: %j', patch => {
     const quotes = parse([item(patch)]);
     const filtered = filterSingleQuantityBlueRocketOffers([product], [offer(11), offer(51, 140000)], quotes);
     expect(filtered.excluded).toMatchObject([{ shop_id: 11 }]);
-    expect(tokyoProductCandidates([], [product], filtered.offers)).toMatchObject([{ shopId: 51, sourcePrice: 140000 }]);
+    expect(tokyoProductCandidates([], [product], filtered.offers)).toEqual([]);
   });
 
-test('all matching one-card branches leave no Blue Rocket PSA candidate', () => {
+test('one-card quotes from the referenced branch leave no Blue Rocket PSA candidate', () => {
   const quotes = parse([item()]);
   const filtered = filterSingleQuantityBlueRocketOffers([product], [offer(11), offer(51)],
     [...quotes, ...quotes.map(quote => ({ ...quote, shopId: 51 }))]);
-  expect(filtered.offers).toEqual([]);
-  expect(filtered.excluded).toHaveLength(2);
+  expect(tokyoProductCandidates([], [product], filtered.offers)).toEqual([]);
+  expect(filtered.excluded).toHaveLength(1);
 });
 
 test.each([null, 2, 100])('quantity %s remains eligible and BOX is unaffected by any quantity', remainingQty => {
@@ -63,11 +63,12 @@ test('a multi-card model/price row blocks fallback while an exact one-card match
   expect(filtered.excluded).toMatchObject([{ source_product_id: 7, quantity_exclusion_reason: 'single_quantity' }]);
 });
 
-test('an unavailable quantity API excludes only that branch PSA while postal and BOX remain', () => {
+test('an unavailable quantity API excludes Showa-dori PSA while BOX remains and other branches never enter candidates', () => {
   const offers = [offer(11), offer(44), offer(51), { ...offer(11), condition_id: 2 }];
   const filtered = filterSingleQuantityBlueRocketOffers([product], offers, [], [11]);
   expect(filtered.offers).toEqual(offers.slice(1));
   expect(filtered.excluded).toMatchObject([{ shop_id: 11, quantity_exclusion_reason: 'quantity_api_unavailable' }]);
+  expect(tokyoProductCandidates([], [product], filtered.offers)).toMatchObject([{ productType: 'BOX', shopId: 11 }]);
 });
 
 test('conflicting public quotes at the same exact price do not exclude a multi-card offer', () => {
@@ -111,15 +112,16 @@ test.each([{ storeId: 'laox' }, { businessDate: '2026-11-17' }, { businessDate: 
     expect(() => parseBlueRocketQuantityQuotes(payload([item()], patch), 11, 'akihabara', day, 1)).toThrow();
   });
 
-test('four mapped quantity stores are fetched in parallel and an unavailable store is reported', async () => {
+test.each([null, 503])('only the Showa-dori quantity API is fetched and failure %s is reported', async status => {
   jest.mocked(fetchWithRetry).mockImplementation(async url => {
     const code = new URL(url).searchParams.get('store');
-    return code === 'osaka' ? new Response('{}', { status: 503 })
+    return status ? new Response('{}', { status })
       : new Response(JSON.stringify(payload([item()], { storeId: code, storeCode: code })));
   });
   const result = await fetchBlueRocketQuantityQuotes(day, 1);
-  expect(fetchWithRetry).toHaveBeenCalledTimes(4);
-  expect(result.quotes.map(quote => quote.shopId)).toEqual([11, 51, 55]);
-  expect(result.report.quantity_unavailable_shop_ids).toEqual([44]);
-  expect(result.report.shops.find(shop => shop.shop_id === 54)?.error).toBe('HTTP 503');
+  expect(fetchWithRetry).toHaveBeenCalledTimes(1);
+  expect(jest.mocked(fetchWithRetry).mock.calls[0][0]).toBe('https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=akihabara');
+  expect(result.quotes.map(quote => quote.shopId)).toEqual(status ? [] : [11]);
+  expect(result.report.quantity_unavailable_shop_ids).toEqual([]);
+  expect(result.report.shops).toMatchObject([{ shop_id: 11, error: status ? 'HTTP 503' : null }]);
 });
