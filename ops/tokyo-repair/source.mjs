@@ -95,7 +95,11 @@ async function pushChild(d, root, parent, sha, action) {
   const rawCommit = d.gitRaw(['cat-file', 'commit', sha], root);
   const patch = d.gitRaw(['diff', '--binary', '--full-index', '--no-ext-diff', parent, sha], root);
   try { await d.relaySource({ action, base: parent, sha, commit: rawCommit, patch }, relayOptions(d, root)); }
-  catch (error) { if (readHead(d, root) !== sha) throw error; }
+  catch (error) {
+    let observed;
+    try { observed = readHead(d, root); } catch { /* Keep the original uncertain publication result. */ }
+    if (observed !== sha) throw error;
+  }
   check(readHead(d, root) === sha, 'push readback mismatch');
   return sha;
 }

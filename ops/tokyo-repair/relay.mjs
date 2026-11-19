@@ -106,7 +106,7 @@ export async function relaySource(request, options = {}) {
     }
     fail('SOURCE_RELAY_TIMEOUT', { checkRunId: checkId, expectedSha: wire.sha });
   } catch (error) {
-    if (triggered && (!error.code || error.uncertain || error.code === 'SOURCE_RELAY_STATUS_INVALID')) {
+    if (triggered && (!error.code || error.uncertain || error.phase === 'STATUS' || error.code === 'SOURCE_RELAY_STATUS_INVALID')) {
       fail('SOURCE_RELAY_TIMEOUT', { checkRunId: checkId, expectedSha: wire.sha, phase: error.phase, status: error.status });
     }
     throw error;
