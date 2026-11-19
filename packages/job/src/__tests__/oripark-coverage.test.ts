@@ -31,6 +31,195 @@ test('current Tokyo source price wins and an Oripark price never overwrites it',
   expect(JSON.stringify(result.products)).toBe(before);
 });
 
+const saboAnniversary: CoverageCard = {
+  id: 'ori-sabo-anniversary', franchise: 'ONE PIECE', card_name: 'サボ', grade: 'PSA10',
+  list_no: 'OP07-118', tag: '3周年', rarity: 'SEC',
+  image_url: 'https://example.com/sabo-anniversary.png', alt_image_url: 'https://example.com/sabo-anniversary.png',
+  excel_product_id: '96a52690-c905-4018-9aad-7b776d4ba370', source: 'order_list',
+  raw_import: { source_price: 8262, price_source: 'order_list', raw_row: { エキスパンション: '3rd ANNIVERSARY SET' } },
+};
+const saboSpecial: CoverageCard = {
+  ...saboAnniversary, id: 'ori-sabo-special', image_url: 'https://example.com/sabo-op13-sp.png',
+  excel_product_id: 'b53c9632-deef-44e2-8600-742ce0734b7f',
+  raw_import: { source_price: 18054, price_source: 'order_list', raw_row: { エキスパンション: 'OP13' } },
+};
+const saboCandidate = (sourceId: string, sourcePrice: number) => ({ source: 'kecak', id: sourceId,
+  franchise: 'ONE PIECE', name: 'サボ', modelNumber: 'OP07-118', productType: 'PSA10', sourcePrice });
+
+function completeSaboVariants(cards: CoverageCard[], initial: any[] = []) {
+  const result = compare(initial);
+  const report = completeOriparkCoverage(result, baseline(cards), '2026-11-16', 1, c => compare([c]));
+  const prepared = buildTokyoPreparedCards('tokyo-run', { products: result.products,
+    snapshot: { store: 'manman-akihabara', business_date: '2026-11-16', report: { oripark_coverage: report } } } as any);
+  expect(() => assertOriparkCoverage(report, prepared as any)).not.toThrow();
+  const variants = cards.map(source => {
+    const item = report.items.find(row => row.oriparkCardId === source.id)!;
+    const product = result.products.find(row => row.id === item.productId)!;
+    const rendered = prepared.find(row => row.source_shinsoku_id === item.productId)!;
+    expect(product.origins).toEqual(expect.arrayContaining([expect.objectContaining({ source: 'kecak', id: source.excel_product_id })]));
+    expect(rendered.image_url).toBe(source.raw_import?.raw_row?.['画像'] ?? source.image_url);
+    if (source.excel_product_id === saboSpecial.excel_product_id) {
+      expect(rendered.alt_image_url).not.toBe(saboAnniversary.image_url);
+    }
+    expect(rendered.price_high).toBe(product.price_high);
+    expect(rendered.price_low).toBe(product.price_low);
+    return { sourceId: source.excel_product_id, productId: product.id, price: product.source_price,
+      priceHigh: product.price_high, priceLow: product.price_low, image: rendered.image_url };
+  }).sort((a, b) => a.sourceId!.localeCompare(b.sourceId!));
+  expect(new Set(variants.map(row => row.productId)).size).toBe(cards.length);
+  return { result, variants, report };
+}
+
+test('same-name Oripark source variants keep their own prices, images and stable IDs in either input order', () => {
+  const first = completeSaboVariants([saboAnniversary, saboSpecial]);
+  const reversed = completeSaboVariants([saboSpecial, saboAnniversary]);
+  expect(first.result.products).toHaveLength(2);
+  expect(reversed.result.products).toHaveLength(2);
+  expect(reversed.variants).toEqual(first.variants);
+  for (const source of [saboAnniversary, saboSpecial]) {
+    const actual = first.variants.find(row => row.sourceId === source.excel_product_id)!;
+    const expected = compare([saboCandidate(source.excel_product_id!, source.raw_import!.source_price!)]).products[0];
+    expect(actual).toMatchObject({ price: source.raw_import!.source_price, priceHigh: expected.price_high, priceLow: expected.price_low });
+  }
+});
+
+test.each([saboAnniversary, saboSpecial])('an exact Tokyo source ID retains its current price and ID when the other $id variant is supplemented', existing => {
+  const current = saboCandidate(existing.excel_product_id!, 24000);
+  const original = compare([current]).products[0];
+  const first = completeSaboVariants([saboAnniversary, saboSpecial], [current]);
+  const reversed = completeSaboVariants([saboSpecial, saboAnniversary], [current]);
+  expect(first.result.products).toHaveLength(2);
+  expect(reversed.variants).toEqual(first.variants);
+  expect(first.result.products.find(product => product.id === original.id)).toMatchObject({
+    id: original.id, source_price: original.source_price, price_high: original.price_high, price_low: original.price_low,
+    selected_high_source: original.selected_high_source, selected_low_source: original.selected_low_source,
+  });
+  expect(first.variants.find(row => row.sourceId === existing.excel_product_id)).toMatchObject({ productId: original.id, price: 24000 });
+  const other = existing === saboAnniversary ? saboSpecial : saboAnniversary;
+  expect(first.variants.find(row => row.sourceId === other.excel_product_id)).toMatchObject({ price: other.raw_import!.source_price });
+});
+
+test('different names with a shared model number remain separate while Oripark variants are supplemented', () => {
+  const unrelated = { source: 'shinsoku', id: 'unrelated-same-model', franchise: 'ONE PIECE', name: '別の商品名',
+    modelNumber: 'OP07-118', productType: 'PSA10', sourcePrice: 500000 };
+  const original = compare([unrelated]).products[0];
+  const completed = completeSaboVariants([saboAnniversary, saboSpecial], [unrelated]);
+  expect(completed.result.products).toHaveLength(3);
+  expect(completed.result.products.find(product => product.id === original.id)).toEqual(original);
+  expect(completed.variants.map(row => row.price).sort((a, b) => a - b)).toEqual([8262, 18054]);
+});
+
+test('a same-name Tokyo product with no exact source ID cannot absorb either published variant', () => {
+  const generic = { ...saboCandidate('generic-sabo', 90000), source: 'shinsoku' };
+  const original = compare([generic]).products[0];
+  const completed = completeSaboVariants([saboAnniversary, saboSpecial], [generic]);
+  expect(completed.result.products).toHaveLength(3);
+  expect(completed.result.products.find(product => product.id === original.id)).toEqual(original);
+  expect(completed.variants.map(row => row.price).sort((a, b) => a - b)).toEqual([8262, 18054]);
+});
+
+test('variant IDs survive a new Oripark run, image URL and source price', () => {
+  const initial = completeSaboVariants([saboAnniversary, saboSpecial]);
+  const updated = [saboAnniversary, saboSpecial].map((source, i) => ({ ...source,
+    id: `next-run-${source.id}`, image_url: `https://example.com/new-${i}.png`,
+    raw_import: { ...source.raw_import!, source_price: source.raw_import!.source_price! + 1000 },
+  }));
+  const next = completeSaboVariants(updated);
+  expect(next.variants.map(({ sourceId, productId }) => ({ sourceId, productId })))
+    .toEqual(initial.variants.map(({ sourceId, productId }) => ({ sourceId, productId })));
+});
+
+test('distinct stable source IDs also separate variants whose imported expansion labels are identical', () => {
+  const variants = [saboAnniversary, saboSpecial].map(source => ({ ...source,
+    card_name: 'モンキー・D・ルフィ', list_no: 'P-108', tag: 'プロモ',
+    raw_import: { ...source.raw_import!, raw_row: { エキスパンション: 'プロモーションカード' } },
+  }));
+  const first = completeSaboVariants(variants);
+  const reversed = completeSaboVariants([...variants].reverse());
+  expect(first.result.products).toHaveLength(2);
+  expect(reversed.variants).toEqual(first.variants);
+});
+
+test('variant image evidence overrides a generic DB image and does not retain its wrong alternate image', () => {
+  const { result, report } = completeSaboVariants([saboAnniversary, saboSpecial]);
+  const wrongImage = 'https://fexadnveyuqduiujewrc.supabase.co/storage/v1/object/public/cards/wrong-variant.png';
+  const dbRows = result.products.map(product => ({ id: `stale-${product.id}`, store: 'manman-akihabara',
+    franchise: product.franchise, card_name: product.name, list_no: product.model_number, grade: 'PSA10',
+    tag: '旧タグ', image_url: wrongImage, alt_image_url: wrongImage, image_status: 'alive' }));
+  const prepared = buildTokyoPreparedCards('tokyo-run', { products: result.products,
+    snapshot: { store: 'manman-akihabara', business_date: '2026-11-16', report: { oripark_coverage: report } } } as any, [], dbRows as any);
+  for (const source of [saboAnniversary, saboSpecial]) {
+    const item = report.items.find(row => row.oriparkCardId === source.id)!;
+    expect(prepared.find(row => row.source_shinsoku_id === item.productId)).toMatchObject({
+      image_url: source.image_url, alt_image_url: null, db_card_id: null, tag: source.tag, rarity: source.rarity,
+    });
+  }
+});
+
+test('alternate images alone are insufficient evidence to separate source variants', () => {
+  const withoutPrimary = { ...saboSpecial, image_url: null, alt_image_url: 'https://example.com/alt-only.png' };
+  expect(() => completeSaboVariants([saboAnniversary, withoutPrimary])).toThrow();
+});
+
+test('a raw image bearing another source product ID cannot prove a source variant', () => {
+  const mismatched = { ...saboSpecial, raw_import: { ...saboSpecial.raw_import!, raw_row: {
+    エキスパンション: 'OP13', 商品ID: saboAnniversary.excel_product_id, 画像: 'https://example.com/mismatched.png',
+  } } };
+  expect(() => completeSaboVariants([saboAnniversary, mismatched])).toThrow();
+});
+
+test('original images linked to exact source IDs distinguish variants even when the DB image is shared', () => {
+  const sharedImage = 'https://example.com/shared-wrong-db.png';
+  const variants = [saboAnniversary, saboSpecial].map(source => ({ ...source,
+    image_url: sharedImage, alt_image_url: sharedImage,
+    raw_import: { ...source.raw_import!, raw_row: { ...source.raw_import!.raw_row,
+      商品ID: source.excel_product_id, 画像: source.image_url,
+    } },
+  }));
+  const first = completeSaboVariants(variants);
+  const reversed = completeSaboVariants([...variants].reverse());
+  expect(first.result.products).toHaveLength(2);
+  expect(reversed.variants).toEqual(first.variants);
+  expect(new Set(first.variants.map(row => row.image)).size).toBe(2);
+});
+
+test('an exact source ID retains its product ID but never borrows a generic competitor price for that variant', () => {
+  const own = saboCandidate(saboAnniversary.excel_product_id!, 24000);
+  const generic = { ...saboCandidate('generic-sabo', 90000), source: 'shinsoku' };
+  const original = compare([own, generic]).products.find(product => product.origins.some(origin => origin.id === own.id))!;
+  const ownPrice = compare([own]).products[0];
+  const { result, variants } = completeSaboVariants([saboAnniversary, saboSpecial], [own, generic]);
+  const product = result.products.find(row => row.id === original.id)!;
+  expect(variants.find(row => row.sourceId === own.id)).toMatchObject({ productId: original.id, price: 24000 });
+  expect(product).toMatchObject({ source_price: 24000, price_high: ownPrice.price_high, price_low: ownPrice.price_low,
+    selected_high_source: 'kecak', selected_low_source: 'kecak' });
+  expect(product.origins.every(origin => origin.source === 'kecak' && origin.id === own.id)).toBe(true);
+  expect(result.priceSources[product.id]).toMatchObject({ price: 24000, source: 'kecak', source_id: own.id });
+});
+
+test('already distinct Tokyo variants preserve their metadata despite sharing a generic DB alias', () => {
+  const variants = [
+    { ...saboAnniversary, card_name: 'サボ(3周年)', alt_image_url: null, db_card: { card_name: 'サボ' } },
+    { ...saboSpecial, card_name: 'サボ(SP)', alt_image_url: null, db_card: { card_name: 'サボ' } },
+  ];
+  const rows = variants.map((source, index) => ({ ...saboCandidate(source.excel_product_id!, 24000 + 10000 * index),
+    name: source.card_name, imageUrl: source.image_url,
+  }));
+  const result = compare(rows);
+  const original = JSON.parse(JSON.stringify(result));
+  const report = completeOriparkCoverage(result, baseline(variants), '2026-11-16', 1, c => compare([c]));
+  expect(result.products).toHaveLength(2);
+  expect(result).toEqual(original);
+  expect(report.items.every(item => !item.edition)).toBe(true);
+  expect(new Set(report.items.map(item => item.productId)).size).toBe(2);
+  const prepared = buildTokyoPreparedCards('tokyo-run', { products: result.products,
+    snapshot: { store: 'manman-akihabara', business_date: '2026-11-16', report: { oripark_coverage: report } } } as any);
+  for (const source of variants) {
+    const item = report.items.find(row => row.oriparkCardId === source.id)!;
+    expect(prepared.find(row => row.source_shinsoku_id === item.productId)?.image_url).toBe(source.image_url);
+  }
+});
+
 test('unopened sets already published by Oripark are included without broadening to all unopened items', () => {
   const box = { ...card, card_name: 'ポケモン切手BOX', grade: 'BOX', tag: 'BOX', list_no: null,
     source: 'shinsoku', raw_import: { source_price: 300000, price_source: 'shinsoku' } };
