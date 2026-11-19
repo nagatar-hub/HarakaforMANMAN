@@ -129,3 +129,21 @@ test('publication acknowledgment loss is reconciled against actual branch HEAD',
     const sha = await publish(e.spec, e.d); assert.equal(await sourceHead(e.d), sha); assert.equal(e.calls.requests.length, 1);
   } finally { e.cleanup(); }
 });
+
+test('head readback failure does not erase an uncertain relay publication identity', async () => {
+  const e = environment();
+  try {
+    let unavailable = false, originalError;
+    const read = e.d.git;
+    e.d.git = (args, ...rest) => {
+      if (unavailable && args[0] === 'ls-remote') throw new Error('fixture readback unavailable');
+      return read(args, ...rest);
+    };
+    e.d.relaySource = async request => {
+      unavailable = true;
+      originalError = Object.assign(new Error('SOURCE_RELAY_TIMEOUT'), { code: 'SOURCE_RELAY_TIMEOUT', expectedSha: request.sha, checkRunId: 123 });
+      throw originalError;
+    };
+    await assert.rejects(publish(e.spec, e.d), error => error === originalError && /^[0-9a-f]{40}$/.test(error.expectedSha) && error.checkRunId === 123);
+  } finally { e.cleanup(); }
+});
