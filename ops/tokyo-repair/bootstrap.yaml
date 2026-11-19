@@ -1,0 +1,13 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: controller
+    args: ['build', '-t', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-tokyo-repair:${_TAG}', '-f', 'ops/tokyo-repair/Dockerfile', '.']
+  - name: gcr.io/cloud-builders/docker
+    id: tokyo-job
+    waitFor: ['-']
+    args: ['build', '-t', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-job:${_TAG}', '-f', 'packages/job/Dockerfile', '.']
+images:
+  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-tokyo-repair:${_TAG}'
+  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/haraka/haraka-manman-job:${_TAG}'
+options:
+  machineType: E2_HIGHCPU_8

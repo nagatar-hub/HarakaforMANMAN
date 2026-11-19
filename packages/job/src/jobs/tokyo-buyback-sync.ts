@@ -354,7 +354,16 @@ async function allRows<T>(db: SupabaseClient, table: string, filters: Record<str
   }
 }
 
-export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Date(), claim?: { claimedImportId: string; runId: string }) {
+export type TokyoCoverageReplayInput = {
+  snapshot: Record<string, unknown>;
+  preCoverage: ReturnType<typeof compareTokyoSourceProducts>;
+  baseline: Awaited<ReturnType<typeof loadOriparkCoverage>>;
+};
+
+export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Date(), claim?: {
+  claimedImportId: string; runId: string;
+  onCoverageReplayInput?: (input: TokyoCoverageReplayInput) => void;
+}) {
   const { data: order, error: orderError } = await db.from('order_list_import').select('*')
     .eq('store', TOKYO_BUYBACK_STORE).order('business_date', { ascending: false })
     .order('created_at', { ascending: false }).limit(1).maybeSingle();
@@ -434,11 +443,25 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     ? sourceProducts.filter(product => validPrice(product.price)).length
     : candidates.filter(row => row.source === source && validPrice(row.sourcePrice)).length]));
   const result = compareTokyoSourceProducts(candidates, sourceProducts, settings, fetchedAt);
-  const coverage = process.env.TOKYO_ORIPARK_COVERAGE_ENABLED === 'true'
-    ? completeOriparkCoverage(result, await loadOriparkCoverage(db), businessDate,
-      settings.tokyo_price_max_age_days, candidate => compareTokyoSourceProducts([candidate], [], settings, fetchedAt)) : null;
+  const snapshotId = randomUUID();
+  let coverage: ReturnType<typeof completeOriparkCoverage> | null = null;
+  if (process.env.TOKYO_ORIPARK_COVERAGE_ENABLED === 'true') {
+    const baseline = await loadOriparkCoverage(db);
+    if (claim?.onCoverageReplayInput) {
+      // Capture before coverage mutates result; disabled production runs allocate no replay copy.
+      try {
+        claim.onCoverageReplayInput(structuredClone({
+          snapshot: { id: snapshotId, store: TOKYO_BUYBACK_STORE, order_list_import_id: order.id,
+            fetched_at: fetchedAt, business_date: businessDate, settings, report: { pricing_version: 2 } },
+          preCoverage: result, baseline,
+        }));
+      } catch { console.warn('[tokyo-repair] Replay input could not be retained'); }
+    }
+    coverage = completeOriparkCoverage(result, baseline, businessDate,
+      settings.tokyo_price_max_age_days, candidate => compareTokyoSourceProducts([candidate], [], settings, fetchedAt));
+  }
   if (!result.products.length) throw new Error('当日価格で掲載可能な商品がありません');
-  return { snapshot: { id: randomUUID(), store: TOKYO_BUYBACK_STORE, order_list_import_id: order.id,
+  return { snapshot: { id: snapshotId, store: TOKYO_BUYBACK_STORE, order_list_import_id: order.id,
     checker_run_id: null, checker_source_store: TOKYO_BUYBACK_STORE, fetched_at: fetchedAt,
     business_date: businessDate, settings,
     report: { pricing_version: 2, ...(coverage ? { oripark_coverage: coverage } : {}), source_url: 'https://shinsoku-tcg.com/yuso-kaitori', completed_at: new Date().toISOString(), order_business_date: order.business_date,
