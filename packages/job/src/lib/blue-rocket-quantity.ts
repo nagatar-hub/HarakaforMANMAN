@@ -2,9 +2,8 @@ import { postalProductIdentity } from '@haraka/shared';
 import { blueRocketCardName, blueRocketModelNumber } from './blue-rocket.js';
 import { fetchWithRetry } from './fetch-with-retry.js';
 
-// The official /prices/stores list has no postal store. Never map Suehirocho to postal shop 44.
-const STORES = [{ shopId: 11, code: 'akihabara' }, { shopId: 51, code: 'laox' },
-  { shopId: 54, code: 'osaka' }, { shopId: 55, code: 'fukuoka' }] as const;
+// Tokyo compares only the Akihabara Showa-dori branch.
+const STORES = [{ shopId: 11, code: 'akihabara' }] as const;
 export type BlueRocketQuantityQuote = { shopId: number; identity: string | null; price: number;
   singleQuantity: boolean; productId: number; modelKey?: string };
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -100,5 +99,5 @@ export async function fetchBlueRocketQuantityQuotes(businessDate: string, maxAge
       parsed_quote_count: result.status === 'fulfilled' ? result.value.length : 0,
       error: result.status === 'rejected' ? (result.reason instanceof Error ? result.reason.message : String(result.reason)) : null };
   });
-  return { quotes, report: { shops, quantity_unavailable_shop_ids: [44] } };
+  return { quotes, report: { shops, quantity_unavailable_shop_ids: [] as number[] } };
 }

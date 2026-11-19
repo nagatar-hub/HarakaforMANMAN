@@ -58,11 +58,12 @@ export function tokyoComparableOrigins(origins: ComparedOrigin[], guard: TokyoOu
   });
 }
 
-// PSA10・BOXとも同じ5支店の店舗別APIから取得し、二重の価格経路を作らない。
+// PSA10・BOXとも秋葉原昭和通り店だけを参照する。
 // トレカバンク・アヴィリールはラインアップにも価格比較にも使わない（2026-09-26 決定）。
 const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = {
-  11: 'blue_rocket', 44: 'blue_rocket', 51: 'blue_rocket', 54: 'blue_rocket', 55: 'blue_rocket',
+  11: 'blue_rocket',
 };
+const BLUE_ROCKET_SHOP_NAME = 'Blue Rocket（ブルロケ）秋葉原昭和通り店';
 const CHECKER_PSA_CONDITION_ID = 1;
 const CHECKER_BOX_CONDITION_ID = 2;
 const validPrice = (price: number | null | undefined): price is number =>
@@ -230,7 +231,7 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
       modelNumber: product.model_number, productType, ...(product.rarity ? { rarity: product.rarity } : {}),
       sourceProductId: offer.source_product_id, conditionId: offer.condition_id, sourcePrice: offer.buy_price,
       imageUrl: product.image_url, observedAt: offer.source_updated_at,
-      shopId: offer.shop_id, ...(offer.shop_name ? { shopName: offer.shop_name } : {}) });
+      shopId: offer.shop_id, shopName: BLUE_ROCKET_SHOP_NAME });
   }
   candidates.push(...checkerCandidates.values());
   return candidates;

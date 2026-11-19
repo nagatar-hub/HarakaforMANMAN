@@ -7,7 +7,7 @@ const NOW = '2026-11-18T03:00:00Z';
 const base = { product_id: 1, category_id: 1, name: 'ピカチュウ', model_number: '025/165',
   condition_id: 1, edition_id: 0, buy_price: 100000, price_updated_at: NOW, ask_flag: 0 };
 const candidates = (rows: Record<string, unknown>[]) => {
-  const shop = parseCheckerShop({ id: 44, name: 'ブルーロケット郵送', products: rows }, 44, [1, 2]);
+  const shop = parseCheckerShop({ id: 11, name: 'Blue Rocket 秋葉原', products: rows }, 11, [1, 2]);
   return tokyoProductCandidates([], shop.products, shop.offers, { businessDate: '2026-11-18' });
 };
 
@@ -23,7 +23,7 @@ test('holo variants stay distinct through parsing, candidate selection and the f
   const compared = compareTokyoSourceProducts(selected.used, lineup, SETTINGS, NOW);
   expect(compared.products).toHaveLength(1);
   expect(compared.products[0]).toMatchObject({ id: 'IAP1', source_price: 120000,
-    origins: [{ source: 'blue_rocket', shopId: 44, shopName: 'ブルーロケット郵送' }, { source: 'shinsoku' }] });
+    origins: [{ source: 'blue_rocket', shopId: 11, shopName: 'Blue Rocket（ブルロケ）秋葉原昭和通り店' }, { source: 'shinsoku' }] });
 });
 
 test('ordinary PSA suffixes still match the existing catalog without dropping meaningful variants', () => {

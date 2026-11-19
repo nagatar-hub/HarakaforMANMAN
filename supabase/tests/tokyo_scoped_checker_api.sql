@@ -26,8 +26,8 @@ SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot,products,'a400
   '22023','active Tokyo sync lease required','wrong run cannot publish');
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot - 'report',products,'a4000000-0000-4000-8000-000000000001') FROM scoped_fixture$$,
   '22023','Tokyo scoped checker API evidence required','live path requires API evidence');
-SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(jsonb_set(snapshot,'{report,checker_api,shop_ids}','[11]'),products,'a4000000-0000-4000-8000-000000000001') FROM scoped_fixture$$,
-  '22023','Tokyo scoped checker API evidence required','single-shop evidence cannot silently omit the other Blue Rocket shops');
+SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(jsonb_set(snapshot,'{report,checker_api,shop_ids}','[44]'),products,'a4000000-0000-4000-8000-000000000001') FROM scoped_fixture$$,
+  '22023','Tokyo scoped checker API evidence required','another single shop cannot replace the configured Blue Rocket scope');
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(jsonb_set(snapshot,'{report,checker_api,condition_ids}','[1]'),products,'a4000000-0000-4000-8000-000000000001') FROM scoped_fixture$$,
   '22023','Tokyo scoped checker API evidence required','checker API evidence must retain BOX coverage');
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot || '{"checker_source_store":"oripark"}',products,'a4000000-0000-4000-8000-000000000001') FROM scoped_fixture$$,
