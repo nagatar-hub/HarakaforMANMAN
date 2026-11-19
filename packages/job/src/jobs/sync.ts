@@ -32,9 +32,10 @@ import { planPages } from '../lib/page-planner.js';
 import { sendDiscordNotification, COLOR } from '../lib/discord.js';
 import { OAuthInvalidGrantError } from '../lib/fetch-with-retry.js';
 import { startOrderListLease } from '../lib/order-list-lease.js';
+import { captureTokyoRepairFixture } from '../lib/tokyo-repair-fixture.js';
 import { getOptionalEnvOrSecret, getRequiredEnvOrSecret } from '../lib/env.js';
 import { loadStorePricingSettings } from '../lib/pricing-settings.js';
-import { buildTokyoBuybackSnapshot, TOKYO_BUYBACK_STORE } from './tokyo-buyback-sync.js';
+import { buildTokyoBuybackSnapshot, TOKYO_BUYBACK_STORE, type TokyoCoverageReplayInput } from './tokyo-buyback-sync.js';
 import { buildTokyoPreparedCards, loadTokyoCardImageMappings } from '../lib/tokyo-normal-cards.js';
 import { loadTokyoHarakaCards } from '../lib/haraka-card-images.js';
 import type {
@@ -350,10 +351,45 @@ export async function runSync(): Promise<void> {
     await lease.renewNow();
     if (STORE_NAME === TOKYO_BUYBACK_STORE) {
       await updateProgress(supabase, run.id, 0, 100, 'KECAK・チェッカーの商品一覧と、遊戯王・DB・ヴァイスのシンソク郵送PSA/BOX・価格を取得中...');
-      const snapshot = await buildTokyoBuybackSnapshot(supabase, new Date(), { claimedImportId: orderListImport.id, runId: run.id });
+      const replay: { input?: TokyoCoverageReplayInput } = {};
+      let snapshot: Awaited<ReturnType<typeof buildTokyoBuybackSnapshot>>;
+      try {
+        snapshot = await buildTokyoBuybackSnapshot(supabase, new Date(), {
+          claimedImportId: orderListImport.id, runId: run.id,
+          ...(process.env.TOKYO_REPAIR_FIXTURE_BUCKET ? { onCoverageReplayInput: (input: TokyoCoverageReplayInput) => { replay.input = input; } } : {}),
+        });
+      } catch (error) {
+        if (replay.input) {
+          try {
+            const dbCards = await loadTokyoHarakaCards(supabase);
+            const imageMappings: Record<string, unknown>[] = [];
+            // Coverage may add new IDs: keep the complete read-only mapping set for candidate replay.
+            for (let offset = 0; ; offset += PAGE_SIZE) {
+              const page = await supabase.from('tokyo_card_image_mapping').select('*')
+                .order('source_shinsoku_id').range(offset, offset + PAGE_SIZE - 1);
+              if (page.error) throw new Error('Replay image mappings unavailable');
+              imageMappings.push(...page.data ?? []);
+              if ((page.data?.length ?? 0) < PAGE_SIZE) break;
+            }
+            await captureTokyoRepairFixture({ runId: run.id, importId: orderListImport.id, snapshotId: run.tokyo_snapshot_id ?? null,
+              stage: 'coverage_prepare', failurePoint: 'coverage', error, input: { ...replay.input, imageMappings, dbCards } });
+          } catch { console.warn('[tokyo-repair] Coverage replay inputs unavailable'); }
+        }
+        throw error;
+      }
       const harakaCards = await loadTokyoHarakaCards(supabase);
       const imageMappings = await loadTokyoCardImageMappings(supabase, snapshot);
-      const prepared = buildTokyoPreparedCards(run.id, snapshot, imageMappings, harakaCards);
+      let prepared: ReturnType<typeof buildTokyoPreparedCards>;
+      try {
+        prepared = buildTokyoPreparedCards(run.id, snapshot, imageMappings, harakaCards);
+      } catch (error) {
+        await captureTokyoRepairFixture({ runId: run.id, importId: orderListImport.id, snapshotId: run.tokyo_snapshot_id ?? null,
+          ...(replay.input ? { stage: 'coverage_prepare' as const, failurePoint: 'prepare' as const,
+            input: { ...replay.input, imageMappings, dbCards: harakaCards } }
+            : { stage: 'prepare' as const, input: { snapshot: snapshot.snapshot, products: snapshot.products, imageMappings, dbCards: harakaCards } }),
+          error });
+        throw error;
+      }
       await lease.renewNow();
       const { data, error } = await supabase.rpc('publish_tokyo_buyback_snapshot', {
         p_snapshot: snapshot.snapshot, p_products: snapshot.products, p_run_id: run.id,

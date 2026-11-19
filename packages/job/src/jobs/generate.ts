@@ -13,6 +13,7 @@
 
 import sharp from 'sharp';
 import { assertOriparkCoverage, readCoverageReport } from '../lib/oripark-coverage.js';
+import { captureTokyoRepairFixture } from '../lib/tokyo-repair-fixture.js';
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { fetchSheetValues } from '../lib/google-sheets.js';
 import {
@@ -360,7 +361,15 @@ export async function runGenerate() {
 
       const psaPlans = tokyoSnapshot ? [] : planPages(psaCards, rules ?? [], layouts);
       const boxPlans = tokyoSnapshot ? [] : makeFixedBoxPlans(boxCards, profile.total_slots);
-      const pagePlans = tokyoSnapshot ? planTokyoGalleryPages(validCards, layouts, rules ?? []) : [...psaPlans, ...boxPlans];
+      let pagePlans: PagePlan[];
+      try {
+        pagePlans = tokyoSnapshot ? planTokyoGalleryPages(validCards, layouts, rules ?? []) : [...psaPlans, ...boxPlans];
+      } catch (error) {
+        if (tokyoSnapshot && run.order_list_import_id) await captureTokyoRepairFixture({ runId: run.id,
+          importId: run.order_list_import_id, snapshotId: run.tokyo_snapshot_id ?? null, stage: 'generate_plan', error,
+          input: { cards: validCards, layouts, rules: rules ?? [] } });
+        throw error;
+      }
       console.log(`[generate]   ${franchise}: PSA ${psaCards.length}枚, BOX ${boxCards.length}枚 / ${pagePlans.length}ページ`);
 
       if (pagePlans.length === 0) continue;
