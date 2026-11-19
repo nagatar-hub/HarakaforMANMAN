@@ -1,0 +1,34 @@
+name: Haraka Tokyo verified source receiver
+on:
+  status:
+permissions: {}
+jobs:
+  receive:
+    if: >-
+      github.repository == 'nagatar-hub/HarakaforMANMAN' &&
+      github.event.repository.id == 1197998654 &&
+      github.event.context == 'haraka/tokyo-source-verified' &&
+      github.event.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: haraka-tokyo-verified-source
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      checks: read
+      statuses: write
+    steps:
+      - name: Load trusted receiver from public master
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/haraka-trusted"
+          git -C "$RUNNER_TEMP/haraka-trusted" init --quiet
+          git -C "$RUNNER_TEMP/haraka-trusted" -c core.hooksPath=/dev/null fetch --depth=1 https://github.com/nagatar-hub/HarakaforMANMAN.git refs/heads/master
+          git -C "$RUNNER_TEMP/haraka-trusted" -c core.hooksPath=/dev/null checkout --detach --quiet FETCH_HEAD
+      - name: Verify signed source and fast-forward master
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node "$RUNNER_TEMP/haraka-trusted/ops/tokyo-repair/receive.mjs"

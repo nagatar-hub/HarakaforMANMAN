@@ -11,6 +11,7 @@ param(
   [switch]$Readback,
   [switch]$PrintContract,
   [switch]$DeployController,
+  [switch]$MirrorWorkerImage,
   [switch]$EnableSchedule,
   [string]$ControllerImage,
   [string]$Account = 'nagata.r@tomstocks.net'
@@ -35,6 +36,8 @@ $remote = 'https://github.com/nagatar-hub/HarakaforMANMAN.git'
 $modelSecret = 'haraka-tokyo-repair-openai-api-key'
 $scheduler = 'haraka-tokyo-repair-15min'
 $imageRepository = "$region-docker.pkg.dev/$project/haraka/haraka-tokyo-repair"
+$workerRepository = 'haraka-tokyo-repair'
+$workerImageRepository = "$region-docker.pkg.dev/$project/$workerRepository/worker"
 $logView = 'haraka-tokyo-repair'
 $logFilter = 'resource.type="cloud_run_job" AND resource.labels.project_id="spectre-tomstocks-20260227" AND resource.labels.job_name=~"^haraka-manman-akihabara-(sync|generate|watchdog)$"'
 $envContract = [ordered]@{
@@ -55,6 +58,7 @@ $contract = [ordered]@{
   controllerServiceAccount=$ctl; workerServiceAccount=$worker; releaseServiceAccount=$release
   stateBucket=$state; artifactBucket=$artifacts; sourceBucket=$sourceBucket
   repository=$repositoryResource; imageRepository=$imageRepository
+  workerImageRepository=$workerImageRepository
   logView="projects/$project/locations/global/buckets/_Default/views/$logView"
   scheduler=$scheduler; schedule='*/15 * * * *'; timeZone='Asia/Tokyo'
   environment=$envContract; secretReferences=$secrets
@@ -62,7 +66,7 @@ $contract = [ordered]@{
 if ($PrintContract) { $contract | ConvertTo-Json -Depth 8; return }
 if (($DeployController -or $EnableSchedule) -and !$Apply) { throw 'Deployment/schedule changes require -Apply.' }
 if ($EnableSchedule -and !$DeployController) { throw '-EnableSchedule requires -DeployController and a verified immutable image.' }
-if ($DeployController -and $ControllerImage -notmatch ('^'+[regex]::Escape($imageRepository)+'@sha256:[0-9a-f]{64}$')) {
+if (($DeployController -or $MirrorWorkerImage) -and $ControllerImage -notmatch ('^'+[regex]::Escape($imageRepository)+'@sha256:[0-9a-f]{64}$')) {
   throw 'ControllerImage must be the agreed controller repository with an immutable sha256 digest.'
 }
 $scratch = Join-Path $PSScriptRoot '.provision-local'
@@ -78,7 +82,7 @@ function Invoke-Gcloud([string[]]$Arguments, [switch]$Optional) {
     $code = $LASTEXITCODE
     if ($code -ne 0) {
       $reason = [IO.File]::ReadAllText($errorFile)
-      if ($Optional -and $reason -match '(NOT_FOUND|Not Found|does not exist|was not found|not found)') { return $null }
+      if ($Optional -and $reason -match '(NOT_FOUND|Not Found|does not exist|was not found|not found|Cannot find job)') { return $null }
       throw "gcloud $($Arguments[0..([Math]::Min(2,$Arguments.Length-1))] -join ' ') failed (exit $code). $($reason.Trim())"
     }
     $joined = $result -join "`n"
@@ -95,6 +99,42 @@ function JsonFile([string]$Name, $Value) {
   $path = Join-Path $scratch "$Name.json"
   [IO.File]::WriteAllText($path, ($Value | ConvertTo-Json -Depth 30), $utf8)
   return $path
+}
+function EnsureWorkerMirror {
+  $digest = $ControllerImage.Split('@')[1]
+  $target = "$workerImageRepository@$digest"
+  $found = Invoke-Gcloud @('artifacts','docker','images','describe',$target) -Optional
+  if ($found) {
+    if ($found.image_summary.digest -ne $digest) { throw 'Worker mirror digest mismatch.' }
+    Write-Host "Verified worker mirror $target"
+    return
+  }
+  $planned.Add("mirror verified controller digest to $workerImageRepository")
+  if (!$Apply) { Write-Host "PLAN  mirror $ControllerImage to $target"; return }
+  # Google-maintained registry copier. Pin and verify the official release archive;
+  # use an isolated credential-helper config, never a stored token or model key.
+  $version = 'v0.22.1'
+  $toolDir = Join-Path $scratch "gcrane-$version"
+  New-Item -ItemType Directory -Force -Path $toolDir | Out-Null
+  $archive = Join-Path $toolDir 'go-containerregistry_Windows_x86_64.tar.gz'
+  if (!(Test-Path -LiteralPath $archive)) {
+    Invoke-WebRequest -Uri "https://github.com/google/go-containerregistry/releases/download/$version/go-containerregistry_Windows_x86_64.tar.gz" -OutFile $archive
+  }
+  if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '0e073ea8192c3b8442ec8aaf44d53c1050a09084669fae3a6ceb0f2026cf8b21') { throw 'Official gcrane archive checksum mismatch.' }
+  & tar -xf $archive -C $toolDir gcrane.exe
+  if ($LASTEXITCODE -ne 0) { throw 'Verified gcrane extraction failed.' }
+  $dockerConfig = Join-Path $toolDir 'docker-config'
+  New-Item -ItemType Directory -Force -Path $dockerConfig | Out-Null
+  [IO.File]::WriteAllText((Join-Path $dockerConfig 'config.json'), (@{credHelpers=@{"$region-docker.pkg.dev"='gcloud'}} | ConvertTo-Json -Depth 4), $utf8)
+  $oldDockerConfig=$env:DOCKER_CONFIG; $oldAccount=$env:CLOUDSDK_CORE_ACCOUNT
+  try {
+    $env:DOCKER_CONFIG=$dockerConfig; $env:CLOUDSDK_CORE_ACCOUNT=$Account
+    & (Join-Path $toolDir 'gcrane.exe') cp $ControllerImage $target
+    if ($LASTEXITCODE -ne 0) { throw 'Controller image mirror failed.' }
+  } finally { $env:DOCKER_CONFIG=$oldDockerConfig; $env:CLOUDSDK_CORE_ACCOUNT=$oldAccount }
+  $verified = Invoke-Gcloud @('artifacts','docker','images','describe',$target)
+  if ($verified.image_summary.digest -ne $digest) { throw 'Worker mirror readback digest mismatch.' }
+  Write-Host "Verified worker mirror $target"
 }
 function EnsureRole([string]$Name, [string[]]$Permissions) {
   $role = Invoke-Gcloud @('iam','roles','describe',$Name) -Optional
@@ -139,7 +179,7 @@ function SecretBind([string]$Secret,[string]$Member,[string]$Role) {
 $projectInfo = Invoke-Gcloud @('projects','describe',$project)
 if ([string]$projectInfo.projectNumber -ne $projectNumber) { throw 'Project identity mismatch.' }
 $enabled = @(Invoke-Gcloud @('services','list','--enabled')) | ForEach-Object { $_.config.name }
-foreach ($api in @('run.googleapis.com','cloudbuild.googleapis.com','cloudscheduler.googleapis.com','secretmanager.googleapis.com','artifactregistry.googleapis.com','storage.googleapis.com','iam.googleapis.com')) {
+foreach ($api in @('run.googleapis.com','cloudbuild.googleapis.com','cloudscheduler.googleapis.com','secretmanager.googleapis.com','artifactregistry.googleapis.com','storage.googleapis.com','iam.googleapis.com','iamcredentials.googleapis.com')) {
   if ($api -notin $enabled) { throw "Required existing API $api is disabled; this script will not enable it." }
 }
 $originalConnection = Invoke-Gcloud @('builds','connections','describe','haraka-github',"--region=$region")
@@ -169,6 +209,9 @@ if (@($repos | Where-Object { $_.name -ne $repositoryResource -or $_.remoteUri -
 if (!$repos.Count) { Change "link only HarakaforMANMAN" @('builds','repositories','create',$repository,"--connection=$connection","--region=$region","--remote-uri=$remote") }
 $key = Invoke-Gcloud @('secrets','describe',$modelSecret) -Optional
 if (!$key) { Change "create empty model-key secret (no credential payload)" @('secrets','create',$modelSecret,'--replication-policy=user-managed',"--locations=$region") }
+$workerRepo = Invoke-Gcloud @('artifacts','repositories','describe',$workerRepository,"--location=$region") -Optional
+if (!$workerRepo) { Change 'create dedicated private worker image repository' @('artifacts','repositories','create',$workerRepository,"--location=$region",'--repository-format=docker','--immutable-tags','--description=Only approved Tokyo repair worker images') }
+elseif ($workerRepo.format -ne 'DOCKER' -or $workerRepo.mode -ne 'STANDARD_REPOSITORY') { throw 'Worker repository type mismatch.' }
 $view = Invoke-Gcloud @('logging','views','describe',$logView,'--bucket=_Default','--location=global') -Optional
 if (!$view) { Change 'create Tokyo job-only log view' @('logging','views','create',$logView,'--bucket=_Default','--location=global',"--log-filter=$logFilter") }
 elseif ($view.filter -ne $logFilter) { throw 'Existing log view filter differs; refusing broader log access.' }
@@ -180,6 +223,8 @@ $invokeRole = EnsureRole 'harakaTokyoRepairJobInvoke' @('run.jobs.get','run.jobs
 $tokenRole = EnsureRole 'harakaTokyoRepairRepoToken' @('cloudbuild.repositories.get','cloudbuild.repositories.list','cloudbuild.repositories.accessReadWriteToken')
 $objectRead = EnsureRole 'harakaTokyoRepairObjectRead' @('storage.objects.get')
 $modelMetadata = EnsureRole 'harakaTokyoRepairModelMetadata' @('secretmanager.versions.get')
+$imagePull = EnsureRole 'harakaTokyoRepairImagePull' @('artifactregistry.repositories.downloadArtifacts')
+$signerRole = EnsureRole 'harakaTokyoRepairSignBlob' @('iam.serviceAccounts.signBlob')
 $ctlMember = "serviceAccount:$ctl"; $workerMember = "serviceAccount:$worker"; $releaseMember = "serviceAccount:$release"
 ProjectBind $ctlMember $buildRole
 ProjectBind $ctlMember $operationRole
@@ -189,6 +234,7 @@ JobBind 'haraka-manman-akihabara-watchdog' $ctlMember $invokeRole
 foreach ($targetSa in @($worker,$release,$runtime)) {
   Bind "sa:$targetSa" @('iam','service-accounts','get-iam-policy',$targetSa) @('iam','service-accounts','add-iam-policy-binding',$targetSa) $ctlMember 'roles/iam.serviceAccountUser'
 }
+Bind "sa:$ctl" @('iam','service-accounts','get-iam-policy',$ctl) @('iam','service-accounts','add-iam-policy-binding',$ctl) $ctlMember $signerRole
 Bind "connection:$connection" @('builds','connections','get-iam-policy',$connection,"--region=$region") @('builds','connections','add-iam-policy-binding',$connection,"--region=$region") $ctlMember $tokenRole
 Bind "logview:$logView" @('logging','views','get-iam-policy',$logView,'--bucket=_Default','--location=global') @('logging','views','add-iam-policy-binding',$logView,'--bucket=_Default','--location=global') $ctlMember 'roles/logging.viewAccessor'
 BucketBind $state $ctlMember 'roles/storage.objectAdmin'
@@ -205,6 +251,9 @@ SecretBind $modelSecret $workerMember 'roles/secretmanager.secretAccessor'
 SecretBind $modelSecret $ctlMember $modelMetadata
 foreach ($ref in $secrets.Values) { SecretBind ($ref.Split(':')[0]) $ctlMember 'roles/secretmanager.secretAccessor' }
 Bind 'ar:haraka' @('artifacts','repositories','get-iam-policy','haraka',"--location=$region") @('artifacts','repositories','add-iam-policy-binding','haraka',"--location=$region") $releaseMember 'roles/artifactregistry.writer'
+Bind "ar:$workerRepository" @('artifacts','repositories','get-iam-policy',$workerRepository,"--location=$region") @('artifacts','repositories','add-iam-policy-binding',$workerRepository,"--location=$region") $workerMember $imagePull
+
+if ($DeployController -or $MirrorWorkerImage) { EnsureWorkerMirror }
 
 if ($DeployController) {
   $existing = Invoke-Gcloud @('run','jobs','describe',$job,"--region=$region") -Optional
@@ -250,6 +299,16 @@ if ($Readback -or $Apply) {
   }
   $modelPolicy = Invoke-Gcloud @('secrets','get-iam-policy',$modelSecret) -Optional
   if (@($modelPolicy.bindings | Where-Object { $releaseMember -in $_.members -or ($ctlMember -in $_.members -and $_.role -ne $modelMetadata) }).Count) { throw 'Controller may read model version metadata only; release must not access model credentials.' }
+  $mirrorPolicy = Invoke-Gcloud @('artifacts','repositories','get-iam-policy',$workerRepository,"--location=$region") -Optional
+  if (@($mirrorPolicy.bindings | Where-Object { 'allUsers' -in $_.members -or 'allAuthenticatedUsers' -in $_.members -or $releaseMember -in $_.members -or ($workerMember -in $_.members -and $_.role -ne $imagePull) }).Count) { throw 'Worker mirror is not private or its grants exceed download-only isolation.' }
+  $sharedImagePolicy = Invoke-Gcloud @('artifacts','repositories','get-iam-policy','haraka',"--location=$region")
+  if (@($sharedImagePolicy.bindings | Where-Object { $workerMember -in $_.members }).Count) { throw 'Model worker must not access the shared image repository.' }
+  $signerPolicy = Invoke-Gcloud @('iam','service-accounts','get-iam-policy',$ctl)
+  foreach ($binding in $signerPolicy.bindings) {
+    if ($binding.role -eq $signerRole -and @($binding.members | Where-Object { $_ -ne $ctlMember }).Count) { throw 'Controller signing permission must be self-only.' }
+    if ($binding.role -eq 'roles/iam.serviceAccountTokenCreator' -and $ctlMember -in $binding.members) { throw 'Controller requires signBlob only, not TokenCreator.' }
+  }
+  if (@($projectPolicy.bindings | Where-Object { $_.role -eq 'roles/iam.serviceAccountTokenCreator' -and $ctlMember -in $_.members }).Count) { throw 'Controller must not have project-wide TokenCreator.' }
   $contract | ConvertTo-Json -Depth 8
   Write-Host 'Readback checked exact project and direct policy boundaries; no credential values were read.'
 }

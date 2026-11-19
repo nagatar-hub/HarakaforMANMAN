@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { accessToken, build, changeImage, dataBucket, google, imageRepo, job, readObject, secret, stateBucket, writeObject } from './cloud.mjs';
+import { accessToken, build, changeImage, dataBucket, google, imageRepo, job, probeBuildWorkers, readObject, secret, stateBucket, writeObject } from './cloud.mjs';
 import { detect, STORE } from './detect.mjs';
 import { captureReplayFixture, recover, verify } from './recovery.mjs';
 import { sourceHead, assertDeployedSource, publish, rollbackSource, checkSourceAccess } from './source.mjs';
@@ -105,8 +105,29 @@ export async function runController(overrides = {}) {
     if (!proposal || !verified || verified.base !== a.base || verified.stage !== incident.stage) throw Error('INVALID_RELEASE_ARTIFACT');
     return { attempt, base: a.base, stage: incident.stage, createdAt: a.startedAt, proposal, verified };
   };
+  const waitForSource = async (error, phase) => {
+    if (!/^[a-f0-9]{40}$/.test(error.expectedSha ?? '')) throw error;
+    a.queuedSha = error.expectedSha;
+    // Signed requests expire in one hour and the repository job has a short timeout.
+    a.relayDeadline = d.now()+70*60000;
+    a.expires = d.now()+60000;
+    await advance(phase);
+    return { status:'waiting_for_repository', phase };
+  };
 
   try {
+    if (a.phase === 'awaiting_source' || a.phase === 'awaiting_revert') {
+      const reverting = a.phase === 'awaiting_revert', head = await d.sourceHead();
+      if (head === a.queuedSha) {
+        if (reverting) return await finish('rolled_back',a.reason);
+        a.sha = head;
+        await advance('deploying');
+      } else if (d.now() <= a.relayDeadline && head === (reverting ? a.sha : a.base)) {
+        a.expires = d.now()+60000;
+        await save();
+        return { status:'waiting_for_repository', phase:a.phase };
+      } else return await finish(reverting ? 'rollback_needs_review' : 'needs_review','SOURCE_RELAY_EXPIRED_OR_SUPERSEDED');
+    }
     if (a.phase === 'sheet') {
       const result = await d.repairSheet(incident, { attempt });
       if (result.status === 'superseded') return await finish('superseded','INCIDENT_CHANGED');
@@ -183,6 +204,8 @@ export async function runController(overrides = {}) {
     }
   } catch (e) {
     if (e.journalWrite || e.status === 412) throw e;
+    if (a.phase === 'publishing' && e.code === 'SOURCE_RELAY_TIMEOUT') return await waitForSource(e,'awaiting_source');
+    if (a.phase === 'awaiting_source' || a.phase === 'awaiting_revert') throw e;
     if (a.phase === 'sheet' && (e.code === 'SHEET_LAUNCH_UNCERTAIN' || e.message === 'SHEET_LAUNCH_UNCERTAIN') && (a.retries ?? 0) < 3) {
       a.retries = (a.retries ?? 0) + 1;
       a.expires = d.now()+90000;
@@ -220,6 +243,7 @@ export async function runController(overrides = {}) {
     } else if (current.image !== a.previous.image || current.revision !== a.previous.revision) throw Error('ROLLBACK_CONFLICT');
     await d.rollbackSource({ base: a.base, sha: a.sha });
   } catch (e) {
+    if (e.code === 'SOURCE_RELAY_TIMEOUT') return await waitForSource(e,'awaiting_revert');
     return await finish('rollback_needs_review', safeReason(e));
   }
   return await finish('rolled_back', a.reason);
@@ -235,12 +259,26 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       result = { ok:checked.ok, runId:checked.runId, snapshotId:checked.snapshotId, counts:checked.counts, checks:checked.checks };
     }
     else if (action === '--detect-only') result = { status: await defaults.detect() ? 'incident' : 'healthy' };
+    else if (action === '--probe-builds') result = { status:'build_workers_ready', builds:await probeBuildWorkers() };
     else if (action === '--readiness') {
+      const probe = async (name, fn) => {
+        try {
+          const value = await fn();
+          console.log(JSON.stringify({ readiness:name, ok:true }));
+          return value;
+        } catch (error) {
+          console.error(JSON.stringify({ readiness:name, ok:false, status:error.status, reason:safeReason(error) }));
+          throw Error('READINESS_FAILED');
+        }
+      };
       const [head, sync, generate, modelReady] = await Promise.all([
-        defaults.sourceHead(), defaults.runtime('sync'), defaults.runtime('generate'), defaults.modelReady(),
+        probe('source_head',defaults.sourceHead), probe('sync_job',()=>defaults.runtime('sync')),
+        probe('generate_job',()=>defaults.runtime('generate')), probe('credential_metadata',defaults.modelReady),
       ]);
-      await Promise.all([sync, generate].map(bound => defaults.assertDeployedSource(head, bound.revision)));
-      const sourceWritable = await checkSourceAccess();
+      for (const [stage, live] of [['sync',sync], ['generate',generate]]) {
+        await probe(stage+'_source',()=>defaults.assertDeployedSource(head, live.revision));
+      }
+      const sourceWritable = await probe('repository_write_dry_run',checkSourceAccess);
       result = { status:'ready', source:head, sync:sync.revision, generate:generate.revision, modelReady, sourceWritable };
     }
     else if (!action) result = await runController();

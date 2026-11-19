@@ -9,7 +9,7 @@ COPY packages/job/tsconfig.json packages/job/tsconfig.json
 RUN npm ci --workspace=packages/shared --workspace=packages/job
 COPY packages/shared packages/shared
 RUN npm -w packages/shared run build
-COPY ops/tokyo-repair/cloud.mjs ops/tokyo-repair/controller.mjs ops/tokyo-repair/detect.mjs ops/tokyo-repair/diagnostic.mjs ops/tokyo-repair/policy.mjs ops/tokyo-repair/recovery.mjs ops/tokyo-repair/replay.mjs ops/tokyo-repair/sheet.mjs ops/tokyo-repair/source.mjs ops/tokyo-repair/worker.mjs /opt/runtime/ops/tokyo-repair/
+COPY ops/tokyo-repair/cloud.mjs ops/tokyo-repair/controller.mjs ops/tokyo-repair/detect.mjs ops/tokyo-repair/diagnostic.mjs ops/tokyo-repair/policy.mjs ops/tokyo-repair/recovery.mjs ops/tokyo-repair/relay.mjs ops/tokyo-repair/replay.mjs ops/tokyo-repair/sheet.mjs ops/tokyo-repair/source.mjs ops/tokyo-repair/worker.mjs /opt/runtime/ops/tokyo-repair/
 RUN mkdir -p /workspace && chown node:node /workspace
 USER node
 ENTRYPOINT ["node","/opt/runtime/ops/tokyo-repair/controller.mjs"]
