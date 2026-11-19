@@ -35,9 +35,14 @@ export async function writeObject(bucket,key,data,generation='0'){
   const url='https://storage.googleapis.com/upload/storage/v1/b/'+bucket+'/o?uploadType=media&name='+encodeURIComponent(key)+'&ifGenerationMatch='+generation;
   return (await(await google(url,json('POST',data))).json()).generation;
 }
-export async function build(spec,phase){
+function controllerImage(){
   const self=process.env.REPAIR_SELF_IMAGE;
   if(!new RegExp('^'+region+'-docker\\.pkg\\.dev/'+project+'/haraka/haraka-tokyo-repair@sha256:[a-f0-9]{64}$').test(self??''))throw Error('Controller image must be pinned');
+  return self;
+}
+const modelWorkerImage=self=>self.replace('/haraka/haraka-tokyo-repair@','/haraka-tokyo-repair/worker@');
+export async function build(spec,phase){
+  const self=controllerImage();
   const proposal=phase==='propose';
   if(!proposal&&phase!=='verify')throw Error('Unknown build phase');
   const inputKey='proposals/'+spec.attempt+'.json',base=spec.base;
@@ -47,8 +52,10 @@ export async function build(spec,phase){
   const step=(cmd,args,extra={})=>({name:self,entrypoint:cmd,args,...extra});
   let body;
   if(proposal){
+    // The model worker can pull this digest only from its dedicated registry repository.
+    const workerImage=modelWorkerImage(self);
     body={...common,availableSecrets:{secretManager:[{versionName:secret,env:'CODEX_API_KEY'}]},
-      steps:[step('node',['/opt/runtime/ops/tokyo-repair/worker.mjs','propose',base,spec.stage,spec.attempt,deflateRawSync(JSON.stringify(spec.diagnostic)).toString('base64url')],{secretEnv:['CODEX_API_KEY']})]};
+      steps:[step('node',['/opt/runtime/ops/tokyo-repair/worker.mjs','propose',base,spec.stage,spec.attempt,deflateRawSync(JSON.stringify(spec.diagnostic)).toString('base64url')],{name:workerImage,secretEnv:['CODEX_API_KEY']})]};
   }else{
     const builtImage=imageRepo+':'+tag;
     body={...common,steps:[
@@ -58,6 +65,16 @@ export async function build(spec,phase){
       {name:'gcr.io/cloud-builders/docker',args:['build','-t',builtImage,'-f','/workspace/candidate/packages/job/Dockerfile','/workspace/candidate']},
     ],images:[builtImage]};
   }
+  return launchBuild(body,phase);
+}
+export async function probeBuildWorkers(){
+  const self=controllerImage();
+  return Promise.all(['build','release'].map(kind=>launchBuild({
+    serviceAccount:serviceAccount(kind),timeout:'180s',options:{logging:'CLOUD_LOGGING_ONLY'},tags:['tokyo-repair-preflight'],
+    steps:[{name:kind==='build'?modelWorkerImage(self):self,entrypoint:'node',args:['--check','/opt/runtime/ops/tokyo-repair/worker.mjs']}],
+  },kind)));
+}
+async function launchBuild(body,phase){
   const baseUrl='https://cloudbuild.googleapis.com/v1/'+location+'/builds';
   const op=await(await google(baseUrl,json('POST',body))).json();
   const id=op.metadata?.build?.id;if(!id)throw Error('Build launch outcome unknown');console.log(phase+' build '+id);

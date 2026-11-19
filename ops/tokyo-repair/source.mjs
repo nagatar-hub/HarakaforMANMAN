@@ -1,21 +1,29 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { checkout, git } from './worker.mjs';
-import { google, expectedRepo, github, json } from './cloud.mjs';
+import { google, github } from './cloud.mjs';
 import { applyProposal } from './policy.mjs';
+import { relaySource } from './relay.mjs';
 
 const SHA = /^[0-9a-f]{40}$/;
 const ATTEMPT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MASTER = 'refs/heads/master';
-const NUMBERED_REPOSITORY = expectedRepo.replace('projects/spectre-tomstocks-20260227/', 'projects/569936489397/');
 const RUNTIME_PATHS = ['packages/job', 'packages/shared', 'package.json', 'package-lock.json', 'tsconfig.base.json', '.npmrc', '.dockerignore'];
 const check = (ok, reason) => { if (!ok) throw new Error(`Repair source: ${reason}`); };
 const lines = value => value.split('\n').filter(Boolean).sort();
 const equal = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 
 function deps(overrides = {}) {
-  return { git, checkout, applyProposal, google, ...overrides };
+  return { git, gitRaw, checkout, applyProposal, google, relaySource, ...overrides };
+}
+function gitRaw(args, cwd) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 120000, maxBuffer: 4 * 1024 * 1024,
+    env: { PATH: process.env.PATH, HOME: os.tmpdir(), GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' },
+    stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  if (result.status !== 0) throw Object.assign(new Error('SOURCE_GIT_RAW_READ_FAILED'), { code: 'SOURCE_GIT_RAW_READ_FAILED' });
+  return result.stdout;
 }
 function scratch() { return fs.mkdtempSync(path.join(os.tmpdir(), 'haraka-repair-source-')); }
 function discard(root) {
@@ -37,16 +45,14 @@ export async function sourceHead(overrides = {}) {
   try { return readHead(d, root); } finally { discard(root); }
 }
 
-/** Authenticate receive-pack without updating any remote ref or persisting a credential. */
+/** Ask the trusted receiver to dry-run using its short-lived GITHUB_TOKEN, then read its result. */
 export async function checkSourceAccess(overrides = {}) {
   const d = deps(overrides), root = scratch();
   try {
     const head = readHead(d, root);
     d.checkout(root, head);
-    const auth = await tokenEnvironment(d);
-    try {
-      d.git(['push', '--dry-run', '--no-verify', '--porcelain', 'origin', `${head}:${MASTER}`], root, auth);
-    } finally { auth.GIT_CONFIG_VALUE_0 = ''; }
+    const result = await d.relaySource({ action: 'probe', base: head, sha: head, commit: '', patch: '' }, relayOptions(d, root));
+    check(result?.probe === true && result.sha === head, 'probe result missing');
     check(readHead(d, root) === head, 'master changed during access check');
     return true;
   } finally { discard(root); }
@@ -79,34 +85,17 @@ function commit(d, root, tree, parent, message) {
   check(SHA.test(sha), 'invalid commit result');
   return sha;
 }
-async function tokenEnvironment(d) {
-  // Cloud Build v2 uses accessReadWriteToken, and permission is scoped to this single repository.
-  const collection = expectedRepo.slice(0, expectedRepo.lastIndexOf('/repositories/')) + '/repositories';
-  const listed = await (await d.google(`https://cloudbuild.googleapis.com/v2/${collection}`)).json();
-  check(!listed.nextPageToken && listed.repositories?.length === 1
-    && [expectedRepo, NUMBERED_REPOSITORY].includes(listed.repositories[0].name)
-    && listed.repositories[0].remoteUri === github, 'connection repository scope changed');
-  const response = await d.google(`https://cloudbuild.googleapis.com/v2/${expectedRepo}:accessReadWriteToken`, json('POST', {}));
-  const value = await response.json();
-  check(typeof value.token === 'string' && value.token.length > 10 && !/[\r\n]/.test(value.token), 'write token unavailable');
-  if (value.expirationTime) check(Number.isFinite(Date.parse(value.expirationTime)) && Date.parse(value.expirationTime) > Date.now() + 30000, 'write token expired');
-  return { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `http.${github}.extraheader`,
-    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${value.token}`).toString('base64')}` };
+function relayOptions(d, root) {
+  return { google: d.google, readHead: () => readHead(d, root), ...(d.fetch ? { fetch: d.fetch } : {}) };
 }
-async function pushChild(d, root, parent, sha) {
+async function pushChild(d, root, parent, sha, action) {
   const current = readHead(d, root);
   if (current === sha) return sha; // Push succeeded before a previous controller stopped.
   check(current === parent, 'master advanced');
-  const auth = await tokenEnvironment(d);
-  try {
-    // No --force, token in argv, remote URL credentials, local credential files or logging.
-    d.git(['push', '--porcelain', 'origin', `${sha}:${MASTER}`], root, auth);
-  } catch {
-    // An interrupted response can mean the atomic remote update succeeded. Read before retrying.
-    if (readHead(d, root) !== sha) throw new Error('Repair source: push failed or outcome unknown');
-  } finally {
-    auth.GIT_CONFIG_VALUE_0 = '';
-  }
+  const rawCommit = d.gitRaw(['cat-file', 'commit', sha], root);
+  const patch = d.gitRaw(['diff', '--binary', '--full-index', '--no-ext-diff', parent, sha], root);
+  try { await d.relaySource({ action, base: parent, sha, commit: rawCommit, patch }, relayOptions(d, root)); }
+  catch (error) { if (readHead(d, root) !== sha) throw error; }
   check(readHead(d, root) === sha, 'push readback mismatch');
   return sha;
 }
@@ -128,7 +117,7 @@ export async function publish({ attempt, base, stage, proposal, verified }, over
     check(tree === verified.tree, 'verified tree mismatch');
     const message = `fix(tokyo): automated ${stage} repair\n\nRepair-Attempt: ${attempt}\nBase-Revision: ${base}\nVerified-Tree: ${tree}\n`;
     const sha = commit(d, root, tree, base, message);
-    return await pushChild(d, root, base, sha);
+    return await pushChild(d, root, base, sha, 'publish');
   } finally { discard(root); }
 }
 
@@ -146,6 +135,6 @@ export async function rollbackSource({ base, sha }, overrides = {}) {
     const tree = d.git(['rev-parse', `${base}^{tree}`], root);
     check(SHA.test(tree), 'invalid rollback tree');
     const reverted = commit(d, root, tree, sha, `revert(tokyo): compensate failed automatic repair\n\nRepair-Reverted: ${sha}\nBase-Revision: ${base}\n`);
-    return await pushChild(d, root, sha, reverted);
+    return await pushChild(d, root, sha, reverted, 'rollback');
   } finally { discard(root); }
 }

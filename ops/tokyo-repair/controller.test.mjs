@@ -116,6 +116,19 @@ test('an indeterminate image update defers the release decision until its state 
   assert.equal(h.ledger.active.phase,'deploying');
   assert.ok(!h.calls.includes('revert'));
 });
+test('a delayed repository acknowledgement cannot duplicate the verified build or deploy a missing commit',async()=>{
+  const h=harness();
+  const uncertain=Object.assign(Error('pending'),{code:'SOURCE_RELAY_TIMEOUT',expectedSha:sha});
+  const initialResult=await runController({...h.deps,publish:async()=>{throw uncertain}});
+  assert.equal(initialResult.status,'waiting_for_repository');
+  assert.equal(h.ledger.active.phase,'awaiting_source');
+  const now=()=>h.deps.now()+120000;
+  assert.equal((await runController({...h.deps,now})).status,'waiting_for_repository');
+  assert.deepEqual(h.calls,['propose','verify']);
+  const resolved=await runController({...h.deps,now:()=>now()+120000,sourceHead:async()=>sha});
+  assert.equal(resolved.status,'repaired');
+  assert.deepEqual(h.calls,['propose','verify','deploy','regenerate/readback']);
+});
 test('the model receives source coordinates and counts without row values or external messages',()=>{
   const result=publicDiagnostic({...incident,diagnostic:{code:'private value',errorType:'sensitive'}},{site:{module:'lib/oripark-coverage',line:12,secret:'private'},input:{products:[{name:'private'}]}});
   assert.equal(result.code,'unknown');assert.equal(result.site.line,12);assert.equal(result.products,1);assert.ok(!JSON.stringify(result).includes('private'));
