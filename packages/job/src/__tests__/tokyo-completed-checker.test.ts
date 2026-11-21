@@ -22,9 +22,11 @@ jest.mock('../lib/extoreca-sheet', () => ({
   ...jest.requireActual('../lib/extoreca-sheet'), fetchExtorecaBoxSheet: jest.fn(), fetchExtorecaPsaSheet: jest.fn(),
 }));
 
-const SHOPS = [11];
+const SHOPS = [11, 73];
 const OTHER_SHOPS = [44, 51, 54, 55];
 const SHOP_NAME = 'Blue Rocket（ブルロケ）秋葉原昭和通り店';
+const SUEHIROCHO_NAME = 'Blue Rocket（ブルロケ）秋葉原末広町店';
+const SHOP_NAMES: Record<number, string> = { 11: SHOP_NAME, 73: SUEHIROCHO_NAME };
 const now = new Date('2026-09-09T03:30:00Z');
 const SAME_DAY = '2026-09-09T02:00:00Z';
 const PREVIOUS_DAY = '2026-09-08T02:00:00Z';
@@ -37,14 +39,14 @@ function checkerFixture(): Awaited<ReturnType<typeof fetchCheckerShops>> {
       { source_product_id: 1, category: 'pokemon', name: 'カイ', model_number: '236/172', full_name: null, image_url: null },
       { source_product_id: 21461, category: 'pokemon', name: 'テラスタルフェスex', model_number: null, full_name: null, image_url: null },
     ],
-    offers: [
-      { source_product_id: 1, shop_id: 11, shop_name: 'Blue Rocket 秋葉原', condition_id: 1, edition_id: 0,
-        edition_name: null, buy_price: 125000, source_updated_at: SAME_DAY },
-      { source_product_id: 21461, shop_id: 11, shop_name: 'Blue Rocket 秋葉原', condition_id: 2, edition_id: 0,
-        edition_name: null, buy_price: 40000, source_updated_at: SAME_DAY },
-    ],
+    offers: SHOPS.flatMap(shopId => [
+      { source_product_id: 1, shop_id: shopId, shop_name: SHOP_NAMES[shopId], condition_id: 1, edition_id: 0,
+        edition_name: null, buy_price: shopId === 11 ? 125000 : 120000, source_updated_at: SAME_DAY },
+      { source_product_id: 21461, shop_id: shopId, shop_name: SHOP_NAMES[shopId], condition_id: 2, edition_id: 0,
+        edition_name: null, buy_price: shopId === 11 ? 40000 : 38000, source_updated_at: SAME_DAY },
+    ]),
     report: { api_base: 'https://apn.kaitori-checker.com', shop_ids: SHOPS, condition_ids: [1, 2],
-      fetched_at: now.toISOString(), product_count: 2, offer_count: 2,
+      fetched_at: now.toISOString(), product_count: 2, offer_count: 4,
       shops: SHOPS.map(shopId => ({ shop_id: shopId, shop_name: `Shop ${shopId}`, received_count: 1,
         offer_count: 2, error: null })) },
   };
@@ -88,7 +90,7 @@ beforeEach(() => {
   jest.mocked(fetchExtorecaPsaSheet).mockReset().mockResolvedValue([]);
 });
 
-test('fetches PSA and BOX only from Showa-dori without the legacy public PSA or global checker paths', async () => {
+test('fetches PSA and BOX from checker shops 11 and 73 without legacy public PSA or global checker paths', async () => {
   const db = database();
   const result = await buildTokyoBuybackSnapshot(db, now);
   expect(fetchCheckerShops).toHaveBeenCalledTimes(1);
@@ -106,35 +108,41 @@ test('fetches PSA and BOX only from Showa-dori without the legacy public PSA or 
   });
 });
 
-test('the snapshot path requests checker shop 11 and exactly one Akihabara quantity API', async () => {
+test('the snapshot path requests checker shops 11/73 and exactly the two official quantity APIs', async () => {
   jest.mocked(fetchBlueRocketQuantityQuotes).mockImplementation(jest.requireActual('../lib/blue-rocket-quantity').fetchBlueRocketQuantityQuotes);
-  jest.mocked(fetchWithRetry).mockResolvedValue(new Response(JSON.stringify({
-    storeId: 'akihabara', storeCode: 'akihabara', businessDate: '2026-09-09', items: [],
-  })));
+  jest.mocked(fetchWithRetry).mockImplementation(async url => {
+    const store = new URL(url).searchParams.get('store');
+    return new Response(JSON.stringify({ storeId: store, storeCode: store, businessDate: '2026-09-09', items: [] }));
+  });
   const result = await buildTokyoBuybackSnapshot(database(), now);
-  expect(fetchCheckerShops).toHaveBeenCalledWith([11], [1, 2]);
-  expect(fetchWithRetry).toHaveBeenCalledTimes(1);
-  expect(jest.mocked(fetchWithRetry).mock.calls[0][0]).toBe('https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=akihabara');
+  expect(fetchCheckerShops).toHaveBeenCalledWith([11, 73], [1, 2]);
+  expect(fetchWithRetry).toHaveBeenCalledTimes(2);
+  expect(jest.mocked(fetchWithRetry).mock.calls.map(([url]) => url).sort()).toEqual([
+    'https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=akihabara',
+    'https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=suehirocho',
+  ]);
   expect(result.snapshot.report.blue_rocket_psa.quantity).toMatchObject({
-    shops: [{ shop_id: 11, store_code: 'akihabara', error: null }], quantity_unavailable_shop_ids: [],
+    shops: [{ shop_id: 11, store_code: 'akihabara', error: null }, { shop_id: 73, store_code: 'suehirocho', error: null }],
+    quantity_unavailable_shop_ids: [],
   });
 });
 
-test.each(SHOPS)('PSA from branch %i reaches the final comparison with its actual provenance', async shopId => {
+test.each(SHOPS.flatMap(shopId => [1, 2].map(conditionId => [shopId, conditionId])))('branch %i condition %i reaches comparison with actual provenance', async (shopId, conditionId) => {
   const checker = checkerFixture();
-  Object.assign(checker.offers[0], { shop_id: shopId, shop_name: `Shop ${shopId}`, buy_price: 150000 });
+  Object.assign(checker.offers.find(offer => offer.shop_id === shopId && offer.condition_id === conditionId)!, { buy_price: 150000 });
   jest.mocked(fetchCheckerShops).mockResolvedValue(checker);
   const result = await buildTokyoBuybackSnapshot(database(), now);
-  expect(result.products[0]).toMatchObject({ source_price: 150000, selected_high_source: 'blue_rocket', price_high: 130000 });
-  expect(result.products[0].origins.find(origin => origin.source === 'blue_rocket'))
-    .toMatchObject({ shopId, shopName: SHOP_NAME });
+  const product = result.products.find(row => row.product_type === (conditionId === 1 ? 'psa' : 'box'))!;
+  expect(product).toMatchObject({ source_price: 150000, selected_high_source: 'blue_rocket' });
+  expect(product.origins.filter(origin => origin.source === 'blue_rocket'))
+    .toMatchObject([{ shopId, shopName: SHOP_NAMES[shopId] }]);
 });
 
-test.each([1, 2])('condition %i ignores higher prices injected from every other branch', async conditionId => {
+test.each([1, 2])('condition %i ignores unreferenced high prices and resolves an equal 11/73 price to 11', async conditionId => {
   const checker = checkerFixture();
   const base = checker.offers.find(offer => offer.condition_id === conditionId)!;
   checker.offers = [...SHOPS, ...OTHER_SHOPS].reverse().map(shopId => ({ ...base, shop_id: shopId, shop_name: `Shop ${shopId}`,
-    buy_price: shopId === 11 ? 140000 : 150000 }));
+    buy_price: SHOPS.includes(shopId) ? 140000 : 150000 }));
   jest.mocked(fetchCheckerShops).mockResolvedValue(checker);
   const result = await buildTokyoBuybackSnapshot(database(), now);
   const products = result.products.filter(product => product.product_type === (conditionId === 1 ? 'psa' : 'box'));
@@ -143,48 +151,84 @@ test.each([1, 2])('condition %i ignores higher prices injected from every other 
     .toMatchObject([{ shopId: 11, shopName: SHOP_NAME, rawPrice: 140000 }]);
 });
 
-test.each([false, true])('Showa-dori single-card status %s never falls back to an unreferenced branch', async allSingle => {
+test('a Suehirocho-only product joins the lineup with exact checker origin and branch name', async () => {
+  const checker = checkerFixture();
+  checker.products.push({ source_product_id: 999, category: 'pokemon', name: 'ピカチュウ',
+    model_number: '001/999', full_name: null, image_url: null });
+  checker.offers.push({ source_product_id: 999, shop_id: 73, shop_name: SUEHIROCHO_NAME,
+    condition_id: 1, edition_id: 0, edition_name: null, buy_price: 50000, source_updated_at: SAME_DAY });
+  jest.mocked(fetchCheckerShops).mockResolvedValue(checker);
+  const result = await buildTokyoBuybackSnapshot(database(), now);
+  const products = result.products.filter(product => product.model_number === '001/999');
+  expect(products).toHaveLength(1);
+  expect(products[0]).toMatchObject({ source_price: 50000, selected_high_source: 'blue_rocket', product_type: 'psa' });
+  expect(products[0].origins).toMatchObject([{ id: '999:1:0', shopId: 73, shopName: SUEHIROCHO_NAME, rawPrice: 50000 }]);
+});
+
+test('a single-card Suehirocho PSA quote is excluded while its highest BOX quote remains eligible', async () => {
+  const checker = checkerFixture();
+  checker.offers.find(offer => offer.shop_id === 11 && offer.condition_id === 1)!.buy_price = 150000;
+  checker.offers.find(offer => offer.shop_id === 73 && offer.condition_id === 1)!.buy_price = 160000;
+  checker.offers.find(offer => offer.shop_id === 73 && offer.condition_id === 2)!.buy_price = 50000;
+  jest.mocked(fetchCheckerShops).mockResolvedValue(checker);
+  const identity = postalProductIdentity({ franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10' });
+  jest.mocked(fetchBlueRocketQuantityQuotes).mockResolvedValue({ quotes: [
+    { shopId: 73, identity, price: 160000, singleQuantity: true, productId: 125 },
+  ], report: { shops: [], quantity_unavailable_shop_ids: [] } });
+  const result = await buildTokyoBuybackSnapshot(database(), now);
+  expect(result.products.find(product => product.product_type === 'psa')!.origins.filter(origin => origin.source === 'blue_rocket'))
+    .toMatchObject([{ shopId: 11, shopName: SHOP_NAME, rawPrice: 150000 }]);
+  expect(result.products.find(product => product.product_type === 'box')!.origins.filter(origin => origin.source === 'blue_rocket'))
+    .toMatchObject([{ shopId: 73, shopName: SUEHIROCHO_NAME, rawPrice: 50000 }]);
+});
+
+test.each([false, true])('one-card Showa-dori quote falls back to Suehirocho unless all referenced quotes are single: %s', async allSingle => {
   const checker = checkerFixture();
   checker.offers[0].buy_price = 150000;
+  checker.offers.find(offer => offer.shop_id === 73 && offer.condition_id === 1)!.buy_price = 140000;
   checker.offers.push({ ...checker.offers[0], shop_id: 51, shop_name: 'Blue Rocket LAOX', buy_price: 160000 });
   jest.mocked(fetchCheckerShops).mockResolvedValue(checker);
   const identity = postalProductIdentity({ franchise: 'Pokemon', name: 'カイ', modelNumber: '236/172', productType: 'PSA10' });
   jest.mocked(fetchBlueRocketQuantityQuotes).mockResolvedValue({ quotes: [
-    { shopId: 11, identity, price: 150000, singleQuantity: allSingle, productId: 124 },
+    { shopId: 11, identity, price: 150000, singleQuantity: true, productId: 124 },
+    { shopId: 73, identity, price: 140000, singleQuantity: allSingle, productId: 125 },
   ], report: { shops: [], quantity_unavailable_shop_ids: [] } });
   const result = await buildTokyoBuybackSnapshot(database(), now);
   const psa = result.products.find(product => product.product_type === 'psa')!;
-  expect(psa.source_price).toBe(allSingle ? 130000 : 150000);
+  expect(psa.source_price).toBe(allSingle ? 130000 : 140000);
   expect(psa.origins.find(origin => origin.source === 'blue_rocket')).toEqual(allSingle ? undefined
-    : expect.objectContaining({ shopId: 11, rawPrice: 150000 }));
+    : expect.objectContaining({ shopId: 73, shopName: SUEHIROCHO_NAME, rawPrice: 140000 }));
   expect(result.products.find(product => product.product_type === 'box')).toMatchObject({ source_price: 40000 });
-  expect(result.snapshot.report.blue_rocket_psa.quantity.excluded_single_quantity_count).toBe(allSingle ? 1 : 0);
+  expect(result.snapshot.report.blue_rocket_psa.quantity.excluded_single_quantity_count).toBe(allSingle ? 2 : 1);
 });
 
 test.each(['HTTP 503', 'ブルーロケット募集数APIの営業日が許容範囲外です'])('quantity API failure %s removes only that branch PSA', async error => {
   const checker = checkerFixture();
   checker.offers[0].buy_price = 150000;
+  checker.offers.find(offer => offer.shop_id === 73 && offer.condition_id === 1)!.buy_price = 140000;
   checker.offers.push({ ...checker.offers[0], shop_id: 44, shop_name: 'Blue Rocket 郵送', buy_price: 140000 });
   jest.mocked(fetchCheckerShops).mockResolvedValue(checker);
   jest.mocked(fetchBlueRocketQuantityQuotes).mockResolvedValue({ quotes: [], report: {
     shops: [{ shop_id: 11, store_code: 'akihabara', parsed_quote_count: 0, error }], quantity_unavailable_shop_ids: [],
   } });
   const result = await buildTokyoBuybackSnapshot(database(), now);
-  expect(result.products[0]).toMatchObject({ source_price: 130000 });
-  expect(result.products[0].origins.find(origin => origin.source === 'blue_rocket')).toBeUndefined();
+  expect(result.products[0]).toMatchObject({ source_price: 140000 });
+  expect(result.products[0].origins.filter(origin => origin.source === 'blue_rocket'))
+    .toMatchObject([{ shopId: 73, shopName: SUEHIROCHO_NAME }]);
   expect(result.products.find(product => product.product_type === 'box')).toMatchObject({ source_price: 40000 });
   expect(result.snapshot.report.blue_rocket_psa.quantity).toMatchObject({ failed_shop_ids: [11],
     excluded_single_quantity_count: 0, excluded_quantity_unavailable_count: 1 });
 });
 
-test('an empty Showa-dori response leaves other sources available without another Blue Rocket branch', async () => {
+test('an empty Showa-dori response leaves Suehirocho PSA and BOX available', async () => {
   const checker = checkerFixture();
   checker.report.shops[0].offer_count = 0;
-  checker.offers = [];
+  checker.offers = checker.offers.filter(offer => offer.shop_id === 73);
   jest.mocked(fetchCheckerShops).mockResolvedValue(checker);
   const result = await buildTokyoBuybackSnapshot(database(), now);
   expect(result.snapshot.report.checker_api.shops[0].error).toBeNull();
-  expect(result.products[0].origins.find(origin => origin.source === 'blue_rocket')).toBeUndefined();
+  expect(result.products[0].origins.find(origin => origin.source === 'blue_rocket')).toMatchObject({ shopId: 73, shopName: SUEHIROCHO_NAME });
+  expect(result.products.find(product => product.product_type === 'box')).toMatchObject({ source_price: 38000 });
 });
 
 test.each([[], [{ ...completed, status: 'running' }], [{ ...completed, status: 'failed' }],

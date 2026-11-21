@@ -65,6 +65,8 @@ test('Tokyo catalog uses the adopted Blue Rocket origin branch and preserves oth
     [{ source: 'blue_rocket', shopId: 54, shopName: '記録時の大阪店名' }, '記録時の大阪店名'],
     [{ source: 'blue_rocket', id: 'api:laox:123' }, 'Blue Rocket（ブルロケ）秋葉原LAOX店'],
     [{ source: 'blue_rocket', id: 'api:akihabara:123' }, 'Blue Rocket（ブルロケ）秋葉原店'],
+    [{ source: 'blue_rocket', id: '123:1:0', shopId: 73, shopName: 'Blue Rocket（ブルロケ）秋葉原末広町店' },
+      'Blue Rocket（ブルロケ）秋葉原末広町店'],
     [{ source: 'blue_rocket' }, 'Blue Rocket'],
   ] as const) {
     const card = mapTokyoCatalogCard({ ...row, origins: [{ source: 'shinsoku' }, origin] }, '2026-11-18');
