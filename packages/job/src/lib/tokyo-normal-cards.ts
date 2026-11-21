@@ -1,3 +1,4 @@
+import { exclude, type ReportIssue } from './run-issues.js';
 import { postalProductIdentity, type Database, type DbCardRow, type TokyoCardImageMappingRow } from '@haraka/shared';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { buildTokyoBuybackSnapshot } from '../jobs/tokyo-buyback-sync.js';
@@ -82,15 +83,15 @@ export async function loadTokyoCardImageMappings(db: SupabaseClient<Database>, r
 }
 
 /** Preserve the immutable high/low prices selected in the Tokyo snapshot. */
-export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, mappings: TokyoCardImageMappingRow[] = [], dbRows: DbCardRow[] = []): Database['public']['Tables']['prepared_card']['Insert'][] {
+export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, mappings: TokyoCardImageMappingRow[] = [], dbRows: DbCardRow[] = [], report?: ReportIssue): Database['public']['Tables']['prepared_card']['Insert'][] {
   if (result.snapshot.store !== 'manman-akihabara') throw new Error('Tokyo snapshot required');
   const images = new Map(mappings.map(mapping => [mapping.source_shinsoku_id, mapping]));
   if (images.size !== mappings.length) throw new Error('Duplicate Tokyo image mapping');
   const coverage = readCoverageReport(result.snapshot.report);
-  return result.products.map(product => {
+  return result.products.flatMap((product): Database['public']['Tables']['prepared_card']['Insert'][] => {
     if (!Number.isSafeInteger(product.price_high) || product.price_high <= 0
       || !Number.isSafeInteger(product.price_low) || product.price_low < 0 || product.price_low > product.price_high
-      || !['psa', 'box'].includes(product.product_type)) throw new Error('Invalid Tokyo prepared product');
+      || !['psa', 'box'].includes(product.product_type)) return exclude(report, 'エンジニア対応', product.name, 'Invalid Tokyo prepared product');
     const box = product.product_type === 'box';
     const harakaImage = findHarakaImage(product, dbRows);
     const importedDbCardIds = !box && Array.isArray(product.origins)
@@ -165,16 +166,16 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
         ? mapping!.evidence.tag : null);
     const evidence = coverage?.items.filter(item => item.productId === product.id) ?? [];
     const coverageImage = evidence[0]?.imageUrl ?? null;
-    if (new Set(evidence.map(item => item.imageUrl)).size > 1) throw new Error(`Oripark補完画像が曖昧です: ${product.id}`);
+    if (new Set(evidence.map(item => item.imageUrl)).size > 1) return exclude(report, 'エンジニア対応', product.name, `Oripark補完画像が曖昧です: ${product.id}`);
     const edition = evidence[0]?.edition;
     if (edition && (evidence.some(item => item.edition?.sourceProductId !== edition.sourceProductId
       || item.edition?.name !== edition.name) || product.name !== edition.name
       || !product.origins.some(origin => origin.source === 'kecak' && origin.id === edition.sourceProductId))) {
-      throw new Error(`Oripark別版の商品・画像証拠が一致しません: ${product.id}`);
+      return exclude(report, 'エンジニア対応', product.name, `Oripark別版の商品・画像証拠が一致しません: ${product.id}`);
     }
     const primaryImage = dragonSourceEvidencePresent ? dragonSourceImage
       : verifiedImage ?? importedImage ?? harakaImage.imageUrl ?? directShinsokuImage ?? (box ? product.image_url : null);
-    return {
+    return [{
       run_id: runId, raw_import_id: null, source_shinsoku_id: product.id,
       franchise: product.franchise, card_name: product.name, grade: box ? '未開封BOX' : 'PSA10',
       list_no: product.model_number,
@@ -188,6 +189,6 @@ export function buildTokyoPreparedCards(runId: string, result: TokyoSnapshot, ma
       price_low: product.price_low,
       image_status: 'unchecked',
       source: 'shinsoku', price_source: 'shinsoku', price_source_date: result.snapshot.business_date,
-    };
+    }];
   });
 }

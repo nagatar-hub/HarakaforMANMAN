@@ -429,7 +429,7 @@ export async function publishManmanBuybackSheet(params: {
 
   if (STORE_NAME === 'manman-akihabara' && run.tokyo_snapshot_id) {
     const values = await loadTokyoBuybackSheetValues(params.supabase, params.runId, run.tokyo_snapshot_id,
-      orderListImport.id, pages ?? []);
+      orderListImport.id, (pages ?? []).filter(page => page.status !== 'failed'));
     if (await findLatestRunId() !== params.runId) {
       console.log(`[buyback-sheet] skipped stale Tokyo write run=${params.runId}`);
       return { status: 'skipped', rowCount: 0, contentHash: null, spreadsheetId };

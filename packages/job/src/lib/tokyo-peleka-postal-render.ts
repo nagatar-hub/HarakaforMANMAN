@@ -1,3 +1,4 @@
+import type { ReportIssue } from './run-issues.js';
 import sharp from 'sharp';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -75,9 +76,10 @@ export async function renderTokyoPelekaPostalPages(params: {
   datePath: string;
   generationVersion: number | string;
   // Completed runs must publish postal pages only after every image and price check succeeds.
+  report?: ReportIssue;
   publishTogether?: (pages: GeneratedPageInsert[]) => Promise<void>;
 }): Promise<number> {
-  const matched = matchTokyoPelekaPostalProducts(params.preparedCards, params.snapshot);
+  const matched = matchTokyoPelekaPostalProducts(params.preparedCards, params.snapshot, params.report);
   if (matched.length === 0) {
     if (params.publishTogether) await params.publishTogether([]);
     return 0;
@@ -200,11 +202,12 @@ export async function renderTokyoPelekaPostalPages(params: {
         const message = error instanceof Error ? error.message : String(error);
         if (!params.publishTogether) await params.supabase.from('generated_page').update({ status: 'failed', error_message: message })
           .eq('id', page.id).eq('run_id', params.runId);
-        throw error;
+        if (!params.report) throw error;
+        params.report('エンジニア対応', franchise + ' 郵送 ' + page.page_index, message);
       }
     }
     totalPages += plans.length;
   }
   if (params.publishTogether) await params.publishTogether(stagedPages);
-  return totalPages;
+  return params.publishTogether ? stagedPages.length : totalPages;
 }

@@ -125,3 +125,12 @@ test('retry crossing a minute boundary recomputes the signature', async () => {
       .update('test-secret' + Math.floor(Date.now() / 60_000).toString()).digest('hex'));
   } finally { jest.useRealTimers(); }
 });
+
+test('conflicting prices exclude only that product for this invocation', () => {
+  const report = jest.fn();
+  const good = { ...box, product_id: '999', name: '正常商品' };
+  const broken = parseCheckerShop(shop([box, good, { ...box, buy_price: '88000' }]), 11, [2], report);
+  expect(broken.offers.map(offer => offer.source_product_id)).toEqual([999]);
+  expect(report).toHaveBeenCalledWith('エンジニア対応', box.name, expect.stringContaining('価格が重複'));
+  expect(parseCheckerShop(shop([box, good]), 11, [2], report).offers).toHaveLength(2);
+});

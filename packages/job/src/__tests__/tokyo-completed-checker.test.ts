@@ -94,7 +94,7 @@ test('fetches PSA and BOX from checker shops 11 and 73 without legacy public PSA
   const db = database();
   const result = await buildTokyoBuybackSnapshot(db, now);
   expect(fetchCheckerShops).toHaveBeenCalledTimes(1);
-  expect(fetchCheckerShops).toHaveBeenCalledWith(SHOPS, [1, 2]);
+  expect(fetchCheckerShops).toHaveBeenCalledWith(SHOPS, [1, 2], undefined);
   expect(fetchBlueRocketPsaPrices).not.toHaveBeenCalled();
   expect(jest.mocked(db.from).mock.calls.flat()).not.toContain('kaitori_checker_sync_run');
   expect(result.snapshot).toMatchObject({ checker_run_id: null, checker_source_store: 'manman-akihabara',
@@ -115,7 +115,7 @@ test('the snapshot path requests checker shops 11/73 and exactly the two officia
     return new Response(JSON.stringify({ storeId: store, storeCode: store, businessDate: '2026-09-09', items: [] }));
   });
   const result = await buildTokyoBuybackSnapshot(database(), now);
-  expect(fetchCheckerShops).toHaveBeenCalledWith([11, 73], [1, 2]);
+  expect(fetchCheckerShops).toHaveBeenCalledWith([11, 73], [1, 2], undefined);
   expect(fetchWithRetry).toHaveBeenCalledTimes(2);
   expect(jest.mocked(fetchWithRetry).mock.calls.map(([url]) => url).sort()).toEqual([
     'https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=akihabara',

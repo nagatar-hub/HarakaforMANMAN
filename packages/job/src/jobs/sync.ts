@@ -1,3 +1,4 @@
+import { RunIssues } from '../lib/run-issues.js';
 /**
  * Sync ジョブ — データ取込からページプランニングまでの統合パイプライン
  *
@@ -229,13 +230,7 @@ async function fetchMappedDbCards(
   supabase: Supabase,
   items: OrderListItemRow[],
 ): Promise<Map<string, DbCardRow>> {
-  const missingMapping = items.filter((item) => !item.db_card_id);
-  if (missingMapping.length > 0) {
-    const examples = missingMapping.slice(0, 5).map((item) => item.excel_product_id).join(', ');
-    throw new Error(`照合済み行のDB商品IDがありません: ${missingMapping.length}件 (${examples})`);
-  }
-
-  const ids = [...new Set(items.map((item) => item.db_card_id as string))];
+  const ids = [...new Set(items.flatMap(item => item.db_card_id ? [item.db_card_id] : []))];
   const dbCardsById = new Map<string, DbCardRow>();
 
   for (let i = 0; i < ids.length; i += DB_CARD_QUERY_BATCH_SIZE) {
@@ -248,11 +243,6 @@ async function fetchMappedDbCards(
       .returns<DbCardRow[]>();
     if (error) throw new Error(`db_card 取得失敗: ${error.message}`);
     for (const dbCard of data ?? []) dbCardsById.set(dbCard.id, dbCard);
-  }
-
-  const missingIds = ids.filter((id) => !dbCardsById.has(id));
-  if (missingIds.length > 0) {
-    throw new Error(`対応先DB商品が見つかりません: ${missingIds.length}件 (${missingIds.slice(0, 5).join(', ')})`);
   }
 
   return dbCardsById;
@@ -346,6 +336,7 @@ export async function runSync(): Promise<void> {
   }
   console.log(`[sync] Run 作成: ${run.id} / order_list_import=${orderListImport.id}`);
 
+  const issues = new RunIssues([STORE_NAME, orderListImport.business_date, 'sync', run.id].join(' '));
   const lease = createOrderListLease(supabase, orderListImport.id, run.id);
   try {
     await lease.renewNow();
@@ -355,7 +346,7 @@ export async function runSync(): Promise<void> {
       let snapshot: Awaited<ReturnType<typeof buildTokyoBuybackSnapshot>>;
       try {
         snapshot = await buildTokyoBuybackSnapshot(supabase, new Date(), {
-          claimedImportId: orderListImport.id, runId: run.id,
+          claimedImportId: orderListImport.id, runId: run.id, reportIssue: issues.report,
           ...(process.env.TOKYO_REPAIR_FIXTURE_BUCKET ? { onCoverageReplayInput: (input: TokyoCoverageReplayInput) => { replay.input = input; } } : {}),
         });
       } catch (error) {
@@ -381,7 +372,7 @@ export async function runSync(): Promise<void> {
       const imageMappings = await loadTokyoCardImageMappings(supabase, snapshot);
       let prepared: ReturnType<typeof buildTokyoPreparedCards>;
       try {
-        prepared = buildTokyoPreparedCards(run.id, snapshot, imageMappings, harakaCards);
+        prepared = buildTokyoPreparedCards(run.id, snapshot, imageMappings, harakaCards, issues.report);
       } catch (error) {
         await captureTokyoRepairFixture({ runId: run.id, importId: orderListImport.id, snapshotId: run.tokyo_snapshot_id ?? null,
           ...(replay.input ? { stage: 'coverage_prepare' as const, failurePoint: 'prepare' as const,
@@ -389,6 +380,19 @@ export async function runSync(): Promise<void> {
             : { stage: 'prepare' as const, input: { snapshot: snapshot.snapshot, products: snapshot.products, imageMappings, dbCards: harakaCards } }),
           error });
         throw error;
+      }
+      if (!prepared.length) throw new Error('掲載可能な東京商品がありません');
+      if (prepared.length !== snapshot.products.length) {
+        const included = new Set(prepared.map(card => card.source_shinsoku_id));
+        snapshot.products = snapshot.products.filter(product => included.has(product.id));
+        const report = snapshot.snapshot.report;
+        report.matched_count = snapshot.products.length;
+        report.price_sources = Object.fromEntries(Object.entries(report.price_sources).filter(([id]) => included.has(id)));
+        if (report.oripark_coverage) {
+          const coverage = report.oripark_coverage;
+          coverage.excludedIds = [...(coverage.excludedIds ?? []), ...coverage.items.filter(item => !included.has(item.productId)).map(item => item.oriparkCardId)];
+          coverage.items = coverage.items.filter(item => included.has(item.productId));
+        }
       }
       await lease.renewNow();
       const { data, error } = await supabase.rpc('publish_tokyo_buyback_snapshot', {
@@ -503,15 +507,14 @@ export async function runSync(): Promise<void> {
       console.warn(`[sync] 組み込み除外行: ${builtInExcludedCount}件（raw_import監査には保持）`);
     }
     const dbCardsById = await fetchMappedDbCards(supabase, publishableOrderListItems);
-    const prepared = preparePublishableOrderListCards(
-      allRawImports,
-      dbCardsById,
-      orderListImport.business_date,
-      pricingSettings,
-    );
-    if (prepared.length !== publishableRawImports.length) {
-      throw new Error(`PreparedCard変換件数が一致しません: publishable=${publishableRawImports.length}, prepared=${prepared.length}`);
-    }
+    const prepared = publishableRawImports.flatMap(row => {
+      if (!row.db_card_id || !dbCardsById.has(row.db_card_id) || row.source_price == null) {
+        issues.report('データ修正', row.card_name + ' (' + row.excel_product_id + ')',
+          row.source_price == null ? 'オーダーリストの価格を確認してください' : '対応先の商品マスターを確認してください');
+        return [];
+      }
+      return prepareOrderListCards([row], dbCardsById, orderListImport.business_date, pricingSettings);
+    });
     await batchInsert(supabase, 'prepared_card', prepared as unknown as Record<string, unknown>[]);
     let totalPrepared = prepared.length;
 
@@ -552,6 +555,7 @@ export async function runSync(): Promise<void> {
         }
       }
     } catch (spectreErr) {
+      issues.report('エンジニア対応', 'SpectreMapping', String(spectreErr));
       console.log(`[sync] SpectreMapping スキップ: ${spectreErr instanceof Error ? spectreErr.message : String(spectreErr)}`);
     }
 
@@ -714,6 +718,9 @@ export async function runSync(): Promise<void> {
       const untaggedCards = franchiseCards.filter(c => !c.tag);
       const priceMissingCards = franchiseCards.filter(c => c.tag && (!c.price_high || !c.price_low));
 
+      for (const card of untaggedCards) issues.report('データ修正', card.card_name, '商品マスターのタグを設定してください');
+      for (const card of priceMissingCards) issues.report('データ修正', card.card_name, '掲載価格を確認してください');
+
       if (untaggedCards.length > 0) {
         console.warn(`[sync]   ${franchise}: タグ未設定 ${untaggedCards.length}件（除外）`);
         for (const c of untaggedCards.slice(0, 10)) {
@@ -873,5 +880,7 @@ export async function runSync(): Promise<void> {
       throw new Error(failureStateMessage);
     }
     throw err;
+  } finally {
+    await issues.notify();
   }
 }

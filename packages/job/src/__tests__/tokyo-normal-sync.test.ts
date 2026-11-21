@@ -265,7 +265,7 @@ test('Tokyo normal sync claims then publishes and prepares all snapshot products
   try {
     await runSync();
     expect(auth).not.toHaveBeenCalled();
-    expect(build).toHaveBeenCalledWith(db,expect.any(Date),{claimedImportId:'import-1',runId:'run-1'});
+    expect(build).toHaveBeenCalledWith(db,expect.any(Date),{claimedImportId:'import-1',runId:'run-1',reportIssue:expect.any(Function)});
     expect(prepared).toHaveLength(2);
     expect(prepared[0]).toMatchObject({ image_url: mapping.image_url, alt_image_url: null, price_high: 9300 });
     expect(db.rpc).toHaveBeenCalledWith('publish_tokyo_buyback_snapshot',expect.objectContaining({p_run_id:'run-1'}));
@@ -274,7 +274,7 @@ test('Tokyo normal sync claims then publishes and prepares all snapshot products
 
     db.rpc.mockClear();
     build.mockResolvedValueOnce({ ...snapshot, products: [{ ...snapshot.products[0], price_high: 0 }] });
-    await expect(runSync()).rejects.toThrow('Invalid Tokyo prepared product');
+    await expect(runSync()).rejects.toThrow('掲載可能な東京商品がありません');
     expect(db.rpc).not.toHaveBeenCalledWith('publish_tokyo_buyback_snapshot', expect.anything());
   } finally {
     if(prior.store===undefined) delete process.env.STORE_NAME; else process.env.STORE_NAME=prior.store;

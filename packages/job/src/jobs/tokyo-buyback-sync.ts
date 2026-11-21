@@ -1,3 +1,4 @@
+import { RunIssues, exclude, type ReportIssue } from '../lib/run-issues.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -183,7 +184,7 @@ const KECAK_PSA_REVIEWED_SHINSOKU = new Map([
 
 export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerProduct[], offers: CheckerOffer[],
   options: { businessDate?: string; kecakObservedAt?: string | null; kecakBusinessDate?: string;
-    maxPriceAgeDays?: number } = {}): TokyoCandidate[] {
+    maxPriceAgeDays?: number; reportIssue?: ReportIssue } = {}): TokyoCandidate[] {
   const candidates: TokyoCandidate[] = [];
   // 古いオーダーリストでも商品自体はラインアップに残すが、金額は許容経過日数内のものだけを比較へ出す。
   // 鮮度は取込時刻ではなくオーダーリスト自身の業務日で判定する。
@@ -191,7 +192,8 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
     ? `${options.kecakBusinessDate}T00:00:00+09:00` : null, options.businessDate, options.maxPriceAgeDays ?? 0);
   for (const row of orderRows) {
     if (!KECAK_FRANCHISES.includes(row.franchise)) continue;
-    if (['excluded', 'invalid'].includes(row.match_status) || isBuiltInOrderListExclusion(row.card_name)) continue;
+    if (isBuiltInOrderListExclusion(row.card_name) || row.match_status === 'excluded') continue;
+    if (row.match_status === 'invalid') { options.reportIssue?.('データ修正', row.card_name, 'オーダーリストの入力値を確認してください'); continue; }
     const grade = (row.grade ?? '').normalize('NFKC').replace(/\s/g, '').toUpperCase();
     const productType = isBoxRow(row) ? 'BOX' : grade === 'PSA10' ? 'PSA10' : null;
     const label = productType === 'PSA10' && row.franchise === 'ONE PIECE'
@@ -211,9 +213,9 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
     if (!shopName || ![CHECKER_PSA_CONDITION_ID, CHECKER_BOX_CONDITION_ID].includes(offer.condition_id)
       || !withinPriceAge(offer.source_updated_at, options.businessDate, options.maxPriceAgeDays ?? 0)) continue;
     const product = productById.get(offer.source_product_id);
-    if (!product) throw new Error('買取チェッカーの商品・掲載一覧が一致しません');
+    if (!product) { exclude(options.reportIssue, 'エンジニア対応', String(offer.source_product_id), '買取チェッカーの商品・掲載一覧が一致しません'); continue; }
     const franchise = ({ pokemon: 'Pokemon', one_piece: 'ONE PIECE' } as Record<string, string>)[product.category];
-    if (!franchise) throw new Error(`未対応の買取チェッカーカテゴリ: ${product.category}`);
+    if (!franchise) { exclude(options.reportIssue, 'エンジニア対応', product.name, `未対応の買取チェッカーカテゴリ: ${product.category}`); continue; }
     // Different editions must not silently inherit the base product's price.
     const id = `${offer.source_product_id}:${offer.condition_id}:${offer.edition_id}`;
     const current = checkerCandidates.get(id);
@@ -359,8 +361,9 @@ export type TokyoCoverageReplayInput = {
 
 export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Date(), claim?: {
   claimedImportId: string; runId: string;
+  reportIssue?: ReportIssue;
   onCoverageReplayInput?: (input: TokyoCoverageReplayInput) => void;
-}) {
+}, reportIssue = claim?.reportIssue) {
   const { data: order, error: orderError } = await db.from('order_list_import').select('*')
     .eq('store', TOKYO_BUYBACK_STORE).order('business_date', { ascending: false })
     .order('created_at', { ascending: false }).limit(1).maybeSingle();
@@ -395,27 +398,29 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     if (rates.some(rate => !Number.isFinite(rate) || rate < 0 || rate > 1)) throw new Error('減額率は0〜100%で設定してください');
   }
   const [checker, quantities] = await Promise.all([
-    fetchCheckerShops([...BLUE_ROCKET_SHOPS.keys()], [CHECKER_PSA_CONDITION_ID, CHECKER_BOX_CONDITION_ID]),
+    fetchCheckerShops([...BLUE_ROCKET_SHOPS.keys()], [CHECKER_PSA_CONDITION_ID, CHECKER_BOX_CONDITION_ID], reportIssue),
     fetchBlueRocketQuantityQuotes(businessDate, settings.tokyo_price_max_age_days),
   ]);
   const quantityFailedShopIds = quantities.report.shops.filter(shop => shop.error).map(shop => shop.shop_id);
+  for (const shop of quantities.report.shops) if (shop.error) reportIssue?.('エンジニア対応', 'ブルーロケット数量 店舗 ' + shop.shop_id, shop.error);
   const quantityFiltered = filterSingleQuantityBlueRocketOffers(checker.products, checker.offers, quantities.quotes, quantityFailedShopIds);
   let candidates = tokyoProductCandidates(orderRows, checker.products, quantityFiltered.offers, {
-    businessDate, kecakBusinessDate: order.business_date,
+    reportIssue, businessDate, kecakBusinessDate: order.business_date,
     kecakObservedAt: order.created_at ?? `${order.business_date}T00:00:00+09:00`,
     maxPriceAgeDays: settings.tokyo_price_max_age_days,
   });
   // Pull the public catalog first; Tokyo order-list names and model numbers never leave Haraka.
-  const sourceProducts = await fetchShinsokuPostalProducts();
+  const sourceProducts = await fetchShinsokuPostalProducts(reportIssue ? { onIssue: (subject, reason) => reportIssue('エンジニア対応', 'シンソク ' + subject, reason) } : {});
   const fetchedAt = now.toISOString();
   const blueRocketPsa = selectCheckerPsaCandidates(
     candidates.filter(row => row.source === 'blue_rocket' && row.productType === 'PSA10'), [
     ...candidates.filter(row => row.source === 'kecak'),
     ...sourceProducts,
   ]);
+  for (const row of blueRocketPsa.skipped) reportIssue?.('データ修正', row.name, 'ブルーロケットと商品マスターの型番・名称を確認してください');
   candidates = candidates.filter(row => row.source !== 'blue_rocket' || row.productType !== 'PSA10')
     .concat(blueRocketPsa.used);
-  const extorecaTabs = await Promise.allSettled([fetchExtorecaBoxSheet(), fetchExtorecaPsaSheet()]);
+  const extorecaTabs = await Promise.allSettled([fetchExtorecaBoxSheet(undefined, reportIssue), fetchExtorecaPsaSheet(undefined, reportIssue)]);
   let extorecaBox: ExtorecaRow[] = [];
   let extorecaPsa: ReturnType<typeof extorecaPsaCandidates> = { used: [], skipped: [] };
   const extorecaErrors: { box: string | null; psa: string | null } = { box: null, psa: null };
@@ -429,7 +434,11 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     ]);
   } else extorecaErrors.psa = extorecaTabs[1].reason instanceof Error
     ? extorecaTabs[1].reason.message : String(extorecaTabs[1].reason);
-  for (const error of Object.values(extorecaErrors)) if (error) console.warn(`[tokyo-buyback] ${error}`);
+  for (const [tab, error] of Object.entries(extorecaErrors)) if (error) {
+    console.warn('[tokyo-buyback] ' + error);
+    reportIssue?.('エンジニア対応', 'エクストレカ ' + tab, error);
+  }
+  for (const row of extorecaPsa.skipped) reportIssue?.('データ修正', row.name, 'エクストレカPSAの型番・名称を確認してください');
   candidates.push(...[...extorecaBox, ...extorecaPsa.used].map(row => ({
     source: 'extoreca' as const, id: row.id, franchise: 'Pokemon', name: row.name, modelNumber: row.modelNumber,
     productType: row.productType, sourcePrice: row.price, imageUrl: null, observedAt: fetchedAt,
@@ -440,6 +449,12 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     ? sourceProducts.filter(product => validPrice(product.price)).length
     : candidates.filter(row => row.source === source && validPrice(row.sourcePrice)).length]));
   const result = compareTokyoSourceProducts(candidates, sourceProducts, settings, fetchedAt);
+  for (const {candidate, reason} of result.unmatched) {
+    const owner = candidate.source === 'kecak' || candidate.source === 'extoreca' ? 'データ修正' : 'エンジニア対応';
+    const action = { missing_model: '型番なし', invalid_price: '有効な価格なし', stale_price: '価格の有効期限切れ',
+      ambiguous: '同一商品への候補が複数あります', zero_after_discount: '減額後の価格がゼロ', outlier_price: '価格が許容範囲外' };
+    reportIssue?.(owner, candidate.source + ' ' + candidate.name, action[reason]);
+  }
   const snapshotId = randomUUID();
   let coverage: ReturnType<typeof completeOriparkCoverage> | null = null;
   if (process.env.TOKYO_ORIPARK_COVERAGE_ENABLED === 'true') {
@@ -455,7 +470,7 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
       } catch { console.warn('[tokyo-repair] Replay input could not be retained'); }
     }
     coverage = completeOriparkCoverage(result, baseline, businessDate,
-      settings.tokyo_price_max_age_days, candidate => compareTokyoSourceProducts([candidate], [], settings, fetchedAt));
+      settings.tokyo_price_max_age_days, candidate => compareTokyoSourceProducts([candidate], [], settings, fetchedAt), reportIssue);
   }
   if (!result.products.length) throw new Error('当日価格で掲載可能な商品がありません');
   return { snapshot: { id: snapshotId, store: TOKYO_BUYBACK_STORE, order_list_import_id: order.id,
@@ -484,7 +499,9 @@ export function tokyoDisplayPrice(price: number, _franchise: Franchise, type: 'P
 export async function runTokyoBuybackSync(options: { dryRun?: boolean } = {}) {
   if (process.env.STORE_NAME !== TOKYO_BUYBACK_STORE) throw new Error('この価格取得は東京満満専用です');
   const db = await createSupabaseClientFromSecrets() as unknown as SupabaseClient;
-  const snapshot = await buildTokyoBuybackSnapshot(db);
+  const issues = new RunIssues('東京満満 価格取得 ' + (process.env.CLOUD_RUN_EXECUTION ?? new Date().toISOString()));
+  const snapshot = await buildTokyoBuybackSnapshot(db, new Date(), undefined, issues.report)
+    .finally(() => options.dryRun ? undefined : issues.notify());
   if (!options.dryRun) {
     const { data, error } = await db.rpc('publish_tokyo_buyback_snapshot', { p_snapshot: snapshot.snapshot, p_products: snapshot.products });
     if (error || data !== snapshot.snapshot.id) throw new Error(`東京価格の反映失敗: ${error?.message ?? 'snapshot mismatch'}`);

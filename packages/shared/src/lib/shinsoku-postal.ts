@@ -99,9 +99,16 @@ export interface ShinsokuPostalFetchOptions {
   maxPages?: number;
   franchises?: string[];
   candidates?: PostalCandidate[];
+  onIssue?: (subject: string, reason: string) => void;
 }
 
 export async function fetchShinsokuPostalProducts(options: ShinsokuPostalFetchOptions = {}): Promise<ShinsokuPostalProduct[]> {
+  const excluded = new Set<string>();
+  function reject(id: unknown, reason: string) {
+    if (!options.onIssue) throw new Error(reason);
+    if (typeof id === 'string') excluded.add(id);
+    options.onIssue(String(id ?? '商品IDなし'), reason);
+  }
   const fetchImpl = options.fetchImpl ?? fetch;
   const products = new Map<string, ShinsokuPostalProduct>();
   const delay = () => new Promise(resolve => setTimeout(resolve, options.delayMs ?? 150));
@@ -141,19 +148,21 @@ export async function fetchShinsokuPostalProducts(options: ShinsokuPostalFetchOp
         if (!item || typeof item.id !== 'string' || !item.id || (item.item_id != null && item.id !== item.item_id)
           || item.brand !== brand || item.type !== (productType === 'PSA10' ? 'PSA' : 'BOX')
           || item.is_postal_buy_target !== true || typeof item.name_processed !== 'string' || !item.name_processed.trim()) {
-          throw new Error('Invalid Shinsoku product identity');
+          reject(item?.id, 'Invalid Shinsoku product identity');
+          continue;
         }
         if (productType === 'PSA10' && (!Array.isArray(item.tags) || !item.tags.some((tag: any) => tag?.slug === 'psa10'))) continue;
         const price = item.postal_purchase_price_s;
-        if (price !== null && (!Number.isSafeInteger(price) || price < 0)) throw new Error(`Invalid Shinsoku S price: ${item.id}`);
-        if (item.modelno != null && typeof item.modelno !== 'string') throw new Error(`Invalid Shinsoku model: ${item.id}`);
+        if (price !== null && (!Number.isSafeInteger(price) || price < 0)) { reject(item.id, `Invalid Shinsoku S price: ${item.id}`); continue; }
+        if (item.modelno != null && typeof item.modelno !== 'string') { reject(item.id, `Invalid Shinsoku model: ${item.id}`); continue; }
         const product: ShinsokuPostalProduct = { id: item.id, franchise, name: item.name_processed,
           modelNumber: item.modelno?.trim() || null, productType, price: price || null,
           imageUrl: typeof item.image_url_public === 'string' ? item.image_url_public : null };
         const existing = products.get(product.id);
         if (existing && JSON.stringify(existing) !== JSON.stringify(product)) {
           const changed = (Object.keys(product) as (keyof ShinsokuPostalProduct)[]).filter(key => existing[key] !== product[key]);
-          throw new Error(`Conflicting Shinsoku product: ${product.id} (${changed.join(',')})`);
+          reject(product.id, `Conflicting Shinsoku product: ${product.id} (${changed.join(',')})`);
+          continue;
         }
         products.set(product.id, product);
       }
@@ -162,8 +171,14 @@ export async function fetchShinsokuPostalProducts(options: ShinsokuPostalFetchOp
     throw new Error('Shinsoku pagination limit exceeded');
   }
   for (const franchise of options.franchises ?? Object.keys(BRANDS)) {
-    await read(franchise, 'PSA10');
-    await read(franchise, 'BOX');
+    for (const type of ['PSA10', 'BOX'] as const) {
+      try { await read(franchise, type); }
+      catch (error) {
+        if (!options.onIssue) throw error;
+        for (const [id, product] of products) if (product.franchise === franchise && product.productType === type) products.delete(id);
+        options.onIssue(franchise + ' ' + type, String(error));
+      }
+    }
   }
   // Name sorting is not stable across same-name items; targeted searches recover omitted models.
   const searches = new Set<string>();
@@ -188,5 +203,5 @@ export async function fetchShinsokuPostalProducts(options: ShinsokuPostalFetchOp
     }
   }));
   for (const worker of workers) if (worker.status === 'rejected') throw worker.reason;
-  return [...products.values()];
+  return [...products.values()].filter(product => !excluded.has(product.id));
 }

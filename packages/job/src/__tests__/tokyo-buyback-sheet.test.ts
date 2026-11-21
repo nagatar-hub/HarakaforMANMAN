@@ -95,7 +95,7 @@ describe('Tokyo snapshot sheet', () => {
   });
 
   it('rejects failed pages and a missing Tokyo destination without writing', async () => {
-    await expect(publishManmanBuybackSheet({ supabase: db(false, true) as never, runId: 'run', accessToken: 'test' })).rejects.toThrow('未完了');
+    await expect(publishManmanBuybackSheet({ supabase: db(false, true) as never, runId: 'run', accessToken: 'test' })).rejects.toThrow('店頭用生成ページがありません');
     delete process.env.BUYBACK_SPREADSHEET_ID;
     await expect(publishManmanBuybackSheet({ supabase: db() as never, runId: 'run', accessToken: 'test' })).rejects.toThrow('未設定');
     expect(replaceSheetValues).not.toHaveBeenCalled();

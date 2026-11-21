@@ -1,3 +1,4 @@
+import { exclude, type ReportIssue } from './run-issues.js';
 import { createHmac } from 'node:crypto';
 import { fetchWithRetry } from './fetch-with-retry.js';
 import { getSecret } from './secret-manager.js';
@@ -28,14 +29,15 @@ function updatedAt(value: unknown): string | null {
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
-export function parseCheckerShop(value: unknown, shopId: number, conditionIds: readonly number[]) {
+export function parseCheckerShop(value: unknown, shopId: number, conditionIds: readonly number[], report?: ReportIssue) {
   if (!record(value) || id(value.id) !== shopId || !text(value.name) || !Array.isArray(value.products)) {
     throw new Error(`買取チェッカーの店舗・商品一覧を確認できません: shop=${shopId}`);
   }
   const products = new Map<number, CheckerProduct>();
   const offers = new Map<string, CheckerOffer>();
+  const blocked = new Set<number>();
   for (const row of value.products) {
-    if (!record(row)) throw new Error(`買取チェッカーの商品形式が不正です: shop=${shopId}`);
+    if (!record(row)) { exclude(report, 'エンジニア対応', '買取チェッカー', `買取チェッカーの商品形式が不正です: shop=${shopId}`); continue; }
     const conditionId = id(row.condition_id);
     if (conditionId === null || !conditionIds.includes(conditionId)) continue;
     const category = ({ 1: 'pokemon', 2: 'one_piece' } as Record<number, string>)[Number(row.category_id)];
@@ -52,7 +54,9 @@ export function parseCheckerShop(value: unknown, shopId: number, conditionIds: r
       || (typeof row.buy_price === 'string' && /^0(?:\.0+)?$/.test(row.buy_price))) continue;
     if (productId === null || !name || editionId === null
       || !Number.isSafeInteger(price) || price <= 0 || price > 100_000_000) {
-      throw new Error(`買取チェッカーの商品・価格が不正です: shop=${shopId}`);
+      if (productId !== null) blocked.add(productId);
+      exclude(report, 'エンジニア対応', name ?? String(productId), `買取チェッカーの商品・価格が不正です: shop=${shopId}`);
+      continue;
     }
     const product: CheckerProduct = { source_product_id: productId, category, name, full_name: text(row.full_name),
       model_number: text(row.model_number), image_url: text(row.image_url),
@@ -60,7 +64,9 @@ export function parseCheckerShop(value: unknown, shopId: number, conditionIds: r
     const previous = products.get(productId);
     if (previous && (previous.name !== name || previous.category !== category || previous.model_number !== product.model_number
       || previous.rarity !== product.rarity || previous.holo_type !== product.holo_type || previous.aspect !== product.aspect)) {
-      throw new Error(`買取チェッカーの商品情報が重複しています: shop=${shopId}, product=${productId}`);
+      blocked.add(productId);
+      exclude(report, 'エンジニア対応', name, `買取チェッカーの商品情報が重複しています: shop=${shopId}, product=${productId}`);
+      continue;
     }
     products.set(productId, product);
     const offer: CheckerOffer = { source_product_id: productId, shop_id: shopId, shop_name: text(value.name)!, condition_id: conditionId,
@@ -69,14 +75,16 @@ export function parseCheckerShop(value: unknown, shopId: number, conditionIds: r
     const key = `${productId}:${conditionId}:${editionId}`;
     const previousOffer = offers.get(key);
     if (previousOffer && JSON.stringify(previousOffer) !== JSON.stringify(offer)) {
-      throw new Error(`買取チェッカーの価格が重複しています: shop=${shopId}, product=${productId}`);
+      blocked.add(productId);
+      exclude(report, 'エンジニア対応', name, `買取チェッカーの価格が重複しています: shop=${shopId}, product=${productId}`);
+      continue;
     }
     offers.set(key, offer);
   }
-  return { products: [...products.values()], offers: [...offers.values()], receivedCount: value.products.length, shopName: text(value.name)! };
+  return { products: [...products.values()].filter(row => !blocked.has(row.source_product_id)), offers: [...offers.values()].filter(row => !blocked.has(row.source_product_id)), receivedCount: value.products.length, shopName: text(value.name)! };
 }
 
-async function fetchShop(shopId: number, conditions: readonly number[], secret: string) {
+async function fetchShop(shopId: number, conditions: readonly number[], secret: string, report?: ReportIssue) {
   for (let attempt = 0; ; attempt++) {
     // A retry may cross the signing minute, so never reuse the previous signature.
     const bucket = Math.floor(Date.now() / 60_000).toString();
@@ -92,7 +100,7 @@ async function fetchShop(shopId: number, conditions: readonly number[], secret: 
       await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** attempt));
       continue;
     }
-    if (response.ok) return parseCheckerShop(await response.json(), shopId, conditions);
+    if (response.ok) return parseCheckerShop(await response.json(), shopId, conditions, report);
     if (attempt >= 2 || (response.status !== 429 && response.status < 500)) {
       throw new Error(`買取チェッカーの店舗価格取得失敗: shop=${shopId}, HTTP ${response.status}`);
     }
@@ -101,7 +109,7 @@ async function fetchShop(shopId: number, conditions: readonly number[], secret: 
 }
 
 /** Fetch only the shops consumed by this store; never walk the global product catalog. */
-export async function fetchCheckerShops(shopIds: readonly number[], conditionIds: readonly number[]) {
+export async function fetchCheckerShops(shopIds: readonly number[], conditionIds: readonly number[], report?: ReportIssue) {
   const shops = [...new Set(shopIds)].sort((a, b) => a - b);
   const conditions = [...new Set(conditionIds)].sort((a, b) => a - b);
   if (!shops.length || !conditions.length || [...shops, ...conditions].some(value => !Number.isSafeInteger(value) || value <= 0)) {
@@ -110,17 +118,19 @@ export async function fetchCheckerShops(shopIds: readonly number[], conditionIds
   const secret = process.env.KAITORI_CHECKER_APP_SECRET?.trim() || (await getSecret('kaitori-checker-app-secret')).trim();
   if (!secret) throw new Error('買取チェッカーの認証設定がありません');
   const products = new Map<number, CheckerProduct>();
+  const blocked = new Set<number>();
   const offers: CheckerOffer[] = [];
   const reports: { shop_id: number; shop_name: string | null; received_count: number; offer_count: number; error: string | null }[] = [];
   // Three concurrent requests keep generation fast without bursting at every shop.
   for (let offset = 0; offset < shops.length; offset += 3) {
     const batch = shops.slice(offset, offset + 3);
-    const results = await Promise.allSettled(batch.map(shopId => fetchShop(shopId, conditions, secret)));
+    const results = await Promise.allSettled(batch.map(shopId => fetchShop(shopId, conditions, secret, report)));
     for (const [index, response] of results.entries()) {
       const shopId = batch[index];
       if (response.status === 'rejected') {
         const error = response.reason instanceof Error ? response.reason.message : String(response.reason);
         reports.push({ shop_id: shopId, shop_name: null, received_count: 0, offer_count: 0, error });
+        report?.('エンジニア対応', '買取チェッカー 店舗 ' + shopId, error);
         console.warn(`[checker-shops] shop=${shopId}: ${error}`);
         continue;
       }
@@ -130,7 +140,9 @@ export async function fetchCheckerShops(shopIds: readonly number[], conditionIds
         if (previous && (previous.category !== product.category || previous.name !== product.name
           || previous.model_number !== product.model_number || previous.rarity !== product.rarity
           || previous.holo_type !== product.holo_type || previous.aspect !== product.aspect)) {
-          throw new Error(`買取チェッカーの店舗間の商品情報が一致しません: product=${product.source_product_id}`);
+          blocked.add(product.source_product_id);
+          exclude(report, 'エンジニア対応', product.name, '買取チェッカーの店舗間の商品情報が一致しません: product=' + product.source_product_id);
+          continue;
         }
         products.set(product.source_product_id, previous ?? product);
       }
@@ -139,10 +151,12 @@ export async function fetchCheckerShops(shopIds: readonly number[], conditionIds
         offer_count: result.offers.length, error: null });
     }
   }
-  if (reports.every(report => report.error !== null)) {
+  if (!report && reports.every(report => report.error !== null)) {
     throw new Error(`買取チェッカーの参照店舗を取得できません: ${reports.map(report => report.error).join('; ')}`);
   }
-  return { products: [...products.values()], offers, report: { api_base: KAITORI_CHECKER_API_BASE,
+  for (const productId of blocked) products.delete(productId);
+  const eligible = offers.filter(offer => !blocked.has(offer.source_product_id));
+  return { products: [...products.values()], offers: eligible, report: { api_base: KAITORI_CHECKER_API_BASE,
     shop_ids: shops, condition_ids: conditions, fetched_at: new Date().toISOString(),
-    product_count: products.size, offer_count: offers.length, shops: reports } };
+    product_count: products.size, offer_count: eligible.length, shops: reports } };
 }
