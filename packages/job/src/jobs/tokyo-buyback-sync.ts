@@ -10,7 +10,7 @@ import {
 import { createSupabaseClientFromSecrets } from '../lib/supabase.js';
 import { isBoxRow } from '../lib/box-row.js';
 import { fetchCheckerShops } from '../lib/kaitori-checker-shops.js';
-import { blueRocketQuantityKey, blueRocketModelQuantityKey, blueRocketSingleQuantityKeys, fetchBlueRocketQuantityQuotes,
+import { TOKYO_BLUE_ROCKET_STORES, blueRocketQuantityKey, blueRocketModelQuantityKey, blueRocketSingleQuantityKeys, fetchBlueRocketQuantityQuotes,
   type BlueRocketQuantityQuote } from '../lib/blue-rocket-quantity.js';
 import { completeOriparkCoverage, loadOriparkCoverage } from '../lib/oripark-coverage.js';
 import {
@@ -58,12 +58,7 @@ export function tokyoComparableOrigins(origins: ComparedOrigin[], guard: TokyoOu
   });
 }
 
-// PSA10・BOXとも秋葉原昭和通り店だけを参照する。
-// トレカバンク・アヴィリールはラインアップにも価格比較にも使わない（2026-09-26 決定）。
-const CHECKER_SOURCES: Partial<Record<number, TokyoPriceSource>> = {
-  11: 'blue_rocket',
-};
-const BLUE_ROCKET_SHOP_NAME = 'Blue Rocket（ブルロケ）秋葉原昭和通り店';
+const BLUE_ROCKET_SHOPS = new Map<number, string>(TOKYO_BLUE_ROCKET_STORES.map(store => [store.shopId, store.name]));
 const CHECKER_PSA_CONDITION_ID = 1;
 const CHECKER_BOX_CONDITION_ID = 2;
 const validPrice = (price: number | null | undefined): price is number =>
@@ -131,11 +126,12 @@ export function filterSingleQuantityBlueRocketOffers(products: CheckerProduct[],
   const singleKeys = blueRocketSingleQuantityKeys(quotes);
   const exactKeys = new Set(quotes.filter(quote => quote.identity).map(blueRocketQuantityKey));
   const singleModelKeys = blueRocketSingleQuantityKeys(quotes, true);
+  const singleModelPriceKeys = blueRocketSingleQuantityKeys(quotes, 'model_price');
   const unavailable = new Set(unavailableShopIds);
   const productById = new Map(products.map(product => [product.source_product_id, product]));
   const excluded: (CheckerOffer & { quantity_exclusion_reason: 'single_quantity' | 'quantity_api_unavailable' })[] = [];
   const eligible = offers.filter(offer => {
-    if (CHECKER_SOURCES[offer.shop_id] !== 'blue_rocket' || offer.condition_id !== CHECKER_PSA_CONDITION_ID) return true;
+    if (!BLUE_ROCKET_SHOPS.has(offer.shop_id) || offer.condition_id !== CHECKER_PSA_CONDITION_ID) return true;
     if (unavailable.has(offer.shop_id)) {
       excluded.push({ ...offer, quantity_exclusion_reason: 'quantity_api_unavailable' });
       return false;
@@ -149,7 +145,9 @@ export function filterSingleQuantityBlueRocketOffers(products: CheckerProduct[],
       modelNumber: product.model_number, productType: 'PSA10' });
     const exactKey = blueRocketQuantityKey({ shopId: offer.shop_id, identity, price: offer.buy_price });
     const single = exactKeys.has(exactKey) ? singleKeys.has(exactKey)
-      : product.model_number && singleModelKeys.has(blueRocketModelQuantityKey(offer.shop_id, franchise, product.model_number, product.name, offer.buy_price));
+      : product.model_number && (offer.shop_id === 73
+        ? singleModelPriceKeys.has(blueRocketModelQuantityKey(offer.shop_id, franchise, product.model_number, '', offer.buy_price))
+        : singleModelKeys.has(blueRocketModelQuantityKey(offer.shop_id, franchise, product.model_number, product.name, offer.buy_price)));
     if (!single) return true;
     excluded.push({ ...offer, quantity_exclusion_reason: 'single_quantity' });
     return false;
@@ -209,8 +207,8 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
   const productById = new Map(products.map(product => [product.source_product_id, product]));
   const checkerCandidates = new Map<string, TokyoCandidate>();
   for (const offer of offers) {
-    const source = CHECKER_SOURCES[offer.shop_id];
-    if (!source || ![CHECKER_PSA_CONDITION_ID, CHECKER_BOX_CONDITION_ID].includes(offer.condition_id)
+    const shopName = BLUE_ROCKET_SHOPS.get(offer.shop_id);
+    if (!shopName || ![CHECKER_PSA_CONDITION_ID, CHECKER_BOX_CONDITION_ID].includes(offer.condition_id)
       || !withinPriceAge(offer.source_updated_at, options.businessDate, options.maxPriceAgeDays ?? 0)) continue;
     const product = productById.get(offer.source_product_id);
     if (!product) throw new Error('買取チェッカーの商品・掲載一覧が一致しません');
@@ -218,8 +216,7 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
     if (!franchise) throw new Error(`未対応の買取チェッカーカテゴリ: ${product.category}`);
     // Different editions must not silently inherit the base product's price.
     const id = `${offer.source_product_id}:${offer.condition_id}:${offer.edition_id}`;
-    const key = `${source}:${id}`;
-    const current = checkerCandidates.get(key);
+    const current = checkerCandidates.get(id);
     // Compare only usable prices from the same exact product/condition/edition.
     // Ties retain the smaller shop ID so response ordering cannot change provenance.
     if (current && validPrice(current.sourcePrice) && (!validPrice(offer.buy_price)
@@ -227,11 +224,11 @@ export function tokyoProductCandidates(orderRows: OrderRow[], products: CheckerP
       || (current.sourcePrice === offer.buy_price && current.shopId! <= offer.shop_id))) continue;
     const productType = offer.condition_id === CHECKER_PSA_CONDITION_ID ? 'PSA10' : 'BOX';
     const name = productType === 'PSA10' ? checkerPsaName(product) : product.name;
-    checkerCandidates.set(key, { source, id, franchise, name: offer.edition_id ? `${name} [${offer.edition_name || `edition:${offer.edition_id}`}]` : name,
+    checkerCandidates.set(id, { source: 'blue_rocket', id, franchise, name: offer.edition_id ? `${name} [${offer.edition_name || `edition:${offer.edition_id}`}]` : name,
       modelNumber: product.model_number, productType, ...(product.rarity ? { rarity: product.rarity } : {}),
       sourceProductId: offer.source_product_id, conditionId: offer.condition_id, sourcePrice: offer.buy_price,
       imageUrl: product.image_url, observedAt: offer.source_updated_at,
-      shopId: offer.shop_id, shopName: BLUE_ROCKET_SHOP_NAME });
+      shopId: offer.shop_id, shopName });
   }
   candidates.push(...checkerCandidates.values());
   return candidates;
@@ -398,7 +395,7 @@ export async function buildTokyoBuybackSnapshot(db: SupabaseClient, now = new Da
     if (rates.some(rate => !Number.isFinite(rate) || rate < 0 || rate > 1)) throw new Error('減額率は0〜100%で設定してください');
   }
   const [checker, quantities] = await Promise.all([
-    fetchCheckerShops(Object.keys(CHECKER_SOURCES).map(Number), [CHECKER_PSA_CONDITION_ID, CHECKER_BOX_CONDITION_ID]),
+    fetchCheckerShops([...BLUE_ROCKET_SHOPS.keys()], [CHECKER_PSA_CONDITION_ID, CHECKER_BOX_CONDITION_ID]),
     fetchBlueRocketQuantityQuotes(businessDate, settings.tokyo_price_max_age_days),
   ]);
   const quantityFailedShopIds = quantities.report.shops.filter(shop => shop.error).map(shop => shop.shop_id);

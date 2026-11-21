@@ -168,6 +168,8 @@ test('gallery comparison and adopted prices identify recorded Blue Rocket branch
     { origin: { shopId: 55, shopName: ' 記録時の福岡店名 ' }, store: '記録時の福岡店名' },
     { origin: { id: 'api:laox:123' }, store: 'Blue Rocket（ブルロケ）秋葉原LAOX店' },
     { origin: { id: 'api:akihabara:123' }, store: 'Blue Rocket（ブルロケ）秋葉原店' },
+    { origin: { id: '123:1:0', shopId: 73, shopName: 'Blue Rocket（ブルロケ）秋葉原末広町店' },
+      store: 'Blue Rocket（ブルロケ）秋葉原末広町店' },
     { origin: { id: 'api:unknown:123' }, store: 'Blue Rocket' },
     { origin: { id: 'checker:123:2:0', shopName: ' ' }, store: 'Blue Rocket' },
     { origin: { shopId: 999, id: 'api:laox:123' }, store: 'Blue Rocket' },

@@ -2,10 +2,12 @@ import { postalProductIdentity } from '@haraka/shared';
 import { blueRocketCardName, blueRocketModelNumber } from './blue-rocket.js';
 import { fetchWithRetry } from './fetch-with-retry.js';
 
-// Tokyo compares only the Akihabara Showa-dori branch.
-const STORES = [{ shopId: 11, code: 'akihabara' }] as const;
+export const TOKYO_BLUE_ROCKET_STORES = [
+  { shopId: 11, code: 'akihabara', name: 'Blue Rocket（ブルロケ）秋葉原昭和通り店' },
+  { shopId: 73, code: 'suehirocho', name: 'Blue Rocket（ブルロケ）秋葉原末広町店' },
+] as const;
 export type BlueRocketQuantityQuote = { shopId: number; identity: string | null; price: number;
-  singleQuantity: boolean; productId: number; modelKey?: string };
+  singleQuantity: boolean; productId: number; modelKey?: string; modelPriceKey?: string };
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 const positiveInteger = (value: unknown): value is number => typeof value === 'number'
@@ -46,7 +48,9 @@ export function parseBlueRocketQuantityQuotes(payload: unknown, shopId: number, 
     let modelNumber: string | null;
     if (franchise === 'Pokemon') {
       name = blueRocketCardName(rawName);
-      modelNumber = blueRocketModelNumber(item.cardNumber);
+      // Quantity evidence can use an exact nonstandard code (e.g. XY-P).
+      // Keep it distinct instead of discarding it or guessing a missing checker model.
+      modelNumber = blueRocketModelNumber(item.cardNumber) ?? item.cardNumber.normalize('NFKC').trim();
     } else {
       modelNumber = item.cardNumber.normalize('NFKC').trim();
       if (!/^(?:(?:OP|ST|EB|PRB)\d{2,3}|P)-\d{2,3}$/i.test(modelNumber)) continue;
@@ -59,6 +63,8 @@ export function parseBlueRocketQuantityQuotes(payload: unknown, shopId: number, 
     quotes.push({ shopId, productId: item.productId, price: item.price,
       identity: name ? postalProductIdentity({ franchise, name, modelNumber, productType: 'PSA10' }) : null,
       modelKey: blueRocketModelQuantityKey(shopId, franchise, modelNumber, blueRocketCardName(rawName), item.price),
+      // Suehirocho checker names can differ from the official list; require all same-model/price rows to be single.
+      modelPriceKey: shopId === 73 ? blueRocketModelQuantityKey(shopId, franchise, modelNumber, '', item.price) : undefined,
       singleQuantity: item.remainingQty === 1 || boostedSingle });
   }
   return quotes;
@@ -74,10 +80,11 @@ export function blueRocketModelQuantityKey(shopId: number, franchise: string, mo
 }
 
 /** Conflicting public rows cannot prove that an exact quote is limited to one card. */
-export function blueRocketSingleQuantityKeys(quotes: BlueRocketQuantityQuote[], matchModel = false): Set<string> {
+export function blueRocketSingleQuantityKeys(quotes: BlueRocketQuantityQuote[], match: boolean | 'model_price' = false): Set<string> {
   const groups = new Map<string, boolean>();
   for (const quote of quotes) {
-    const key = matchModel ? quote.modelKey : quote.identity ? blueRocketQuantityKey(quote) : undefined;
+    const key = match === 'model_price' ? quote.modelPriceKey : match ? quote.modelKey
+      : quote.identity ? blueRocketQuantityKey(quote) : undefined;
     if (!key) continue;
     groups.set(key, (groups.get(key) ?? true) && quote.singleQuantity);
   }
@@ -85,7 +92,7 @@ export function blueRocketSingleQuantityKeys(quotes: BlueRocketQuantityQuote[], 
 }
 
 export async function fetchBlueRocketQuantityQuotes(businessDate: string, maxAgeDays: number) {
-  const results = await Promise.allSettled(STORES.map(async store => {
+  const results = await Promise.allSettled(TOKYO_BLUE_ROCKET_STORES.map(async store => {
     const response = await fetchWithRetry(`https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=${store.code}`, {
       headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' }, redirect: 'error',
     }, { timeoutMs: 10_000, maxRetries: 1, baseDelayMs: 500 });
@@ -95,9 +102,10 @@ export async function fetchBlueRocketQuantityQuotes(businessDate: string, maxAge
   const quotes: BlueRocketQuantityQuote[] = [];
   const shops = results.map((result, index) => {
     if (result.status === 'fulfilled') quotes.push(...result.value);
-    return { shop_id: STORES[index].shopId, store_code: STORES[index].code,
+    return { shop_id: TOKYO_BLUE_ROCKET_STORES[index].shopId, store_code: TOKYO_BLUE_ROCKET_STORES[index].code,
       parsed_quote_count: result.status === 'fulfilled' ? result.value.length : 0,
       error: result.status === 'rejected' ? (result.reason instanceof Error ? result.reason.message : String(result.reason)) : null };
   });
-  return { quotes, report: { shops, quantity_unavailable_shop_ids: [] as number[] } };
+  return { quotes, report: { shops,
+    quantity_unavailable_shop_ids: shops.filter(shop => shop.error !== null).map(shop => shop.shop_id) } };
 }

@@ -1,6 +1,6 @@
 \set ON_ERROR_STOP on
 BEGIN;
-SELECT plan(9);
+SELECT plan(11);
 
 INSERT INTO public.order_list_import(id,store,business_date,status,original_filename,original_size_bytes,sha256,storage_path,structural_valid,persistence_complete,heartbeat_at)
 VALUES('c1000000-0000-4000-8000-000000000001','manman-akihabara',current_date,'processing','showa-dori.xlsx',1,repeat('c',64),'test',true,true,now());
@@ -27,6 +27,12 @@ SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(jsonb_set(snapshot,'{re
   '22023','Tokyo scoped checker API evidence required','shop evidence requires numeric IDs');
 SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(jsonb_set(snapshot,'{report,checker_api,shop_ids}','[11,11]'),products,'c4000000-0000-4000-8000-000000000001') FROM showa_fixture$$,
   '22023','Tokyo scoped checker API evidence required','duplicate IDs do not satisfy the configured scope');
+SELECT throws_ok($$SELECT publish_tokyo_buyback_snapshot(jsonb_set(snapshot,'{report,checker_api,shop_ids}','[73]'),products,'c4000000-0000-4000-8000-000000000001') FROM showa_fixture$$,
+  '22023','Tokyo scoped checker API evidence required','Suehirocho alone is not the two-branch scope');
+SAVEPOINT two_branches;
+SELECT lives_ok($$SELECT publish_tokyo_buyback_snapshot(jsonb_set(snapshot,'{report,checker_api,shop_ids}','[11,73]'),products,'c4000000-0000-4000-8000-000000000001') FROM showa_fixture$$,
+  'Showa-dori and Suehirocho may publish PSA10 and BOX together');
+ROLLBACK TO two_branches;
 SELECT lives_ok($$SELECT publish_tokyo_buyback_snapshot(snapshot,products,'c4000000-0000-4000-8000-000000000001') FROM showa_fixture$$,
   'Showa-dori-only PSA10 and BOX publish with the active sync lease');
 SELECT is((SELECT count(*)::integer FROM public.tokyo_buyback_product WHERE snapshot_id='c3000000-0000-4000-8000-000000000001'),

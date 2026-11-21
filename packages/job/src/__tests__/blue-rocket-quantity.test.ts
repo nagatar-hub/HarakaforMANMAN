@@ -1,7 +1,7 @@
-import { postalProductIdentity } from '@haraka/shared';
+import { normalizeStorePricingSettings, postalProductIdentity } from '@haraka/shared';
 import { parseBlueRocketQuantityQuotes, fetchBlueRocketQuantityQuotes, blueRocketSingleQuantityKeys } from '../lib/blue-rocket-quantity';
 import { fetchWithRetry } from '../lib/fetch-with-retry';
-import { filterSingleQuantityBlueRocketOffers, tokyoProductCandidates } from '../jobs/tokyo-buyback-sync';
+import { compareTokyoSourceProducts, filterSingleQuantityBlueRocketOffers, tokyoProductCandidates } from '../jobs/tokyo-buyback-sync';
 
 jest.mock('../lib/fetch-with-retry', () => ({ fetchWithRetry: jest.fn() }));
 const day = '2026-11-19';
@@ -11,6 +11,8 @@ const item = (patch: Record<string, unknown> = {}) => ({ productId: 1, name: 'PS
 const payload = (items: unknown[] = [item()], patch: Record<string, unknown> = {}) => ({
   storeId: 'akihabara', storeCode: 'akihabara', businessDate: day, items, ...patch });
 const parse = (items: unknown[]) => parseBlueRocketQuantityQuotes(payload(items), 11, 'akihabara', day, 1);
+const parseSuehirocho = (items: unknown[]) => parseBlueRocketQuantityQuotes(
+  payload(items, { storeId: 'suehirocho', storeCode: 'suehirocho' }), 73, 'suehirocho', day, 1);
 const product = { source_product_id: 7, name: 'カイ', category: 'pokemon', model_number: '236/172', full_name: null };
 const offer = (shop_id: number, buy_price = 150000) => ({ source_product_id: 7, shop_id, shop_name: `Shop ${shop_id}`,
   condition_id: 1, edition_id: 0, buy_price, source_updated_at: '2026-11-19T01:00:00Z' });
@@ -24,6 +26,25 @@ test.each([{ remainingQty: 1 }, { remainingQty: 16, boost: { remainingQty: 1 }, 
     expect(filtered.excluded).toMatchObject([{ shop_id: 11 }]);
     expect(tokyoProductCandidates([], [product], filtered.offers)).toEqual([]);
   });
+
+test.each([{ remainingQty: 1 }, { remainingQty: 16, boost: { remainingQty: 1 }, normalPrice: 145000 }])(
+  'Suehirocho single-card prices are removed before selecting the eligible Showa-dori price: %j', patch => {
+    const quotes = [...parse([item({ price: 140000, remainingQty: 2 })]), ...parseSuehirocho([item(patch)])];
+    const offers = [offer(73), offer(11, 140000)];
+    for (const ordered of [offers, [...offers].reverse()]) {
+      const filtered = filterSingleQuantityBlueRocketOffers([product], ordered, quotes);
+      expect(filtered.excluded).toMatchObject([{ shop_id: 73, quantity_exclusion_reason: 'single_quantity' }]);
+      expect(tokyoProductCandidates([], [product], filtered.offers))
+        .toMatchObject([{ shopId: 11, sourcePrice: 140000 }]);
+    }
+  });
+
+test('Showa-dori single-card evidence does not exclude the matching multi-card Suehirocho price', () => {
+  const quotes = [...parse([item()]), ...parseSuehirocho([item({ remainingQty: 2 })])];
+  const filtered = filterSingleQuantityBlueRocketOffers([product], [offer(11), offer(73)], quotes);
+  expect(filtered.offers).toEqual([offer(73)]);
+  expect(tokyoProductCandidates([], [product], filtered.offers)).toMatchObject([{ shopId: 73, sourcePrice: 150000 }]);
+});
 
 test('one-card quotes from the referenced branch leave no Blue Rocket PSA candidate', () => {
   const quotes = parse([item()]);
@@ -83,6 +104,77 @@ test('known language and holo variants remain part of the quote identity', () =>
   expect(quotes[0].identity).not.toBe(parse([item()])[0].identity);
 });
 
+test.each(['XY-P', 'PMCG-EX', '085'])('nonstandard quantity model %s matches only the exact model', modelNumber => {
+  const quotes = parseSuehirocho([item({ cardNumber: modelNumber })]);
+  expect(quotes[0].identity).toBe(postalProductIdentity({ franchise: 'Pokemon', name: 'カイ',
+    modelNumber, productType: 'PSA10' }));
+  const products = [
+    { ...product, model_number: modelNumber },
+    { ...product, source_product_id: 8, model_number: 'SM-P' },
+    { ...product, source_product_id: 9, model_number: null },
+  ];
+  const offers = [offer(73), { ...offer(73), source_product_id: 8 }, { ...offer(73), source_product_id: 9 }];
+  expect(filterSingleQuantityBlueRocketOffers(products, offers, quotes).offers).toEqual(offers.slice(1));
+});
+
+test('normalizes nonstandard quantity model width without accepting empty models', () => {
+  expect(parseSuehirocho([item({ cardNumber: ' ＸＹ－Ｐ ' })])[0].identity)
+    .toBe(parseSuehirocho([item({ cardNumber: 'XY-P' })])[0].identity);
+  expect(parseSuehirocho([item({ cardNumber: '　 ' })])).toEqual([]);
+});
+
+test('live Suehirocho one-card XY-P and missing-model cards never reach final comparison products', () => {
+  const products = [
+    { ...product, source_product_id: 19682, name: 'ピカチュウ', model_number: 'XY-P' },
+    { ...product, source_product_id: 21535, name: 'オーヤマのピカチュウ', model_number: null },
+  ];
+  const quotes = parseSuehirocho([
+    item({ productId: 1854, name: 'PSA10 ピカチュウ ニコル: プロモ[XY-P]', cardNumber: 'XY-P', price: 492000 }),
+    item({ productId: 44671, name: 'PSA10 オーヤマのピカチュウ: 旧裏[PMCG-EX]', cardNumber: 'PMCG-EX', price: 970000 }),
+  ]);
+  const filtered = filterSingleQuantityBlueRocketOffers(products, [
+    { ...offer(73, 492000), source_product_id: 19682 }, { ...offer(73, 970000), source_product_id: 21535 },
+  ], quotes);
+  expect(filtered.excluded).toMatchObject([{ source_product_id: 19682, quantity_exclusion_reason: 'single_quantity' }]);
+  const result = compareTokyoSourceProducts(tokyoProductCandidates([], products, filtered.offers), [],
+    normalizeStorePricingSettings({}), '2026-11-19T01:00:00Z');
+  expect(result.products).toEqual([]);
+  expect(result.unmatched).toMatchObject([{ candidate: { name: 'オーヤマのピカチュウ' }, reason: 'missing_model' }]);
+});
+
+test.each([
+  { publicName: 'PSA10 MレックウザEX SR :1ED [XY6 086/078]', checkerName: 'レックウザEX', model: '086/078', price: 660000 },
+  { publicName: 'PSA10 リーリエ（帽子リーリエ）SR[SM1M 066/060]', checkerName: 'リーリエ', model: '066/060', price: 1250000 },
+])('Suehirocho excludes a name mismatch only when all same-model/price public quotes are single: %j', example => {
+  const products = [{ ...product, name: example.checkerName, model_number: example.model }];
+  const single = item({ name: example.publicName, cardNumber: example.model, price: example.price });
+  const offers = [offer(73, example.price)];
+  const filtered = filterSingleQuantityBlueRocketOffers(products, offers, parseSuehirocho([single]));
+  expect(filtered.offers).toEqual([]);
+  expect(compareTokyoSourceProducts(tokyoProductCandidates([], products, filtered.offers), [],
+    normalizeStorePricingSettings({}), '2026-11-19T01:00:00Z').products).toEqual([]);
+
+  const mixed = parseSuehirocho([single, item({ productId: 2, name: 'PSA10 別の版【中国語版】',
+    cardNumber: example.model, price: example.price, remainingQty: 2 })]);
+  expect(filterSingleQuantityBlueRocketOffers(products, offers, mixed).offers).toEqual(offers);
+  expect(filterSingleQuantityBlueRocketOffers(products, [offer(11, example.price)], parse([single])).offers)
+    .toEqual([offer(11, example.price)]);
+});
+
+test('Suehirocho exact one-card identity wins over another design with multi-card quantity', () => {
+  const quotes = parseSuehirocho([item(), item({ productId: 2, name: 'PSA10 別の版【中国語版】', remainingQty: 2 })]);
+  expect(filterSingleQuantityBlueRocketOffers([product], [offer(73)], quotes).offers).toEqual([]);
+});
+
+test('Suehirocho model/price fallback cannot borrow another price, model, franchise, or branch', () => {
+  const quotes = parseSuehirocho([item({ name: 'PSA10 違う表記' })]);
+  const products = [product, { ...product, source_product_id: 8, model_number: '999/999' },
+    { ...product, source_product_id: 9, category: 'one_piece' }];
+  const offers = [offer(73, 140000), { ...offer(73), source_product_id: 8 },
+    { ...offer(73), source_product_id: 9 }, offer(11)];
+  expect(filterSingleQuantityBlueRocketOffers(products, offers, quotes).offers).toEqual(offers);
+});
+
 test('explicit ONE PIECE manga design keeps exact evidence and another design supplies model evidence', () => {
   const quotes = parse([item({ genre: 'onepiece', name: 'PSA10 エドワード・ニューゲート SR-SP (コミパラ) [OP17-005]',
     cardNumber: 'OP17-005' }), item({ genre: 'onepiece', name: 'PSA10 エネル SR-SPC [OP05-100]', cardNumber: 'OP05-100' })]);
@@ -112,16 +204,52 @@ test.each([{ storeId: 'laox' }, { businessDate: '2026-11-17' }, { businessDate: 
     expect(() => parseBlueRocketQuantityQuotes(payload([item()], patch), 11, 'akihabara', day, 1)).toThrow();
   });
 
-test.each([null, 503])('only the Showa-dori quantity API is fetched and failure %s is reported', async status => {
+test.each([null, 503])('only Showa-dori and Suehirocho quantity APIs are fetched and failure %s is reported', async status => {
   jest.mocked(fetchWithRetry).mockImplementation(async url => {
     const code = new URL(url).searchParams.get('store');
     return status ? new Response('{}', { status })
       : new Response(JSON.stringify(payload([item()], { storeId: code, storeCode: code })));
   });
   const result = await fetchBlueRocketQuantityQuotes(day, 1);
-  expect(fetchWithRetry).toHaveBeenCalledTimes(1);
-  expect(jest.mocked(fetchWithRetry).mock.calls[0][0]).toBe('https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=akihabara');
-  expect(result.quotes.map(quote => quote.shopId)).toEqual(status ? [] : [11]);
-  expect(result.report.quantity_unavailable_shop_ids).toEqual([]);
-  expect(result.report.shops).toMatchObject([{ shop_id: 11, error: status ? 'HTTP 503' : null }]);
+  expect(fetchWithRetry).toHaveBeenCalledTimes(2);
+  expect(jest.mocked(fetchWithRetry).mock.calls.map(call => call[0])).toEqual([
+    'https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=akihabara',
+    'https://bluerocket-kaitori.xvps.jp/lottery/api/prices?store=suehirocho',
+  ]);
+  expect(result.quotes.map(quote => quote.shopId)).toEqual(status ? [] : [11, 73]);
+  expect(result.report.quantity_unavailable_shop_ids).toEqual(status ? [11, 73] : []);
+  expect(result.report.shops).toMatchObject([
+    { shop_id: 11, store_code: 'akihabara', error: status ? 'HTTP 503' : null },
+    { shop_id: 73, store_code: 'suehirocho', error: status ? 'HTTP 503' : null },
+  ]);
+});
+
+test.each([
+  ['akihabara', 11, 73], ['suehirocho', 73, 11],
+] as const)('a failed %s quantity request excludes only that branch PSA and preserves both BOX offers', async (failedCode, failedId, healthyId) => {
+  jest.mocked(fetchWithRetry).mockImplementation(async url => {
+    const code = new URL(url).searchParams.get('store');
+    if (code === failedCode) throw new Error('quantity request unavailable');
+    return new Response(JSON.stringify(payload([item({ remainingQty: 2 })], { storeId: code, storeCode: code })));
+  });
+  const result = await fetchBlueRocketQuantityQuotes(day, 1);
+  expect(result.quotes.map(quote => quote.shopId)).toEqual([healthyId]);
+  expect(result.report.quantity_unavailable_shop_ids).toEqual([failedId]);
+  expect(result.report.shops.find(shop => shop.shop_id === failedId)).toMatchObject({
+    error: 'quantity request unavailable', parsed_quote_count: 0,
+  });
+  const boxes = [11, 73].map(id => ({ ...offer(id), condition_id: 2 }));
+  const filtered = filterSingleQuantityBlueRocketOffers([product], [offer(11), offer(73), ...boxes],
+    result.quotes, result.report.quantity_unavailable_shop_ids);
+  expect(filtered.excluded).toMatchObject([{ shop_id: failedId, quantity_exclusion_reason: 'quantity_api_unavailable' }]);
+  expect(filtered.offers).toEqual([offer(healthyId), ...boxes]);
+});
+
+test('a wrong branch returned for Suehirocho cannot supply quantity evidence for shop 73', async () => {
+  jest.mocked(fetchWithRetry).mockImplementation(async () =>
+    new Response(JSON.stringify(payload([item({ remainingQty: 2 })]))));
+  const result = await fetchBlueRocketQuantityQuotes(day, 1);
+  expect(result.quotes.map(quote => quote.shopId)).toEqual([11]);
+  expect(result.report.quantity_unavailable_shop_ids).toEqual([73]);
+  expect(result.report.shops[1].error).toContain('店舗・営業日・データ形式');
 });
