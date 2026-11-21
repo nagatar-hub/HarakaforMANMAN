@@ -1,191 +1,278 @@
-import { Hono } from 'hono';
-import { createSupabaseClient } from '../lib/supabase.js';
+import { Hono } from "hono";
+import crypto from "node:crypto";
+import { isPostingKind } from "@haraka/shared";
+import { createSupabaseClient } from "../lib/supabase.js";
 import {
   buildAuthorizationUrl,
   getVerifierForState,
   exchangeCodeForTokens,
   getXCredentials,
-} from '../lib/x-auth.js';
-import { verifyCredentials } from '../lib/x-client.js';
-import { STORE_NAME } from '../lib/store-scope.js';
-import { authorizeInternalApiRequest, normalizeOperatorEmail } from '../lib/internal-api-auth.js';
-import { buildOperatorAuditEntry, persistOperatorAudit } from '../lib/operator-audit.js';
-
-const FRONTEND_URL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  sealXSecret,
+  xSetupStatus,
+} from "../lib/x-auth.js";
+import { verifyCredentials } from "../lib/x-client.js";
+import { STORE_NAME } from "../lib/store-scope.js";
 
 export const xCredentialRoutes = new Hono();
-
-// List all credentials (tokens excluded for security)
-xCredentialRoutes.get('/x/credentials', async (c) => {
-  const supabase = createSupabaseClient();
-  const { data, error } = await supabase
-    .from('x_credential')
-    .select('id, account_name, x_user_id, x_username, status, last_verified_at, is_default, token_expires_at, created_at, updated_at')
-    .eq('store', STORE_NAME)
-    .order('created_at', { ascending: false });
-  if (error) return c.json({ error: error.message }, 500);
+const fields =
+  "id,account_name,x_user_id,x_username,status,posting_kind,last_verified_at,token_expires_at,created_at,updated_at";
+const dbClient = () => createSupabaseClient() as any;
+const uuid = (v: unknown): v is string =>
+  typeof v === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    v,
+  );
+xCredentialRoutes.get("/x/setup", (c) =>
+  c.json({ ...xSetupStatus(), store: STORE_NAME }),
+);
+xCredentialRoutes.get("/x/credentials", async (c) => {
+  const { data, error } = await dbClient()
+    .from("x_credential")
+    .select(fields)
+    .eq("store", STORE_NAME)
+    .order("created_at");
+  if (error)
+    return c.json(
+      {
+        error:
+          "Xアカウントを読み込めませんでした。DBの更新状況を確認してください",
+      },
+      503,
+    );
   return c.json(data);
 });
-
-// Initiate OAuth 2.0 PKCE flow
-xCredentialRoutes.get('/x/oauth/authorize', async (c) => {
-  const auth = authorizeInternalApiRequest(c.req.header('authorization'));
-  if (auth === 'misconfigured') return c.json({ error: 'APIの認証設定がありません' }, 503);
-  if (auth !== 'authorized') return c.json({ error: 'Unauthorized' }, 401);
-  const operatorEmail = normalizeOperatorEmail(c.req.header('x-haraka-operator-email'));
-  if (!operatorEmail) return c.json({ error: 'Operator identity required' }, 401);
-  const { url } = buildAuthorizationUrl(operatorEmail);
-  return c.json({ url });
-});
-
-// OAuth callback - exchange code for tokens, save to DB
-xCredentialRoutes.get('/x/oauth/callback', async (c) => {
-  const code = c.req.query('code');
-  const state = c.req.query('state');
-  const error = c.req.query('error');
-
-  if (error) {
-    return c.redirect(`${FRONTEND_URL}/post/credentials?error=${encodeURIComponent(error)}`);
-  }
-
-  if (!code || !state) {
-    return c.redirect(`${FRONTEND_URL}/post/credentials?error=${encodeURIComponent('Missing code or state')}`);
-  }
-
-  const oauthRequest = getVerifierForState(state);
-  if (!oauthRequest) {
-    return c.redirect(`${FRONTEND_URL}/post/credentials?error=${encodeURIComponent('Invalid or expired state. Please try again.')}`);
-  }
-
-  try {
-    // Exchange code for tokens
-    const tokens = await exchangeCodeForTokens(code, oauthRequest.verifier);
-    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
-
-    // Fetch user info
-    const user = await verifyCredentials(tokens.access_token);
-
-    const supabase = createSupabaseClient();
-
-    // Check if this X account already exists
-    const { data: existing, error: existingError } = await supabase
-      .from('x_credential')
-      .select('id')
-      .eq('x_user_id', user.id)
-      .eq('store', STORE_NAME)
+xCredentialRoutes.post("/x/oauth/authorize", async (c) => {
+  const body = await c.req.json();
+  if (!isPostingKind(body.kind))
+    return c.json({ error: "店頭・郵送を選択してください" }, 400);
+  let expectedUserId: string | undefined;
+  if (body.credential_id) {
+    if (!uuid(body.credential_id))
+      return c.json({ error: "アカウントが不正です" }, 400);
+    const { data, error } = await dbClient()
+      .from("x_credential")
+      .select("x_user_id,posting_kind")
+      .eq("store", STORE_NAME)
+      .eq("id", body.credential_id)
       .maybeSingle();
-    if (existingError) throw new Error(existingError.message);
-
-    if (existing) {
-      // Update existing credential
-      const { error: updateError } = await supabase.from('x_credential').update({
-        account_name: user.name || user.username,
-        x_username: user.username,
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        token_expires_at: expiresAt,
-        status: 'active',
-        last_verified_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      } as any).eq('id', existing.id).eq('store', STORE_NAME);
-      if (updateError) throw new Error(updateError.message);
-    } else {
-      // Check if any credentials exist for default logic
-      const { count, error: countError } = await supabase
-        .from('x_credential')
-        .select('id', { count: 'exact', head: true })
-        .eq('store', STORE_NAME);
-      if (countError) throw new Error(countError.message);
-
-      const { error: insertError } = await supabase.from('x_credential').insert({
-        account_name: user.name || user.username,
-        x_user_id: user.id,
-        x_username: user.username,
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        token_expires_at: expiresAt,
-        status: 'active',
-        last_verified_at: new Date().toISOString(),
-        is_default: (count ?? 0) === 0, // First credential becomes default
-        store: STORE_NAME,
-      } as any);
-      if (insertError) throw new Error(insertError.message);
-    }
-
-    const audit = buildOperatorAuditEntry({
-      store: STORE_NAME,
-      actorEmail: oauthRequest.operatorEmail,
-      method: 'GET',
-      url: c.req.url,
-      statusCode: 302,
-      targetId: user.id,
-      auditReadMutation: true,
-    });
-    if (audit) await persistOperatorAudit(audit);
-    return c.redirect(`${FRONTEND_URL}/post/credentials?success=true&username=${encodeURIComponent(user.username)}`);
-  } catch (e: any) {
-    return c.redirect(`${FRONTEND_URL}/post/credentials?error=${encodeURIComponent(e.message)}`);
+    if (error || !data)
+      return c.json({ error: "アカウントが見つかりません" }, 404);
+    expectedUserId = data.x_user_id;
+    if (data.posting_kind && data.posting_kind !== body.kind)
+      return c.json({ error: "登録済みの用途を選択してください" }, 400);
+  }
+  try {
+    return c.json(
+      await buildAuthorizationUrl(
+        c.req.header("x-haraka-operator-email")!,
+        body.kind,
+        expectedUserId,
+      ),
+    );
+  } catch (e) {
+    return c.json(
+      { error: e instanceof Error ? e.message : "認証を開始できません" },
+      400,
+    );
   }
 });
-
-// Verify credential (refresh if needed, then test)
-xCredentialRoutes.post('/x/credentials/:id/verify', async (c) => {
-  const id = c.req.param('id');
+xCredentialRoutes.get("/x/oauth/callback", async (c) => {
+  const state = c.req.query("state");
+  if (!uuid(state))
+    return c.json(
+      { error: "認証情報が不正です。もう一度認証してください" },
+      400,
+    );
   try {
-    const { accessToken } = await getXCredentials(id);
-    const user = await verifyCredentials(accessToken);
-    const supabase = createSupabaseClient();
-    const { error: updateError } = await supabase.from('x_credential').update({
-      status: 'active',
+    const request = await getVerifierForState(
+      state,
+      c.req.header("x-haraka-operator-email")!,
+    );
+    if (c.req.query("error") || !c.req.query("code"))
+      return c.json({ error: "Xでの認証がキャンセルされました" }, 400);
+    const tokens = await exchangeCodeForTokens(
+      c.req.query("code")!,
+      request.verifier,
+    );
+    const user = await verifyCredentials(tokens.access_token);
+    if (request.expectedUserId && request.expectedUserId !== user.id)
+      throw new Error(
+        "別のXアカウントで認証されました。元のアカウントに切り替えて再認証してください",
+      );
+    const db = dbClient();
+    const { data: existing, error } = await db
+      .from("x_credential")
+      .select("id,posting_kind,account_name")
+      .eq("store", STORE_NAME)
+      .eq("x_user_id", user.id)
+      .maybeSingle();
+    if (error) throw new Error("アカウントの保存先を確認できません");
+    if (existing?.posting_kind && existing.posting_kind !== request.kind)
+      throw new Error(
+        "このXアカウントは別の用途で登録されています。アカウント管理から用途を変更してください",
+      );
+    const row = {
+      store: STORE_NAME,
+      account_name: existing?.account_name || user.name || user.username,
       x_user_id: user.id,
       x_username: user.username,
+      posting_kind: request.kind,
+      access_token: sealXSecret(tokens.access_token),
+      refresh_token: sealXSecret(tokens.refresh_token),
+      token_expires_at: new Date(
+        Date.now() + tokens.expires_in * 1000,
+      ).toISOString(),
+      status: "active",
       last_verified_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    } as any).eq('id', id).eq('store', STORE_NAME);
-    if (updateError) throw new Error(updateError.message);
-    return c.json({ verified: true, user });
-  } catch (e: any) {
-    const supabase = createSupabaseClient();
-    await supabase.from('x_credential').update({
-      status: 'expired',
-      updated_at: new Date().toISOString(),
-    } as any).eq('id', id).eq('store', STORE_NAME);
-    return c.json({ verified: false, error: e.message }, 400);
+    };
+    if (existing) {
+      const lease = crypto.randomUUID();
+      const { data: locked, error: lockError } = await db.rpc(
+        "x_account_lease",
+        { p_store: STORE_NAME, p_id: existing.id, p_token: lease },
+      );
+      if (lockError || !locked)
+        throw new Error(
+          "このアカウントは投稿処理中です。終了後に再認証してください",
+        );
+      try {
+        const { error: saveError } = await db
+          .from("x_credential")
+          .update(row)
+          .eq("store", STORE_NAME)
+          .eq("id", existing.id)
+          .eq("lease_token", lease);
+        if (saveError) throw new Error("認証結果を保存できませんでした");
+      } finally {
+        await db.rpc("x_account_lease", {
+          p_store: STORE_NAME,
+          p_id: existing.id,
+          p_token: lease,
+          p_release: true,
+        });
+      }
+    } else {
+      const { error: saveError } = await db
+        .from("x_credential")
+        .insert({ ...row, is_default: false });
+      if (saveError)
+        throw new Error(
+          "認証結果を保存できませんでした。登録状況を確認してください",
+        );
+    }
+    return c.json({ success: true, username: user.username });
+  } catch (e) {
+    return c.json(
+      { error: e instanceof Error ? e.message : "認証できませんでした" },
+      400,
+    );
   }
 });
-
-// Set default credential (unset others)
-xCredentialRoutes.post('/x/credentials/:id/set-default', async (c) => {
-  const id = c.req.param('id');
-  const supabase = createSupabaseClient();
-  const { data: owned, error: findError } = await supabase
-    .from('x_credential')
-    .select('id')
-    .eq('id', id)
-    .eq('store', STORE_NAME)
-    .maybeSingle();
-  if (findError) return c.json({ error: findError.message }, 500);
-  if (!owned) return c.json({ error: 'Credential not found' }, 404);
-
-  const updatedAt = new Date().toISOString();
-  const { error: clearError } = await supabase
-    .from('x_credential')
-    .update({ is_default: false, updated_at: updatedAt } as any)
-    .eq('store', STORE_NAME)
-    .neq('id', id);
-  if (clearError) return c.json({ error: clearError.message }, 500);
-
-  const { error } = await supabase.from('x_credential').update({ is_default: true, updated_at: updatedAt } as any).eq('id', id).eq('store', STORE_NAME);
-  if (error) return c.json({ error: error.message }, 500);
-  return c.json({ success: true });
+xCredentialRoutes.patch("/x/credentials/:id", async (c) => {
+  const id = c.req.param("id"),
+    body = await c.req.json();
+  if (
+    !uuid(id) ||
+    !isPostingKind(body.posting_kind) ||
+    typeof body.account_name !== "string" ||
+    !body.account_name.trim() ||
+    body.account_name.length > 80
+  )
+    return c.json({ error: "表示名と用途を入力してください" }, 400);
+  const db = dbClient(),
+    lease = crypto.randomUUID();
+  const { data: locked, error } = await db.rpc("x_account_lease", {
+    p_store: STORE_NAME,
+    p_id: id,
+    p_token: lease,
+  });
+  if (error || !locked)
+    return c.json({ error: "アカウントが見つからないか、処理中です" }, 409);
+  try {
+    const { data, error: saveError } = await db
+      .from("x_credential")
+      .update({
+        account_name: body.account_name.trim(),
+        posting_kind: body.posting_kind,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .eq("store", STORE_NAME)
+      .eq("lease_token", lease)
+      .select(fields)
+      .single();
+    if (saveError)
+      return c.json({ error: "アカウント設定を保存できませんでした" }, 500);
+    return c.json(data);
+  } finally {
+    await db.rpc("x_account_lease", {
+      p_store: STORE_NAME,
+      p_id: id,
+      p_token: lease,
+      p_release: true,
+    });
+  }
 });
-
-// Delete credential
-xCredentialRoutes.delete('/x/credentials/:id', async (c) => {
-  const id = c.req.param('id');
-  const supabase = createSupabaseClient();
-  const { data, error } = await supabase.from('x_credential').delete().eq('id', id).eq('store', STORE_NAME).select('id').maybeSingle();
-  if (error) return c.json({ error: error.message }, 500);
-  if (!data) return c.json({ error: 'Credential not found' }, 404);
-  return c.json({ success: true });
+xCredentialRoutes.post("/x/credentials/:id/verify", async (c) => {
+  try {
+    const { accessToken } = await getXCredentials(c.req.param("id"));
+    const user = await verifyCredentials(accessToken);
+    const { data, error } = await dbClient()
+      .from("x_credential")
+      .update({
+        last_verified_at: new Date().toISOString(),
+        x_username: user.username,
+      })
+      .eq("id", c.req.param("id"))
+      .eq("store", STORE_NAME)
+      .eq("x_user_id", user.id)
+      .select("id")
+      .maybeSingle();
+    if (error || !data)
+      throw new Error("認証アカウントが一致しません。再認証してください");
+    return c.json({ verified: true, username: user.username });
+  } catch (e) {
+    return c.json(
+      { error: e instanceof Error ? e.message : "認証を確認できません" },
+      400,
+    );
+  }
+});
+xCredentialRoutes.delete("/x/credentials/:id", async (c) => {
+  const db = dbClient(),
+    id = c.req.param("id"),
+    lease = crypto.randomUUID();
+  if (!uuid(id)) return c.json({ error: "アカウントが不正です" }, 400);
+  const { data: locked, error } = await db.rpc("x_account_lease", {
+    p_store: STORE_NAME,
+    p_id: id,
+    p_token: lease,
+  });
+  if (error || !locked)
+    return c.json({ error: "アカウントが見つからないか、処理中です" }, 409);
+  try {
+    const { error: saveError } = await db
+      .from("x_credential")
+      .update({
+        status: "revoked",
+        access_token: null,
+        refresh_token: null,
+        token_expires_at: null,
+        is_default: false,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .eq("store", STORE_NAME)
+      .eq("lease_token", lease);
+    if (saveError) return c.json({ error: "接続を解除できませんでした" }, 500);
+    return c.json({ success: true });
+  } finally {
+    await db.rpc("x_account_lease", {
+      p_store: STORE_NAME,
+      p_id: id,
+      p_token: lease,
+      p_release: true,
+    });
+  }
 });

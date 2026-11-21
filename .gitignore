@@ -10,3 +10,5 @@ dist/
 supabase/.temp/
 Harakawebapp
 out/
+output/
+.playwright-cli/

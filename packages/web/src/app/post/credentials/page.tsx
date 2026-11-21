@@ -1,234 +1,339 @@
-'use client';
+"use client";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import {
+  POSTING_KIND_LABELS,
+  type PostingAccount,
+  type PostingKind,
+} from "@haraka/shared";
+import {
+  requestPosting,
+  buttonClass,
+  secondaryClass,
+  inputClass,
+  postingDate,
+} from "../posting-client";
 
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
-
-const API = '/api/backend';
-
-type Credential = {
-  id: string;
-  account_name: string;
-  x_user_id: string | null;
-  x_username: string | null;
-  status: 'active' | 'expired' | 'revoked';
-  is_default: boolean;
-  last_verified_at: string | null;
-  token_expires_at: string | null;
-  created_at: string;
-};
-
-export default function CredentialsPage() {
-  const [credentials, setCredentials] = useState<Credential[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [verifying, setVerifying] = useState<string | null>(null);
-  const [settingDefault, setSettingDefault] = useState<string | null>(null);
-  const [authLoading, setAuthLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-
-  const fetchCredentials = async () => {
-    const res = await fetch(`${API}/api/x/credentials`);
-    const data = await res.json();
-    setCredentials(Array.isArray(data) ? data : []);
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    // Handle OAuth callback result
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('success')) {
-      const username = params.get('username');
-      setMessage({ type: 'success', text: `@${username || '???'} を認証しました` });
-      window.history.replaceState({}, '', '/post/credentials');
-    }
-    if (params.get('error')) {
-      setMessage({ type: 'error', text: `認証エラー: ${params.get('error')}` });
-      window.history.replaceState({}, '', '/post/credentials');
-    }
-    fetchCredentials();
-  }, []);
-
-  const handleAuth = async () => {
-    setAuthLoading(true);
+type Setup = { ready: boolean; missing: string[]; callback_url: string | null };
+function AccountRow({
+  account,
+  onChange,
+  onAuth,
+  onError,
+}: {
+  account: PostingAccount;
+  onChange: () => Promise<void>;
+  onAuth: (kind: PostingKind, id?: string) => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [name, setName] = useState(account.account_name);
+  const [kind, setKind] = useState<PostingKind>(
+    account.posting_kind || "store",
+  );
+  const [busy, setBusy] = useState(false);
+  const [disconnect, setDisconnect] = useState(false);
+  const [message, setMessage] = useState("");
+  const act = async (action: () => Promise<unknown>, success: string) => {
+    setBusy(true);
+    setMessage("");
+    onError("");
     try {
-      const res = await fetch(`${API}/api/x/oauth/authorize`);
-      const { url } = await res.json();
-      window.location.href = url;
-    } catch (e: any) {
-      setMessage({ type: 'error', text: `認証開始エラー: ${e.message}` });
-      setAuthLoading(false);
-    }
-  };
-
-  const handleVerify = async (id: string) => {
-    setVerifying(id);
-    try {
-      const res = await fetch(`${API}/api/x/credentials/${id}/verify`, { method: 'POST' });
-      const data = await res.json();
-      if (data.verified) {
-        setMessage({ type: 'success', text: `@${data.user.username} の認証を確認しました` });
-      } else {
-        setMessage({ type: 'error', text: `認証失敗: ${data.error}` });
-      }
-      await fetchCredentials();
-    } catch (e: any) {
-      setMessage({ type: 'error', text: `エラー: ${e.message}` });
+      await action();
+      await onChange();
+      setMessage(success);
+    } catch (e) {
+      onError((e as Error).message);
     } finally {
-      setVerifying(null);
+      setBusy(false);
+      setDisconnect(false);
     }
   };
-
-  const handleSetDefault = async (id: string) => {
-    setSettingDefault(id);
-    try {
-      await fetch(`${API}/api/x/credentials/${id}/set-default`, { method: 'POST' });
-      await fetchCredentials();
-    } finally {
-      setSettingDefault(null);
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('この認証情報を削除しますか？')) return;
-    await fetch(`${API}/api/x/credentials/${id}`, { method: 'DELETE' });
-    await fetchCredentials();
-  };
-
-  const statusBadge = (status: string) => {
-    switch (status) {
-      case 'active': return <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-600">active</span>;
-      case 'expired': return <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-600">expired</span>;
-      case 'revoked': return <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-600">revoked</span>;
-      default: return <span className="text-xs px-2 py-0.5 rounded-full bg-gray-500/20 text-gray-600">{status}</span>;
-    }
-  };
-
-  const tokenStatus = (expiresAt: string | null) => {
-    if (!expiresAt) return null;
-    const diff = new Date(expiresAt).getTime() - Date.now();
-    if (diff < 0) return <span className="text-xs text-red-500">トークン期限切れ</span>;
-    if (diff < 10 * 60 * 1000) return <span className="text-xs text-yellow-500">まもなく期限切れ</span>;
-    const hours = Math.floor(diff / (60 * 60 * 1000));
-    const mins = Math.floor((diff % (60 * 60 * 1000)) / (60 * 1000));
-    return <span className="text-xs text-text-secondary">トークン有効: {hours}h {mins}m</span>;
-  };
-
-  const defaultCred = credentials.find(c => c.is_default);
-
   return (
-    <div>
-      <Link href="/post" className="text-sm text-text-secondary hover:text-text-primary transition-colors mb-1 inline-block">&larr; X投稿管理</Link>
-      <h1 className="text-2xl font-bold mb-2">X認証情報管理</h1>
-      <p className="text-text-secondary text-sm mb-4">
-        投稿に使用するXアカウントを管理します。
-        「Xアカウントを認証」ボタンで、Xにログインして認証するだけでアカウントが追加されます。
-      </p>
-
-      {/* Message */}
-      {message && (
-        <div className={`rounded-xl px-4 py-3 mb-6 text-sm ${
-          message.type === 'success'
-            ? 'bg-green-500/10 border border-green-500/30 text-green-600'
-            : 'bg-red-500/10 border border-red-500/30 text-red-600'
-        }`}>
-          {message.text}
-          <button onClick={() => setMessage(null)} className="ml-2 opacity-60 hover:opacity-100">x</button>
+    <article className="rounded-xl border border-border-card bg-white/40 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <a
+            href={"https://x.com/" + account.x_username}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-semibold underline-offset-4 hover:underline"
+          >
+            @{account.x_username}
+          </a>
+          <p className="mt-1 text-xs text-text-secondary">
+            {account.status === "active"
+              ? "接続済み"
+              : account.status === "revoked"
+                ? "接続解除済み"
+                : "再認証が必要です"}
+            {account.last_verified_at
+              ? " · 最終確認 " + postingDate(account.last_verified_at)
+              : ""}
+          </p>
         </div>
-      )}
-
-      {/* Current default indicator */}
-      {defaultCred && (
-        <div className="bg-text-primary/10 border border-text-primary/30 rounded-xl px-4 py-3 mb-6 flex items-center gap-2">
-          <span className="text-sm">📌 現在のデフォルト:</span>
-          <span className="font-semibold">{defaultCred.account_name}</span>
-          {defaultCred.x_username && <span className="text-text-secondary text-sm">(@{defaultCred.x_username})</span>}
-          <span className="text-text-secondary text-xs ml-auto">プラン生成時に自動で使用されます</span>
-        </div>
-      )}
-
-      {/* Auth Button */}
-      <div className="mb-8">
-        <button
-          onClick={handleAuth}
-          disabled={authLoading}
-          className="px-6 py-3 bg-text-primary text-white rounded-xl text-base font-semibold hover:opacity-80 disabled:opacity-50 transition-opacity"
-        >
-          {authLoading ? '認証画面に移動中...' : 'Xアカウントを認証'}
-        </button>
-        <p className="text-xs text-text-secondary mt-2">
-          ボタンを押すとXのログイン画面に移動します。認証後、自動的にこの画面に戻ります。
-        </p>
+        <span className="rounded-md bg-card-bg px-2 py-1 text-xs">
+          {account.posting_kind
+            ? POSTING_KIND_LABELS[account.posting_kind] + "用"
+            : "用途が未設定"}
+        </span>
       </div>
-
-      {/* Credentials List */}
+      <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_140px_auto]">
+        <label className="space-y-1 text-sm">
+          <span>表示名</span>
+          <input
+            className={inputClass}
+            value={name}
+            maxLength={80}
+            disabled={busy}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <label className="space-y-1 text-sm">
+          <span>用途</span>
+          <select
+            className={inputClass}
+            value={kind}
+            disabled={busy}
+            onChange={(e) => setKind(e.target.value as PostingKind)}
+          >
+            <option value="store">店頭</option>
+            <option value="postal">郵送</option>
+          </select>
+        </label>
+        <button
+          className={secondaryClass + " self-end"}
+          disabled={
+            busy ||
+            !name.trim() ||
+            (name === account.account_name && kind === account.posting_kind)
+          }
+          onClick={() =>
+            void act(
+              () =>
+                requestPosting("/x/credentials/" + account.id, {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    account_name: name,
+                    posting_kind: kind,
+                  }),
+                }),
+              "設定を保存しました",
+            )
+          }
+        >
+          設定を保存
+        </button>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          className={secondaryClass}
+          disabled={busy}
+          onClick={() => void onAuth(account.posting_kind || kind, account.id)}
+        >
+          再認証
+        </button>
+        <button
+          className={secondaryClass}
+          disabled={busy || account.status !== "active"}
+          onClick={() =>
+            void act(
+              () =>
+                requestPosting("/x/credentials/" + account.id + "/verify", {
+                  method: "POST",
+                  body: "{}",
+                }),
+              "接続を確認しました",
+            )
+          }
+        >
+          接続を確認
+        </button>
+        {account.status !== "revoked" && (
+          <button
+            className={secondaryClass}
+            disabled={busy}
+            onClick={() => setDisconnect(true)}
+          >
+            接続を解除
+          </button>
+        )}
+      </div>
+      {disconnect && (
+        <div className="mt-3 rounded-lg border border-border-card p-3 text-sm">
+          <p>このアカウントでの投稿を停止します。投稿履歴は残ります。</p>
+          <div className="mt-3 flex gap-2">
+            <button
+              className={secondaryClass}
+              disabled={busy}
+              onClick={() => setDisconnect(false)}
+            >
+              キャンセル
+            </button>
+            <button
+              className={buttonClass}
+              disabled={busy}
+              onClick={() =>
+                void act(
+                  () =>
+                    requestPosting("/x/credentials/" + account.id, {
+                      method: "DELETE",
+                    }),
+                  "接続を解除しました",
+                )
+              }
+            >
+              接続を解除する
+            </button>
+          </div>
+        </div>
+      )}
+      {message && (
+        <p role="status" className="mt-3 text-sm text-green-800">
+          {message}
+        </p>
+      )}
+    </article>
+  );
+}
+export default function CredentialsPage() {
+  const [accounts, setAccounts] = useState<PostingAccount[]>([]);
+  const [setup, setSetup] = useState<Setup | null>(null);
+  const [kind, setKind] = useState<PostingKind>("store");
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const reload = async () => {
+    const [a, s] = await Promise.all([
+      requestPosting<PostingAccount[]>("/x/credentials"),
+      requestPosting<Setup>("/x/setup"),
+    ]);
+    setAccounts(a);
+    setSetup(s);
+  };
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("error")) setError(query.get("error")!);
+    if (query.get("success"))
+      setMessage("@" + query.get("success") + " を接続しました");
+    if (query.size)
+      window.history.replaceState(null, "", window.location.pathname);
+    reload()
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+  const authorize = async (purpose: PostingKind, id?: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await requestPosting<{ url: string }>("/x/oauth/authorize", {
+        method: "POST",
+        body: JSON.stringify({ kind: purpose, credential_id: id }),
+      });
+      window.location.assign(data.url);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mx-auto max-w-4xl pb-20">
+      <Link
+        href="/post"
+        className="text-sm text-text-secondary hover:underline"
+      >
+        ← X投稿
+      </Link>
+      <h1 className="page-title mb-2 mt-3 text-2xl">Xアカウント管理</h1>
+      <p className="mb-6 text-sm text-text-secondary">
+        店頭・郵送それぞれのアカウントを登録できます。投稿ごとに送信先を選択します。
+      </p>
+      {error && (
+        <div
+          role="alert"
+          className="mb-4 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800"
+        >
+          {error}
+        </div>
+      )}
+      {message && (
+        <div
+          role="status"
+          className="mb-4 rounded-lg bg-green-50 p-3 text-sm text-green-800"
+        >
+          {message}
+        </div>
+      )}
+      {setup && !setup.ready && (
+        <section className="mb-6 rounded-xl border border-amber-300 bg-amber-50 p-4">
+          <h2 className="font-semibold text-amber-950">初期設定が必要です</h2>
+          <p className="mt-2 text-sm text-amber-950">
+            管理者が次のサーバー設定を登録すると、Xアカウントを接続できます。
+          </p>
+          <ul className="mt-2 list-inside list-disc text-sm text-amber-950">
+            {setup.missing.map((key) => (
+              <li key={key}>{key}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <section className="mb-6 rounded-xl border border-border-card bg-white/40 p-4">
+        <h2 className="mb-3 font-semibold">アカウントを追加</h2>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="space-y-1 text-sm">
+            <span>このアカウントの用途</span>
+            <select
+              className={inputClass}
+              value={kind}
+              disabled={busy}
+              onChange={(e) => setKind(e.target.value as PostingKind)}
+            >
+              <option value="store">店頭買取</option>
+              <option value="postal">郵送買取</option>
+            </select>
+          </label>
+          <button
+            className={buttonClass}
+            disabled={busy || !setup?.ready}
+            onClick={() => void authorize(kind)}
+          >
+            {busy ? "Xを開いています…" : "Xアカウントを接続"}
+          </button>
+        </div>
+        <p className="mt-3 text-xs leading-relaxed text-text-secondary">
+          Xの認証画面で、接続したいアカウントにログインしていることを確認してください。別のアカウントを追加するときは、X側のアカウントを切り替えてから接続します。
+        </p>
+      </section>
       {loading ? (
-        <p className="text-text-secondary">読み込み中...</p>
-      ) : credentials.length === 0 ? (
-        <p className="text-text-secondary">認証済みアカウントはまだありません。上のボタンからXアカウントを認証してください。</p>
+        <p role="status">読み込み中…</p>
       ) : (
         <div className="space-y-4">
-          <h2 className="text-lg font-semibold">認証済みアカウント ({credentials.length})</h2>
-          {credentials.map(cred => (
-            <div
-              key={cred.id}
-              className={`bg-card-bg border rounded-xl p-5 ${
-                cred.is_default ? 'border-text-primary/50' : 'border-border-card'
-              }`}
-            >
-              <div className="flex items-start justify-between">
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="font-semibold text-lg">{cred.account_name}</h3>
-                    {statusBadge(cred.status)}
-                    {cred.is_default && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-text-primary/20 text-text-primary font-semibold">デフォルト</span>
-                    )}
-                  </div>
-                  {cred.x_username && (
-                    <p className="text-text-secondary text-sm">@{cred.x_username}</p>
-                  )}
-                  <div className="mt-2 text-xs text-text-secondary space-y-0.5">
-                    {tokenStatus(cred.token_expires_at)}
-                    {cred.last_verified_at && (
-                      <p>最終確認: {new Date(cred.last_verified_at).toLocaleString('ja-JP')}</p>
-                    )}
-                  </div>
-                </div>
-                <div className="flex gap-2 flex-shrink-0">
-                  {!cred.is_default && (
-                    <button
-                      onClick={() => handleSetDefault(cred.id)}
-                      disabled={settingDefault === cred.id}
-                      className="text-sm px-3 py-1.5 rounded-lg border border-border-card hover:border-text-primary/50 transition-colors disabled:opacity-50"
-                    >
-                      {settingDefault === cred.id ? '設定中...' : 'デフォルトに設定'}
-                    </button>
-                  )}
-                  {cred.status === 'expired' && (
-                    <button
-                      onClick={handleAuth}
-                      className="text-sm px-3 py-1.5 rounded-lg bg-yellow-500/20 text-yellow-600 hover:bg-yellow-500/30"
-                    >
-                      再認証
-                    </button>
-                  )}
-                  <button
-                    onClick={() => handleVerify(cred.id)}
-                    disabled={verifying === cred.id}
-                    className="text-sm px-3 py-1.5 rounded-lg bg-text-primary text-white hover:opacity-80 disabled:opacity-50"
-                  >
-                    {verifying === cred.id ? '確認中...' : '疎通確認'}
-                  </button>
-                  <button
-                    onClick={() => handleDelete(cred.id)}
-                    className="text-sm px-3 py-1.5 rounded-lg text-red-400 hover:bg-red-500/10"
-                  >
-                    削除
-                  </button>
-                </div>
-              </div>
-            </div>
+          {accounts.map((a) => (
+            <AccountRow
+                key={a.id}
+              account={a as PostingAccount}
+              onChange={reload}
+              onAuth={authorize}
+              onError={setError}
+            />
           ))}
+          {!accounts.length && (
+            <p className="text-sm text-text-secondary">
+              登録済みのアカウントはありません。
+            </p>
+          )}
         </div>
+      )}
+      {setup?.callback_url && (
+        <details className="mt-6 text-sm text-text-secondary">
+          <summary className="cursor-pointer">管理者向けの接続情報</summary>
+          <p className="mt-2">
+            X Developer ConsoleのCallback URIには、次のURLを登録してください。
+          </p>
+          <code className="mt-2 block break-all rounded-lg bg-card-bg p-3">
+            {setup.callback_url}
+          </code>
+        </details>
       )}
     </div>
   );

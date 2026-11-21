@@ -15,7 +15,7 @@ type Variable = {
   created_at: string;
 };
 
-const API_URL = '/api/backend';
+const API_URL = '/api/posting';
 
 export default function VariablesPage() {
   const [variables, setVariables] = useState<Variable[]>([]);
@@ -28,7 +28,7 @@ export default function VariablesPage() {
 
   const fetchVariables = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/post/variables`);
+      const res = await fetch(`${API_URL}/post/variables`);
       const data = await res.json();
       setVariables(data);
     } catch (e) {
@@ -44,7 +44,7 @@ export default function VariablesPage() {
     if (!newKey.trim() || !newLabel.trim()) return;
     setSaving(true);
     try {
-      const res = await fetch(`${API_URL}/api/post/variables`, {
+      const res = await fetch(`${API_URL}/post/variables`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -72,7 +72,7 @@ export default function VariablesPage() {
   const handleDelete = async (v: Variable) => {
     if (!confirm(`変数「${v.key}」を削除しますか？`)) return;
     try {
-      const res = await fetch(`${API_URL}/api/post/variables/${v.id}`, { method: 'DELETE' });
+      const res = await fetch(`${API_URL}/post/variables/${v.id}`, { method: 'DELETE' });
       if (!res.ok) {
         const err = await res.json();
         alert(err.error || '削除に失敗しました');
