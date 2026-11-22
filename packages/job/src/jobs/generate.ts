@@ -1,3 +1,4 @@
+import { RunIssues } from '../lib/run-issues.js';
 /**
  * Generate ジョブ — 画像生成パイプライン
  *
@@ -116,11 +117,16 @@ function makeFixedBoxPlans(cards: PreparedCardRow[], totalSlots: number): PagePl
   return plans;
 }
 
-export function planTokyoGalleryPages(cards: PreparedCardRow[], layouts: LayoutTemplateRow[], rules: RuleRow[] = []): PagePlan[] {
+export function planTokyoGalleryPages(cards: PreparedCardRow[], layouts: LayoutTemplateRow[], rules: RuleRow[] = [], report?: RunIssues['report']): PagePlan[] {
   return (['PSA10', 'BOX'] as const).flatMap(type => {
     const group = cards.filter(card => (card.tag === 'BOX' || card.grade === '未開封BOX' || card.grade === 'BOX') === (type === 'BOX'));
     const candidates = layouts.filter(layout => layout.is_active && (layout.slug.startsWith('box_') === (type === 'BOX')));
-    if (group.length && !candidates.length) throw new Error(`東京 ${type} レイアウトがありません`);
+    if (group.length && !candidates.length) {
+      const reason = '東京 ' + type + ' レイアウトがありません';
+      if (!report) throw new Error(reason);
+      for (const card of group) report('エンジニア対応', card.card_name, reason);
+      return [];
+    }
     if (type === 'BOX') return planPages(group.map(card => ({ ...card, tag: 'BOX' })), [], candidates)
       .map((plan, index) => ({ ...plan, label: index ? `BOX-${index + 1}` : 'BOX' }));
     const scopedRules = rules.filter(rule => rule.store === 'manman-akihabara' && group.some(card => card.franchise === rule.franchise))
@@ -198,6 +204,7 @@ export async function runGenerate() {
     );
   }
   console.log(`[generate] Run claim参加: ${run.id}`);
+  const issues = new RunIssues([STORE_NAME, '画像生成', run.id].join(' '));
   const tokyoSnapshot = STORE_NAME === 'manman-akihabara' && !!run.tokyo_snapshot_id;
   const generationStartedAt = new Date();
   // Storage は従来どおり生成日のJSTパスを維持し、画像表示日だけExcel業務日を使う。
@@ -237,10 +244,7 @@ export async function runGenerate() {
           return data?.business_date ?? null;
         },
       });
-    const pelekaConfig = tokyoSnapshot ? {
-      endpoint: await getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_URL'),
-      token: await getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_TOKEN'),
-    } : null;
+
 
     // 価格取得・照合が失敗した場合は、既存画像やページを変更しない。
     const accessToken = tokyoSnapshot ? '' : await getAccessToken();
@@ -261,11 +265,18 @@ export async function runGenerate() {
         if (result.error) throw new Error(`prepared_card 取得失敗: ${result.error.message}`);
         cards = result.data ?? [];
       }
-      if (tokyoSnapshot && cards.some(card => card.price_source !== 'shinsoku' || !card.source_shinsoku_id)) {
-        throw new Error('東京通常RunにShinsoku以外の価格が含まれています');
+      if (tokyoSnapshot) {
+        cards = cards.filter(card => {
+          if (card.price_source === 'shinsoku' && card.source_shinsoku_id) return true;
+          issues.report('エンジニア対応', card.card_name, '東京価格の参照ID・出所を確認できません');
+          return false;
+        });
       }
       if (tokyoSnapshot) {
         const visible = await prepareTokyoRenderableCards(cards);
+        for (const card of cards) if (!visible.buffers.has(card.id)) {
+          issues.report(card.image_url || card.alt_image_url ? 'エンジニア対応' : 'データ修正', card.card_name, '商品画像を取得・検証できません');
+        }
         excludedImageCount += cards.length - visible.cards.length;
         pricedCardsByFranchise.set(franchise, visible.cards);
         for (const [id, bytes] of visible.buffers) tokyoImageBuffers.set(id, bytes);
@@ -281,7 +292,9 @@ export async function runGenerate() {
       const { error } = await supabase.from('run').update({ total_image_ng: excludedImageCount })
         .eq('id', run.id).eq('store', STORE_NAME).eq('generate_claim_token', expectedClaimToken);
       if (error) throw new Error(`画像除外件数の保存失敗: ${error.message}`);
-      if (coverage) assertOriparkCoverage(coverage, [...pricedCardsByFranchise.values()].flat());
+      const renderable = [...pricedCardsByFranchise.values()].flat();
+      if (!renderable.length) throw new Error('掲載可能な商品がすべて欠落しています');
+      if (coverage) assertOriparkCoverage(coverage, renderable, issues.report);
     }
 
     // ---- 2. Storage クリーンアップ ----
@@ -312,6 +325,7 @@ export async function runGenerate() {
     await supabase.from('generated_page').delete().eq('run_id', run.id);
 
     let totalPages = 0;
+    const plannedCardIds = new Set<string>();
     for (const franchise of FRANCHISES) {
       const currentPriceCards = pricedCardsByFranchise.get(franchise) ?? [];
       if (currentPriceCards.length === 0) continue;
@@ -327,32 +341,36 @@ export async function runGenerate() {
       if (validCards.length === 0) continue;
 
       // asset_profile + rule 取得（store フィルタ）
-      const { data: profileArr } = await supabase
+      const { data: profileArr, error: planningProfileError } = await supabase
         .from('asset_profile')
         .select('*')
         .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .limit(1)
         .returns<AssetProfileRow[]>();
+      if (planningProfileError) throw new Error('asset_profile 取得失敗: ' + planningProfileError.message);
       const profile = profileArr?.[0] ?? null;
-      if (!profile) continue;
+      if (!profile?.layout_config) { issues.report('エンジニア対応', franchise, 'asset_profile が未登録です'); continue; }
 
-      const { data: rules } = await supabase
+      const { data: rules, error: rulesError } = await supabase
         .from('rule')
         .select('*')
         .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .returns<RuleRow[]>();
+      if (rulesError) throw new Error('rule 取得失敗: ' + rulesError.message);
 
-      const { data: layouts } = await supabase
+      const { data: layouts, error: planningLayoutError } = await supabase
         .from('layout_template')
         .select('*')
         .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .eq('kind', 'store')
         .returns<LayoutTemplateRow[]>();
+      if (planningLayoutError) throw new Error('layout_template 取得失敗: ' + planningLayoutError.message);
       if (!layouts || layouts.length === 0) {
-        throw new Error(`layout_template が未登録です (${STORE_NAME}/${franchise})。upload-manman-store-templates を先に実行してください`);
+        issues.report('エンジニア対応', franchise, 'レイアウトが未登録です');
+        continue;
       }
 
       // BOX/PSA を分離してそれぞれページプランを生成
@@ -363,7 +381,7 @@ export async function runGenerate() {
       const boxPlans = tokyoSnapshot ? [] : makeFixedBoxPlans(boxCards, profile.total_slots);
       let pagePlans: PagePlan[];
       try {
-        pagePlans = tokyoSnapshot ? planTokyoGalleryPages(validCards, layouts, rules ?? []) : [...psaPlans, ...boxPlans];
+        pagePlans = tokyoSnapshot ? planTokyoGalleryPages(validCards, layouts, rules ?? [], issues.report) : [...psaPlans, ...boxPlans];
       } catch (error) {
         if (tokyoSnapshot && run.order_list_import_id) await captureTokyoRepairFixture({ runId: run.id,
           importId: run.order_list_import_id, snapshotId: run.tokyo_snapshot_id ?? null, stage: 'generate_plan', error,
@@ -372,6 +390,13 @@ export async function runGenerate() {
       }
       console.log(`[generate]   ${franchise}: PSA ${psaCards.length}枚, BOX ${boxCards.length}枚 / ${pagePlans.length}ページ`);
 
+      if (tokyoSnapshot) {
+        for (const plan of pagePlans) for (const id of plan.cardIds) {
+          if (plannedCardIds.has(id)) throw new Error('商品が複数のページに重複しています: ' + id);
+          plannedCardIds.add(id);
+        }
+        for (const card of validCards) if (!plannedCardIds.has(card.id)) issues.report('エンジニア対応', card.card_name, 'ページ割付から除外されました');
+      }
       if (pagePlans.length === 0) continue;
 
       const pageInserts: GeneratedPageInsert[] = pagePlans.map((plan, index) => ({
@@ -410,7 +435,7 @@ export async function runGenerate() {
       console.log(`[generate] === ${franchise} ===`);
 
       // generated_page を取得（↑で再生成済み）
-      const { data: generatedPages } = await supabase
+      const { data: generatedPages, error: pagesError } = await supabase
         .from('generated_page')
         .select('*')
         .eq('run_id', run.id)
@@ -418,6 +443,7 @@ export async function runGenerate() {
         .order('page_index', { ascending: true })
         .returns<GeneratedPageRow[]>();
 
+      if (pagesError) throw new Error('生成ページ取得失敗: ' + pagesError.message);
       if (!generatedPages || generatedPages.length === 0) {
         console.log(`[generate]   → ページ 0件（スキップ）`);
         continue;
@@ -458,7 +484,7 @@ export async function runGenerate() {
       const templateCache = new Map<string, Buffer>();
       const cardBackCache = new Map<string, Buffer>();
       await Promise.all([...layoutById.values()].map(async (layoutTemplate) => {
-        const [template, cardBack] = await Promise.all([
+        const assets = await Promise.all([
           downloadTemplateAsset({
             supabase,
             storagePath: layoutTemplate.template_storage_path,
@@ -473,7 +499,9 @@ export async function runGenerate() {
             accessToken,
             label: `${franchise}/${layoutTemplate.slug} カード裏`,
           }),
-        ]);
+        ]).catch(error => { issues.report('エンジニア対応', layoutTemplate.slug, String(error)); return null; });
+        if (!assets) return;
+        const [template, cardBack] = assets;
         templateCache.set(layoutTemplate.id, template);
         cardBackCache.set(layoutTemplate.id, cardBack);
       }));
@@ -581,6 +609,7 @@ export async function runGenerate() {
         const usesLegacyBoxAssets = isBoxPage && !tokyoSnapshot;
         if (!layoutTemplate && !usesLegacyBoxAssets) {
           const errMsg = `layout_template が未設定: page_id=${generatedPage.id}`;
+          issues.report('エンジニア対応', franchise + ' ' + label, errMsg);
           console.error(`[generate]     ${errMsg}`);
           await supabase.from('generated_page').update({
             status: 'failed',
@@ -596,6 +625,7 @@ export async function runGenerate() {
         const currentCardBack = usesLegacyBoxAssets ? boxCardBackBuffer : cardBackCache.get(layoutTemplate!.id);
         if (!currentTemplate || !currentCardBack) {
           const errMsg = `テンプレートキャッシュが未設定: ${isBoxPage ? 'BOX' : layoutTemplate!.slug}`;
+          issues.report('エンジニア対応', franchise + ' ' + label, errMsg);
           console.error(`[generate]     ${errMsg}`);
           await supabase.from('generated_page').update({
             status: 'failed',
@@ -716,6 +746,7 @@ export async function runGenerate() {
           console.log(`[generate]     → 生成完了: ${storageKey} (DL=${dlMs}ms, 合成=${composeMs}ms, 計=${Date.now() - tPage}ms)`);
         } catch (composeErr) {
           const errMsg = composeErr instanceof Error ? composeErr.message : String(composeErr);
+          issues.report('エンジニア対応', franchise + ' ' + label, errMsg);
           console.error(`[generate]     → 合成失敗: ${errMsg}`);
           await supabase.from('generated_page').update({
             status: 'failed',
@@ -747,39 +778,38 @@ export async function runGenerate() {
     if (tokyoSnapshot) {
       const { data: finalPages, error } = await supabase.from('generated_page').select('status,card_ids')
         .eq('run_id', run.id).eq('kind', 'store');
-      const expectedIds = [...pricedCardsByFranchise.values()].flat().map(card => card.id);
+      const expectedIds = [...plannedCardIds];
       const actualIds = (finalPages ?? []).flatMap(page => page.card_ids);
-      if (error || !finalPages?.length || finalPages.some(page => page.status !== 'generated')
+      if (error || !finalPages?.length || !finalPages.some(page => page.status === 'generated')
+        || finalPages.some(page => page.status !== 'generated' && page.status !== 'failed')
         || actualIds.length !== expectedIds.length || new Set(actualIds).size !== expectedIds.length
         || expectedIds.some(id => !actualIds.includes(id))) {
         throw new Error('東京通常ギャラリーの全商品・画像生成を確認できません');
       }
-      const payload = await publishCurrentTokyoPelekaCatalog(
-        supabase, run.id, pelekaConfig!.endpoint, pelekaConfig!.token,
-      );
-      console.log(`[generate] Peleka東京カタログ反映完了: ${payload.count}商品 sha256=${payload.productsSha256}`);
-      const postalSnapshot = await fetchTokyoPelekaPostalSnapshot(
-        pelekaConfig!.endpoint,
-        pelekaConfig!.token,
-        { runId: run.id, revision: payload.revision },
-      );
-      const postalPages = await renderTokyoPelekaPostalPages({
-        supabase,
-        runId: run.id,
-        snapshot: postalSnapshot,
-        preparedCards: [...pricedCardsByFranchise.values()].flat(),
-        cardImageBuffers: tokyoImageBuffers,
-        datePath,
-        generationVersion,
-      });
-      totalPages += postalPages;
-      const confirmedPostalSnapshot = await fetchTokyoPelekaPostalSnapshot(
-        pelekaConfig!.endpoint,
-        pelekaConfig!.token,
-        { runId: run.id, revision: payload.revision },
-      );
-      assertTokyoPelekaPostalUnchanged(postalSnapshot, confirmedPostalSnapshot);
-      console.log(`[generate] Peleka東京郵送画像生成完了: ${postalPages}ページ fingerprint=${postalSnapshot.fingerprint}`);
+      try {
+        const endpoint = await getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_URL');
+        const token = await getRequiredEnvOrSecret('PELEKA_TOKYO_CATALOG_TOKEN');
+        const payload = await publishCurrentTokyoPelekaCatalog(supabase, run.id, endpoint, token);
+        const expected = { runId: run.id, revision: payload.revision };
+        const postalSnapshot = await fetchTokyoPelekaPostalSnapshot(endpoint, token, expected, issues.report);
+        const postalPages = await renderTokyoPelekaPostalPages({
+          supabase, runId: run.id, snapshot: postalSnapshot,
+          preparedCards: [...pricedCardsByFranchise.values()].flat(), cardImageBuffers: tokyoImageBuffers,
+          datePath, generationVersion, report: issues.report,
+          publishTogether: async pages => {
+            const confirmed = await fetchTokyoPelekaPostalSnapshot(endpoint, token, expected, issues.report);
+            assertTokyoPelekaPostalUnchanged(postalSnapshot, confirmed);
+            if (pages.length) {
+              const { error } = await supabase.from('generated_page').insert(pages);
+              if (error) throw new Error('東京郵送ページの保存失敗: ' + error.message);
+            }
+          },
+        });
+        totalPages += postalPages;
+        console.log('[generate] Peleka東京郵送画像生成完了: ' + postalPages + 'ページ');
+      } catch (error) {
+        issues.report('エンジニア対応', 'Peleka連携・郵送画像（店頭画像は生成済み）', String(error));
+      }
     }
     // ---- 5. Run 完了更新（claim token一致時だけ） ----
     const completedAt = new Date().toISOString();
@@ -907,5 +937,7 @@ export async function runGenerate() {
     });
 
     throw err;
+  } finally {
+    await issues.notify();
   }
 }

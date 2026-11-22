@@ -1,3 +1,4 @@
+import { RunIssues } from '../lib/run-issues.js';
 /**
  * Render one isolated custom buyback sheet. This path never writes prepared_card,
  * generated_page, or the public Google Sheet.
@@ -119,8 +120,9 @@ export async function runRenderCustomBuyback(): Promise<void> {
   if (sheetError) throw new Error(`カスタム買取表取得失敗: ${sheetError.message}`);
   if (!sheet) throw new Error(`対象のrenderingリビジョンがありません: ${sheetId}/${revision}`);
 
+  const issues = new RunIssues([STORE_NAME, 'カスタム買取表', sheet.id, revision].join(' '));
   try {
-    await renderSheet(supabase, sheet, revision);
+    await renderSheet(supabase, sheet, revision, issues);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await supabase.from('custom_buyback_sheet').update({
@@ -129,10 +131,12 @@ export async function runRenderCustomBuyback(): Promise<void> {
       updated_at: new Date().toISOString(),
     }).eq('id', sheet.id).eq('store', STORE_NAME).eq('revision', revision);
     throw error;
+  } finally {
+    await issues.notify();
   }
 }
 
-async function renderSheet(supabase: Supabase, sheet: CustomBuybackSheetRow, revision: number): Promise<void> {
+async function renderSheet(supabase: Supabase, sheet: CustomBuybackSheetRow, revision: number, issues: RunIssues): Promise<void> {
   const [itemsResult, layoutsResult, profilesResult] = await Promise.all([
     supabase.from('custom_buyback_item').select('*')
       .eq('sheet_id', sheet.id).order('position').returns<CustomBuybackItemRow[]>(),
@@ -151,14 +155,15 @@ async function renderSheet(supabase: Supabase, sheet: CustomBuybackSheetRow, rev
   if (itemsResult.error) throw new Error(`項目取得失敗: ${itemsResult.error.message}`);
   if (layoutsResult.error) throw new Error(`レイアウト取得失敗: ${layoutsResult.error.message}`);
   if (profilesResult.error) throw new Error(`アセット取得失敗: ${profilesResult.error.message}`);
-  const items = itemsResult.data ?? [];
+  const items = (itemsResult.data ?? []).filter(item => {
+    if (Number.isSafeInteger(item.final_price_high) && (item.final_price_high ?? 0) > 0 && Number.isInteger(item.demand) && item.demand > 0) return true;
+    issues.report('データ修正', item.card_name, '表示価格と募集数を確認してください');
+    return false;
+  });
   const layouts = layoutsResult.data ?? [];
   const profile = profilesResult.data?.[0];
   if (items.length === 0) throw new Error('カードが1件もありません');
   if (!profile) throw new Error(`asset_profile がありません: ${sheet.franchise}`);
-  if (items.some((item) => !item.final_price_high || !Number.isInteger(item.demand) || item.demand <= 0)) {
-    throw new Error('表示価格または募集数が未設定の商品があります');
-  }
 
   const plans = planCustomBuybackPages(items.map((item) => item.id), layouts, sheet.product_type);
   if (!plans || plans.length === 0) throw new Error('利用できるレイアウトがありません');
@@ -168,10 +173,12 @@ async function renderSheet(supabase: Supabase, sheet: CustomBuybackSheetRow, rev
   const cardBackCache = new Map<string, Buffer>();
   const rarityIconBuffers = await loadRarityIcons(supabase, items, sheet.franchise, accessToken);
 
+  const rendered: CustomBuybackItemRow[] = [];
   for (const plan of plans) {
     const pageItems = plan.itemIds.map((id) => itemById.get(id)).filter((item): item is CustomBuybackItemRow => Boolean(item));
     if (pageItems.length !== plan.itemIds.length) throw new Error(`ページ${plan.pageIndex + 1}の商品参照が壊れています`);
-    await renderOnePage({
+    const included = await renderOnePage({
+      issues,
       supabase,
       sheet,
       revision,
@@ -184,7 +191,9 @@ async function renderSheet(supabase: Supabase, sheet: CustomBuybackSheetRow, rev
       templateCache,
       cardBackCache,
     });
+    rendered.push(...included);
   }
+  if (!rendered.length) throw new Error('掲載できる商品画像がありません');
 
   const { error: stalePageError } = await supabase.from('custom_buyback_page').delete()
     .eq('sheet_id', sheet.id).gte('page_index', plans.length);
@@ -192,7 +201,7 @@ async function renderSheet(supabase: Supabase, sheet: CustomBuybackSheetRow, rev
 
   // 掲載記録が残せない生成は完了させない（再実行時の重複は無視）
   const { error: logError } = await supabase.from('custom_buyback_render_log')
-    .upsert(buildCustomBuybackRenderLog(sheet, revision, items, new Date().toISOString()),
+    .upsert(buildCustomBuybackRenderLog(sheet, revision, rendered, new Date().toISOString()),
       { onConflict: 'sheet_id,revision,item_id', ignoreDuplicates: true });
   if (logError) throw new Error(`掲載記録の保存失敗: ${logError.message}`);
 
@@ -215,6 +224,7 @@ async function renderSheet(supabase: Supabase, sheet: CustomBuybackSheetRow, rev
 }
 
 type RenderOnePageParams = {
+  issues: RunIssues;
   supabase: Supabase;
   sheet: CustomBuybackSheetRow;
   revision: number;
@@ -228,7 +238,7 @@ type RenderOnePageParams = {
   cardBackCache: Map<string, Buffer>;
 };
 
-async function renderOnePage(params: RenderOnePageParams): Promise<void> {
+async function renderOnePage(params: RenderOnePageParams): Promise<CustomBuybackItemRow[]> {
   const {
     supabase, sheet, revision, pageIndex, layout, items, profile, accessToken,
     rarityIconBuffers, templateCache, cardBackCache,
@@ -305,11 +315,17 @@ async function renderOnePage(params: RenderOnePageParams): Promise<void> {
       if (buffer) cardImageBuffers.set(card.id, buffer);
     });
 
+    const renderable = cards.filter(card => {
+      if (cardImageBuffers.has(card.id)) return true;
+      params.issues.report(card.image_url || card.alt_image_url ? 'エンジニア対応' : 'データ修正', card.card_name, '掲載画像を取得できません');
+      return false;
+    });
+    if (!renderable.length) throw new Error('掲載できる商品画像がありません');
     const dateText = customBuybackDisplayDateText(sheet.display_date);
     const imageBuffer = await composePage({
       templateBuffer,
       cardBackBuffer,
-      cards,
+      cards: renderable,
       layout: layout.layout_config,
       assetProfile: profile,
       gridCols: layout.grid_cols,
@@ -337,7 +353,7 @@ async function renderOnePage(params: RenderOnePageParams): Promise<void> {
       sheet_id: sheet.id,
       page_index: pageIndex,
       layout_template_id: layout.id,
-      item_ids: items.map((item) => item.id),
+      item_ids: renderable.map(card => card.id),
       status: 'generated',
       rendered_revision: revision,
       image_key: storageKey,
@@ -346,6 +362,7 @@ async function renderOnePage(params: RenderOnePageParams): Promise<void> {
       created_at: existing?.created_at ?? new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+    return items.filter(item => cardImageBuffers.has(item.id));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await upsertPage(supabase, {
@@ -361,7 +378,8 @@ async function renderOnePage(params: RenderOnePageParams): Promise<void> {
       created_at: existing?.created_at ?? new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
-    throw new Error(`ページ${pageIndex + 1}: ${message}`);
+    params.issues.report('エンジニア対応', 'ページ ' + (pageIndex + 1), message);
+    return [];
   }
 }
 

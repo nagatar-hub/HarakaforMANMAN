@@ -1,3 +1,4 @@
+import { exclude, type ReportIssue } from './run-issues.js';
 import type { PreparedCardRow } from '@haraka/shared';
 import { fetchWithRetry } from './fetch-with-retry.js';
 
@@ -53,7 +54,7 @@ function nonnegativePrice(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
-export function parseTokyoPelekaPostalSnapshot(value: unknown, expected: { runId: string; revision: number }): TokyoPelekaPostalSnapshot {
+export function parseTokyoPelekaPostalSnapshot(value: unknown, expected: { runId: string; revision: number }, report?: ReportIssue): TokyoPelekaPostalSnapshot {
   const topKeys = ['schemaVersion', 'store', 'runId', 'snapshotId', 'revision', 'businessDate', 'generatedAt',
     'buyPriceDisplayMode', 'boxBuybackEnabled', 'products', 'fingerprint'] as const;
   if (!record(value) || !exactKeys(value, topKeys)) throw new Error('Peleka郵送カタログの形式が不正です');
@@ -73,7 +74,16 @@ export function parseTokyoPelekaPostalSnapshot(value: unknown, expected: { runId
     throw new Error(`Peleka郵送カタログのrun/revisionが一致しません: expected=${expected.runId}/${expected.revision}`);
   }
 
-  const parsedProducts: TokyoPelekaPostalProduct[] = products.map((product, index) => {
+  const blocked = new Set<string>();
+  const seen = new Set<string>();
+  const parsedProducts = products.flatMap((product, index): TokyoPelekaPostalProduct[] => {
+    if (record(product) && typeof product.sourceId === 'string') {
+      if (seen.has(product.sourceId)) {
+        blocked.add(product.sourceId);
+        return exclude(report, 'エンジニア対応', product.sourceId, 'Peleka郵送カタログにsourceId重複があります');
+      }
+      seen.add(product.sourceId);
+    }
     const keys = ['sourceId', 'franchise', 'productType', 'name', 'modelNumber', 'imageUrl', 'priceHigh', 'priceLow'] as const;
     if (!record(product) || !exactKeys(product, keys)
       || typeof product.sourceId !== 'string' || !product.sourceId.trim()
@@ -84,16 +94,11 @@ export function parseTokyoPelekaPostalSnapshot(value: unknown, expected: { runId
       || typeof product.imageUrl !== 'string' || !product.imageUrl.trim()
       || !positivePrice(product.priceHigh) || !nonnegativePrice(product.priceLow)
       || product.priceLow > product.priceHigh) {
-      throw new Error(`Peleka郵送カタログ商品が不正です: index=${index}`);
+      return exclude(report, 'エンジニア対応', 'Peleka郵送', `Peleka郵送カタログ商品が不正です: index=${index}`);
     }
-    return product as TokyoPelekaPostalProduct;
-  });
-  if (!value.boxBuybackEnabled && parsedProducts.some(product => product.productType === 'BOX')) {
-    throw new Error('BOX無効のPeleka郵送カタログにBOX商品が含まれています');
-  }
-  if (new Set(parsedProducts.map(product => product.sourceId)).size !== parsedProducts.length) {
-    throw new Error('Peleka郵送カタログにsourceId重複があります');
-  }
+    if (!value.boxBuybackEnabled && product.productType === 'BOX') return exclude(report, 'エンジニア対応', product.name, 'BOX無効のPeleka郵送カタログにBOX商品が含まれています');
+    return [product as TokyoPelekaPostalProduct];
+  }).filter(product => !blocked.has(product.sourceId));
   const snapshot = { ...value, products: parsedProducts } as TokyoPelekaPostalSnapshot;
   return snapshot;
 }
@@ -102,6 +107,7 @@ export async function fetchTokyoPelekaPostalSnapshot(
   endpoint: string,
   token: string,
   expected: { runId: string; revision: number },
+  report?: ReportIssue,
 ): Promise<TokyoPelekaPostalSnapshot> {
   const url = new URL(endpoint);
   url.searchParams.set('runId', expected.runId);
@@ -111,7 +117,7 @@ export async function fetchTokyoPelekaPostalSnapshot(
     const detail = (await response.text()).slice(0, 500);
     throw new Error(`Peleka郵送カタログ取得失敗: HTTP ${response.status}${detail ? ` ${detail}` : ''}`);
   }
-  return parseTokyoPelekaPostalSnapshot(await response.json(), expected);
+  return parseTokyoPelekaPostalSnapshot(await response.json(), expected, report);
 }
 
 export function assertTokyoPelekaPostalUnchanged(
@@ -128,30 +134,30 @@ function productType(card: PreparedCardRow): 'PSA10' | 'BOX' {
   return card.tag === 'BOX' || card.grade === 'BOX' || card.grade === '未開封BOX' ? 'BOX' : 'PSA10';
 }
 
-export function matchTokyoPelekaPostalProducts(cards: PreparedCardRow[], snapshot: TokyoPelekaPostalSnapshot) {
+export function matchTokyoPelekaPostalProducts(cards: PreparedCardRow[], snapshot: TokyoPelekaPostalSnapshot, report?: ReportIssue) {
   const cardsBySource = new Map<string, PreparedCardRow[]>();
   for (const card of cards) {
     const sourceId = card.source_shinsoku_id?.trim();
     if (!sourceId) continue;
     cardsBySource.set(sourceId, [...(cardsBySource.get(sourceId) ?? []), card]);
   }
-  return snapshot.products.map(product => {
+  return snapshot.products.flatMap(product => {
     const matches = cardsBySource.get(product.sourceId) ?? [];
-    if (matches.length !== 1) throw new Error(`Peleka郵送商品を一意に照合できません: sourceId=${product.sourceId}`);
+    if (matches.length !== 1) return exclude(report, 'エンジニア対応', product.name, `Peleka郵送商品を一意に照合できません: sourceId=${product.sourceId}`);
     const card = matches[0];
     if (card.franchise !== product.franchise || productType(card) !== product.productType
       || card.card_name !== product.name || (card.list_no ?? null) !== product.modelNumber) {
-      throw new Error(`Peleka郵送商品のidentityが一致しません: sourceId=${product.sourceId}`);
+      return exclude(report, 'エンジニア対応', product.name, `Peleka郵送商品のidentityが一致しません: sourceId=${product.sourceId}`);
     }
-    if (!product.imageUrl.trim()) throw new Error(`Peleka郵送商品の画像がありません: sourceId=${product.sourceId}`);
-    return {
+    if (!product.imageUrl.trim()) return exclude(report, 'エンジニア対応', product.name, `Peleka郵送商品の画像がありません: sourceId=${product.sourceId}`);
+    return [{
       ...card,
       image_url: product.imageUrl,
       alt_image_url: null,
       price_high: product.priceHigh,
       price_low: product.priceLow,
       pelekaProduct: product,
-    };
+    }];
   });
 }
 

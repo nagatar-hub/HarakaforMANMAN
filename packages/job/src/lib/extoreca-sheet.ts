@@ -1,3 +1,4 @@
+import type { ReportIssue } from './run-issues.js';
 import { isBuiltInOrderListExclusion, postalProductIdentity } from '@haraka/shared';
 import { blueRocketModelNumber } from './blue-rocket.js';
 import { fetchMetadataAccessToken } from './cloud-run.js';
@@ -37,7 +38,7 @@ function schema(rows: string[][]): { row: number; columns: Record<(typeof requir
   return { row: matches[0].row, columns };
 }
 
-export function parseExtorecaSheet(csv: string, productType: 'BOX' | 'PSA10'): ExtorecaRow[] {
+export function parseExtorecaSheet(csv: string, productType: 'BOX' | 'PSA10', report?: ReportIssue): ExtorecaRow[] {
   const rows = parseCsv(csv);
   const { row: headerRow, columns } = schema(rows);
   const unique = new Map<string, ExtorecaRow | null>();
@@ -47,9 +48,12 @@ export function parseExtorecaSheet(csv: string, productType: 'BOX' | 'PSA10'): E
     const modelNumber = productType === 'PSA10'
       ? blueRocketModelNumber(values[columns['識別番号']] ?? '')
       : null;
-    if (!name || /^例(?:\)|:|\/)/.test(name) || /^※|^注意[:：]?/.test(name) || isBuiltInOrderListExclusion(name)
-      || !Number.isSafeInteger(price) || price <= 0 || price > 100_000_000
-      || (productType === 'PSA10' && !modelNumber)) return;
+    if (!name || /^例(?:\)|:|\/)/.test(name) || /^※|^注意[:：]?/.test(name) || isBuiltInOrderListExclusion(name)) return;
+    if (!Number.isSafeInteger(price) || price <= 0 || price > 100_000_000
+      || (productType === 'PSA10' && !modelNumber)) {
+      report?.('データ修正', 'エクストレカ ' + (headerRow + index + 2) + '行目 ' + name, '希望卸金額・識別番号を確認してください');
+      return;
+    }
     const identity = postalProductIdentity({ franchise: 'Pokemon', name, modelNumber, productType });
     const current = unique.get(identity);
     const parsed = {
@@ -57,7 +61,10 @@ export function parseExtorecaSheet(csv: string, productType: 'BOX' | 'PSA10'): E
       name, modelNumber, price, productType,
     };
     if (current === undefined) unique.set(identity, parsed);
-    else if (current?.price !== price) unique.set(identity, null);
+    else if (current?.price !== price) {
+      report?.('データ修正', 'エクストレカ ' + name, '重複行の価格が一致しません');
+      unique.set(identity, null);
+    }
   });
   return [...unique.values()].filter((row): row is ExtorecaRow => row !== null);
 }
@@ -80,7 +87,7 @@ export function extorecaPsaCandidates(rows: ExtorecaRow[], lineup: LineupCard[])
   return { used, skipped };
 }
 
-async function fetchSheet(url: string, productType: 'BOX' | 'PSA10', isDefault = false): Promise<ExtorecaRow[]> {
+async function fetchSheet(url: string, productType: 'BOX' | 'PSA10', isDefault = false, report?: ReportIssue): Promise<ExtorecaRow[]> {
   let response = await fetchWithRetry(url, { method: 'GET' }, { timeoutMs: 30_000 });
   if (isDefault && (response.status === 401 || response.status === 403)) {
     const token = await fetchMetadataAccessToken();
@@ -89,12 +96,12 @@ async function fetchSheet(url: string, productType: 'BOX' | 'PSA10', isDefault =
     }, { timeoutMs: 30_000 });
   }
   if (!response.ok) throw new Error(`エクストレカ${productType}表の取得失敗: HTTP ${response.status}`);
-  const rows = parseExtorecaSheet(await response.text(), productType);
+  const rows = parseExtorecaSheet(await response.text(), productType, report);
   if (productType === 'BOX' && !rows.length) throw new Error('エクストレカBOX表に価格行がありません');
   return rows;
 }
 
-export const fetchExtorecaBoxSheet = (url = EXTORECA_BOX_SHEET_URL) =>
-  fetchSheet(url, 'BOX', url === EXTORECA_BOX_SHEET_URL);
-export const fetchExtorecaPsaSheet = (url = EXTORECA_PSA_SHEET_URL) =>
-  fetchSheet(url, 'PSA10', url === EXTORECA_PSA_SHEET_URL);
+export const fetchExtorecaBoxSheet = (url = EXTORECA_BOX_SHEET_URL, report?: ReportIssue) =>
+  fetchSheet(url, 'BOX', url === EXTORECA_BOX_SHEET_URL, report);
+export const fetchExtorecaPsaSheet = (url = EXTORECA_PSA_SHEET_URL, report?: ReportIssue) =>
+  fetchSheet(url, 'PSA10', url === EXTORECA_PSA_SHEET_URL, report);

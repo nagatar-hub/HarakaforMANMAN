@@ -77,6 +77,10 @@ export async function sendDiscordNotification(params: DiscordNotification): Prom
     return;
   }
 
+  if (params.color !== COLOR.SUCCESS && !/^【(?:データ修正|エンジニア対応)】/.test(params.title)) {
+    const owner = params.title.includes('オーダーリスト未反映') ? 'データ修正' : 'エンジニア対応';
+    params = { ...params, title: '【' + owner + '】' + params.title };
+  }
   const webhookUrl = await getWebhookUrl();
 
   if (!webhookUrl) {

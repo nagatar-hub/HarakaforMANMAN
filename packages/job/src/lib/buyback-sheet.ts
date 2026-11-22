@@ -1,3 +1,4 @@
+import { RunIssues, type ReportIssue } from './run-issues.js';
 import { createHash } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
@@ -221,6 +222,7 @@ export function buildBuybackSheetValues(params: {
 type TokyoSheetProduct = { id: string; snapshot_id: string; franchise: string; origins: unknown };
 
 export function buildTokyoBuybackSheetValues(params: {
+  report?: ReportIssue;
   runId: string;
   snapshotId: string;
   businessDate: string;
@@ -239,7 +241,9 @@ export function buildTokyoBuybackSheetValues(params: {
   }
   const sourceIds = new Set<string>();
   const outputIds = new Set<string>();
-  const values = params.orderedCardIds.map(id => {
+  const rejectedSources = new Set<string>();
+  const rejectedOutputs = new Set<string>();
+  function buildRow(id: string) {
     const card = cards.get(id);
     const sourceId = card?.source_shinsoku_id?.trim();
     const product = sourceId ? products.get(sourceId) : undefined;
@@ -247,7 +251,7 @@ export function buildTokyoBuybackSheetValues(params: {
       || product.snapshot_id !== params.snapshotId || product.franchise !== card.franchise) {
       throw new Error(`東京シートのRun・snapshot商品が一致しません: ${id}`);
     }
-    if (sourceIds.has(sourceId)) throw new Error(`東京シートの商品IDが重複しています: ${sourceId}`);
+    if (sourceIds.has(sourceId)) { rejectedSources.add(sourceId); throw new Error(`東京シートの商品IDが重複しています: ${sourceId}`); }
     sourceIds.add(sourceId);
     if (!Number.isSafeInteger(card.price_high) || (card.price_high ?? 0) <= 0
       || card.price_source_date !== params.businessDate || !card.card_name.trim()) {
@@ -268,17 +272,26 @@ export function buildTokyoBuybackSheetValues(params: {
     }
     const item = matches[0];
     const outputId = item?.excel_product_id || sourceId;
-    if (outputIds.has(outputId)) throw new Error(`東京シートの出力商品IDが重複しています: ${outputId}`);
+    if (outputIds.has(outputId)) { rejectedOutputs.add(outputId); throw new Error(`東京シートの出力商品IDが重複しています: ${outputId}`); }
     outputIds.add(outputId);
-    return [outputId, card.card_name, card.grade ?? '', item?.expansion ?? '', card.list_no ?? '',
+    return { sourceId, outputId, values: [outputId, card.card_name, card.grade ?? '', item?.expansion ?? '', card.list_no ?? '',
       item?.rarity ?? card.rarity ?? '', effectiveImageUrl(card), card.price_high,
-      params.businessDate.replaceAll('-', '/')];
-  });
+      params.businessDate.replaceAll('-', '/')] };
+  }
+  const values = params.orderedCardIds.flatMap(id => {
+    try { return [buildRow(id)]; }
+    catch (error) {
+      if (!params.report) throw error;
+      params.report('エンジニア対応', cards.get(id)?.card_name ?? id, String(error));
+      return [];
+    }
+  }).filter(row => !rejectedSources.has(row.sourceId) && !rejectedOutputs.has(row.outputId)).map(row => row.values);
+  if (!values.length) throw new Error('東京シートに掲載できる商品がありません');
   return [[...BUYBACK_SHEET_HEADERS], ...values];
 }
 
 async function loadTokyoBuybackSheetValues(
-  supabase: SupabaseClient<Database>, runId: string, snapshotId: string, importId: string, pages: PublishPage[],
+  supabase: SupabaseClient<Database>, runId: string, snapshotId: string, importId: string, pages: PublishPage[], report?: ReportIssue,
 ): Promise<SheetCell[][]> {
   const orderedCardIds = flattenGeneratedStorePageCardIds(pages);
   const { data: snapshot, error } = await supabase.from('tokyo_buyback_snapshot')
@@ -312,7 +325,7 @@ async function loadTokyoBuybackSheetValues(
     if ((data?.length ?? 0) < QUERY_BATCH_SIZE) break;
   }
   return buildTokyoBuybackSheetValues({ runId, snapshotId, importId, businessDate: snapshot.business_date,
-    orderedCardIds, cards, products, orderListItems });
+    orderedCardIds, cards, products, orderListItems, report });
 }
 
 async function fetchPreparedCards(
@@ -428,8 +441,9 @@ export async function publishManmanBuybackSheet(params: {
   if (pageError) throw new Error(`生成ページの取得に失敗しました: ${pageError.message}`);
 
   if (STORE_NAME === 'manman-akihabara' && run.tokyo_snapshot_id) {
+    const issues = new RunIssues('東京満満 買取表 ' + params.runId);
     const values = await loadTokyoBuybackSheetValues(params.supabase, params.runId, run.tokyo_snapshot_id,
-      orderListImport.id, pages ?? []);
+      orderListImport.id, (pages ?? []).filter(page => page.status !== 'failed'), issues.report).finally(() => issues.notify());
     if (await findLatestRunId() !== params.runId) {
       console.log(`[buyback-sheet] skipped stale Tokyo write run=${params.runId}`);
       return { status: 'skipped', rowCount: 0, contentHash: null, spreadsheetId };
