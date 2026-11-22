@@ -532,7 +532,7 @@ async function _runRegeneratePage(
     const message = sheetError instanceof Error ? sheetError.message : String(sheetError);
     console.error(`[regenerate-page] Google Sheet更新失敗（再生成画像は完了状態を維持）: ${message}`);
     if (tokyoSnapshot) await sendDiscordNotification({
-      title: '🟡 東京満満：再生成後のGoogle Sheet更新失敗',
+      title: '🟡 再生成後のGoogle Sheet更新失敗',
       description: '買取表画像の再生成は完了しています。シート更新だけ再実行できます。',
       color: COLOR.WARNING,
       fields: [{ name: 'Run', value: page.run_id }, { name: 'エラー', value: message.slice(0, 1024) }],
