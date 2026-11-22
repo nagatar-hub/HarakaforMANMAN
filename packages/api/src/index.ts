@@ -11,7 +11,8 @@ import { postTemplateRoutes } from './routes/post-templates.js';
 import { postVariableRoutes } from './routes/post-variables.js';
 import { postBannerRoutes } from './routes/post-banners.js';
 import { xCredentialRoutes } from './routes/x-credentials.js';
-import { postPlanRoutes } from './routes/post-plans.js';
+import { postingRoutes } from './routes/posting.js';
+import { postingAccess } from './lib/posting-access.js';
 import { storeConfigRoutes } from './routes/store-config.js';
 import { customBuybackRoutes } from './routes/custom-buyback.js';
 import { orderListImportRoutes } from './routes/order-list-imports.js';
@@ -70,6 +71,9 @@ app.use('*', async (c, next) => {
   }
 });
 
+app.use('/api/x/*', postingAccess);
+app.use('/api/post/*', postingAccess);
+app.use('/api/posting/*', postingAccess);
 app.route('/api', healthRoutes);
 app.route('/api', ruleRoutes);
 app.route('/api', galleryRoutes);
@@ -80,7 +84,7 @@ app.route('/api', postTemplateRoutes);
 app.route('/api', postVariableRoutes);
 app.route('/api', postBannerRoutes);
 app.route('/api', xCredentialRoutes);
-app.route('/api', postPlanRoutes);
+app.route('/api', postingRoutes);
 app.route('/api', storeConfigRoutes);
 app.route('/api', customBuybackRoutes);
 app.route('/api', orderListImportRoutes);

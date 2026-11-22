@@ -8,7 +8,7 @@ import {
 } from '@/lib/operator-auth';
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {
-  if (!operatorAuthRequiredFromEnv()) {
+  if (!operatorAuthRequiredFromEnv() && !request.nextUrl.pathname.startsWith('/post')) {
     return NextResponse.next();
   }
 
