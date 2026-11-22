@@ -341,30 +341,33 @@ export async function runGenerate() {
       if (validCards.length === 0) continue;
 
       // asset_profile + rule 取得（store フィルタ）
-      const { data: profileArr } = await supabase
+      const { data: profileArr, error: planningProfileError } = await supabase
         .from('asset_profile')
         .select('*')
         .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .limit(1)
         .returns<AssetProfileRow[]>();
+      if (planningProfileError) throw new Error('asset_profile 取得失敗: ' + planningProfileError.message);
       const profile = profileArr?.[0] ?? null;
-      if (!profile) { issues.report('エンジニア対応', franchise, 'asset_profile が未登録です'); continue; }
+      if (!profile?.layout_config) { issues.report('エンジニア対応', franchise, 'asset_profile が未登録です'); continue; }
 
-      const { data: rules } = await supabase
+      const { data: rules, error: rulesError } = await supabase
         .from('rule')
         .select('*')
         .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .returns<RuleRow[]>();
+      if (rulesError) throw new Error('rule 取得失敗: ' + rulesError.message);
 
-      const { data: layouts } = await supabase
+      const { data: layouts, error: planningLayoutError } = await supabase
         .from('layout_template')
         .select('*')
         .eq('store', STORE_NAME)
         .eq('franchise', franchise)
         .eq('kind', 'store')
         .returns<LayoutTemplateRow[]>();
+      if (planningLayoutError) throw new Error('layout_template 取得失敗: ' + planningLayoutError.message);
       if (!layouts || layouts.length === 0) {
         issues.report('エンジニア対応', franchise, 'レイアウトが未登録です');
         continue;
@@ -432,7 +435,7 @@ export async function runGenerate() {
       console.log(`[generate] === ${franchise} ===`);
 
       // generated_page を取得（↑で再生成済み）
-      const { data: generatedPages } = await supabase
+      const { data: generatedPages, error: pagesError } = await supabase
         .from('generated_page')
         .select('*')
         .eq('run_id', run.id)
@@ -440,6 +443,7 @@ export async function runGenerate() {
         .order('page_index', { ascending: true })
         .returns<GeneratedPageRow[]>();
 
+      if (pagesError) throw new Error('生成ページ取得失敗: ' + pagesError.message);
       if (!generatedPages || generatedPages.length === 0) {
         console.log(`[generate]   → ページ 0件（スキップ）`);
         continue;

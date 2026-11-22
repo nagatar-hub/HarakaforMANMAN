@@ -98,6 +98,7 @@ export async function renderTokyoPelekaPostalPages(params: {
       params.supabase.from('rule').select('*').eq('store', 'manman-akihabara').eq('franchise', franchise),
     ]);
     const profile = (profiles?.[0] ?? null) as AssetProfileRow | null;
+    if (!profile && !profileError && params.report) { params.report('エンジニア対応', franchise, '東京郵送のasset_profileがありません'); continue; }
     if (profileError || !profile) throw new Error(`東京郵送 asset_profile 取得失敗 (${franchise}): ${profileError?.message ?? '該当なし'}`);
     if (layoutError) throw new Error(`東京郵送 layout_template 取得失敗 (${franchise}): ${layoutError.message}`);
     if (ruleError) throw new Error(`東京郵送 rule 取得失敗 (${franchise}): ${ruleError.message}`);
@@ -110,8 +111,13 @@ export async function renderTokyoPelekaPostalPages(params: {
       const postal = layouts.filter(layout => layout.kind === 'postal' && matchesType(layout));
       return postal.length ? postal : layouts.filter(layout => layout.kind === 'store' && matchesType(layout));
     });
-    const plans = planTokyoPelekaPostalPages(cards, selectedLayouts, (rules ?? []) as RuleRow[]);
-    assertExactTokyoPelekaPostalCoverage(cards.map(card => card.id), plans);
+    const publishable = cards.filter(card => {
+      if (!params.report || selectedLayouts.some(layout => layout.slug.startsWith('box_') === isBox(card))) return true;
+      params.report('エンジニア対応', card.card_name, '東京郵送のレイアウトがありません');
+      return false;
+    });
+    const plans = planTokyoPelekaPostalPages(publishable, selectedLayouts, (rules ?? []) as RuleRow[]);
+    assertExactTokyoPelekaPostalCoverage(publishable.map(card => card.id), plans);
     const inserts: GeneratedPageInsert[] = plans.map((plan, pageIndex) => ({
       ...(params.publishTogether ? { id: randomUUID() } : {}),
       run_id: params.runId,
@@ -160,15 +166,25 @@ export async function renderTokyoPelekaPostalPages(params: {
         const cardImages = new Map<string, Buffer>();
         for (const card of orderedCards) {
           const bytes = params.cardImageBuffers?.get(card.id) ?? downloadedById.get(card.id);
-          if (!bytes) throw new Error(`Peleka郵送商品の画像取得失敗: sourceId=${card.pelekaProduct.sourceId}`);
+          if (!bytes) {
+            if (!params.report) throw new Error('Peleka郵送商品の画像取得失敗: sourceId=' + card.pelekaProduct.sourceId);
+            params.report('エンジニア対応', card.card_name, 'Peleka郵送商品の画像取得失敗');
+            continue;
+          }
           try { await sharp(bytes, { limitInputPixels: 25_000_000 }).metadata(); }
-          catch { throw new Error(`Peleka郵送商品の画像が不正です: sourceId=${card.pelekaProduct.sourceId}`); }
+          catch {
+            if (!params.report) throw new Error('Peleka郵送商品の画像が不正です: sourceId=' + card.pelekaProduct.sourceId);
+            params.report('エンジニア対応', card.card_name, 'Peleka郵送商品の画像が不正です');
+            continue;
+          }
           cardImages.set(card.id, bytes);
         }
+        const renderable = orderedCards.filter(card => cardImages.has(card.id));
+        if (!renderable.length) throw new Error('郵送ページに掲載できる商品がありません');
         const composed = await composePage({
           templateBuffer: assets.template,
           cardBackBuffer: assets.back,
-          cards: orderedCards,
+          cards: renderable,
           layout: layout.layout_config,
           assetProfile: profile,
           gridCols: layout.grid_cols,
@@ -193,7 +209,8 @@ export async function renderTokyoPelekaPostalPages(params: {
           status: 'generated', image_key: storageKey, image_url: publicUrl.publicUrl, error_message: null,
         } as const;
         if (params.publishTogether) {
-          stagedPages.push({ ...page, ...completed });
+          stagedPages.push({ ...page, ...completed, card_ids: renderable.map(card => card.id),
+            peleka_snapshot: pageTokyoPelekaSnapshot(params.snapshot, renderable.map(card => card.pelekaProduct)) });
           continue;
         }
         const { error: updateError } = await params.supabase.from('generated_page').update(completed).eq('id', page.id).eq('run_id', params.runId);
