@@ -9,6 +9,9 @@
 // 定数
 // ---------------------------------------------------------------------------
 
+import { STORE_NAME } from './store.js';
+
+const STORE_LABELS: Record<string, string> = { oripark: 'オリパーク', manman: '満満', 'manman-akihabara': '東京満満' };
 const DISCORD_TIMEOUT_MS = 10_000;
 
 export const COLOR = {
@@ -72,26 +75,27 @@ async function getWebhookUrl(): Promise<string | null> {
  * - 失敗時: console.warn のみ。ジョブは続行。
  */
 export async function sendDiscordNotification(params: DiscordNotification): Promise<void> {
-  if (['1', 'true'].includes(process.env.DISCORD_NOTIFICATIONS_DISABLED?.trim().toLowerCase() ?? '')) {
-    console.log(`[discord] 通知を明示的にスキップ: ${params.title}`);
-    return;
-  }
-
   if (params.color !== COLOR.SUCCESS && !/^【(?:データ修正|エンジニア対応)】/.test(params.title)) {
     const owner = params.title.includes('オーダーリスト未反映') ? 'データ修正' : 'エンジニア対応';
     params = { ...params, title: '【' + owner + '】' + params.title };
   }
+  const title = `【${STORE_LABELS[STORE_NAME] ?? STORE_NAME}】${params.title}`.slice(0, 256);
+  if (['1', 'true'].includes(process.env.DISCORD_NOTIFICATIONS_DISABLED?.trim().toLowerCase() ?? '')) {
+    console.log(`[discord] 通知を明示的にスキップ: ${title}`);
+    return;
+  }
+
   const webhookUrl = await getWebhookUrl();
 
   if (!webhookUrl) {
-    console.log(`[discord] Webhook URL 未設定、通知スキップ: ${params.title}`);
+    console.log(`[discord] Webhook URL 未設定、通知スキップ: ${title}`);
     return;
   }
 
   const payload = {
     embeds: [
       {
-        title: params.title,
+        title,
         description: params.description,
         color: params.color,
         fields: params.fields,
