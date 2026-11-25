@@ -49,6 +49,35 @@ const isTokyoBusinessDate = (value: unknown, businessDate: unknown): boolean => 
   return Number.isFinite(date.getTime()) && tokyoBusinessDate(date) === businessDate;
 };
 
+function getRecordedComparison(product: { selected_high_source: unknown; selected_low_source: unknown }, productOrigins: Origin[]): GalleryCardPricing | null {
+  const comparisonRows = productOrigins.flatMap(origin => {
+    const store = tokyoOriginStoreLabel(origin);
+    const rawPrice = price(origin.rawPrice);
+    const highRate = rate(origin.highRate);
+    const highPrice = price(origin.highPrice);
+    const lowRate = rate(origin.lowRate);
+    const lowPrice = typeof origin.lowPrice === 'number' && Number.isSafeInteger(origin.lowPrice)
+      && origin.lowPrice >= 0 && origin.lowPrice <= 100_000_000 ? origin.lowPrice : null;
+    return store && rawPrice !== null && highRate !== null && highPrice !== null && lowRate !== null && lowPrice !== null
+      ? [{ store, rawPrice, highRate, highPrice, lowRate, lowPrice,
+        selectedHigh: origin.source === product.selected_high_source,
+        selectedLow: origin.source === product.selected_low_source,
+        excluded: origin.excluded === true }] : [];
+  });
+  if (comparisonRows.length && comparisonRows.some(row => row.selectedHigh) && comparisonRows.some(row => row.selectedLow)) {
+    const high = comparisonRows.find(row => row.selectedHigh)!;
+    const low = comparisonRows.find(row => row.selectedLow)!;
+    const pricing: GalleryCardPricing = {
+      listings: comparisonRows.map(row => ({ store: row.store, price: row.rawPrice })),
+      adopted: { store: high.store, price: high.rawPrice },
+      comparison: { rows: comparisonRows, high: { store: high.store, price: high.highPrice },
+        low: { store: low.store, price: low.lowPrice } },
+    };
+    return pricing;
+  }
+  return null;
+}
+
 /** Use each card's immutable generation snapshot, never today's catalog or a name match. */
 export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[]): Promise<Map<string, GalleryCardPricing>> {
   const result = new Map(cards.map(card => [card.id, { listings: [], adopted: null } as GalleryCardPricing]));
@@ -60,21 +89,31 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
   const snapshotIds = [...new Set((runs ?? []).map(run => run.tokyo_snapshot_id).filter(Boolean))];
   if (!snapshotIds.length) return result;
   const { data: snapshots, error: snapshotError } = await db.from('tokyo_buyback_snapshot')
-    .select('id,checker_run_id,checker_source_store,order_list_import_id,business_date,report')
+    .select('id,checker_run_id,checker_source_store,order_list_import_id,business_date,price_sources:report->price_sources')
     .eq('store', 'manman-akihabara').in('id', snapshotIds);
   if (snapshotError) throw new Error(snapshotError.message);
-  for (const snapshot of snapshots ?? []) {
-    const report = object(snapshot.report);
+  async function loadSnapshot(snapshot: NonNullable<typeof snapshots>[number]) {
     const snapshotCards = cards.filter(card => runSnapshots.get(card.run_id) === snapshot.id);
     const ids = [...new Set(snapshotCards.map(card => card.source_shinsoku_id).filter(Boolean))];
-    if (!ids.length) continue;
+    if (!ids.length) return;
     const { data: products, error: productError } = await db.from('tokyo_buyback_product')
       .select('id,source_price,price_high,price_low,selected_high_source,selected_low_source,origins')
       .eq('snapshot_id', snapshot.id).in('id', ids);
     if (productError) throw new Error(productError.message);
     const origins = (row: { origins: unknown }): Origin[] => Array.isArray(row.origins)
       ? row.origins.map(value => object(value) as Origin) : [];
-    const allOrigins = (products ?? []).flatMap(origins);
+    // Current snapshots contain every price used for the comparison. Only legacy
+    // products need the source-specific lookups below.
+    const legacyProducts = (products ?? []).filter(product => {
+      const recorded = getRecordedComparison(product, origins(product));
+      if (!recorded) return true;
+      for (const card of snapshotCards) {
+        if (card.source_shinsoku_id === product.id) result.set(card.id, recorded);
+      }
+      return false;
+    });
+    if (!legacyProducts.length) return;
+    const allOrigins = legacyProducts.flatMap(origins);
     let kecakImport: { id: string; business_date: string } | null = null;
     if (snapshot.order_list_import_id && allOrigins.some(origin => origin.source === 'kecak')) {
       const { data, error } = await db.from('order_list_import').select('id,business_date')
@@ -122,36 +161,10 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
         if ((data?.length ?? 0) < 1000) break;
       }
     }
-    const priceSources = object(report.price_sources);
-    for (const product of products ?? []) {
+    const priceSources = object(snapshot.price_sources);
+    for (const product of legacyProducts) {
       const provenance = object(priceSources[product.id]);
       const productOrigins = origins(product);
-      const comparisonRows = productOrigins.flatMap(origin => {
-        const store = tokyoOriginStoreLabel(origin);
-        const rawPrice = price(origin.rawPrice);
-        const highRate = rate(origin.highRate);
-        const highPrice = price(origin.highPrice);
-        const lowRate = rate(origin.lowRate);
-        const lowPrice = typeof origin.lowPrice === 'number' && Number.isSafeInteger(origin.lowPrice)
-          && origin.lowPrice >= 0 && origin.lowPrice <= 100_000_000 ? origin.lowPrice : null;
-        return store && rawPrice !== null && highRate !== null && highPrice !== null && lowRate !== null && lowPrice !== null
-          ? [{ store, rawPrice, highRate, highPrice, lowRate, lowPrice,
-            selectedHigh: origin.source === product.selected_high_source,
-            selectedLow: origin.source === product.selected_low_source,
-            excluded: origin.excluded === true }] : [];
-      });
-      if (comparisonRows.length && comparisonRows.some(row => row.selectedHigh) && comparisonRows.some(row => row.selectedLow)) {
-        const high = comparisonRows.find(row => row.selectedHigh)!;
-        const low = comparisonRows.find(row => row.selectedLow)!;
-        const pricing: GalleryCardPricing = {
-          listings: comparisonRows.map(row => ({ store: row.store, price: row.rawPrice })),
-          adopted: { store: high.store, price: high.rawPrice },
-          comparison: { rows: comparisonRows, high: { store: high.store, price: high.highPrice },
-            low: { store: low.store, price: low.lowPrice } },
-        };
-        for (const card of snapshotCards.filter(card => card.source_shinsoku_id === product.id)) result.set(card.id, pricing);
-        continue;
-      }
       const adoptedPrice = price(product.source_price);
       const provenSource = (provenance.source === 'kecak' || provenance.source === 'shinsoku')
         && price(provenance.price) === adoptedPrice && adoptedPrice !== null ? String(provenance.source) : null;
@@ -174,6 +187,10 @@ export async function loadTokyoGalleryPricing(db: SupabaseClient, cards: Card[])
       const pricing: GalleryCardPricing = { listings, adopted: { store: adoptedStore, price: adoptedPrice } };
       for (const card of snapshotCards.filter(card => card.source_shinsoku_id === product.id)) result.set(card.id, pricing);
     }
+  }
+  const rows = snapshots ?? [];
+  for (let offset = 0; offset < rows.length; offset += 4) {
+    await Promise.all(rows.slice(offset, offset + 4).map(loadSnapshot));
   }
   return result;
 }

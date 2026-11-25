@@ -54,8 +54,8 @@ test('price history lists published regular cards and rendered custom items newe
         { source: 'shinsoku', id: 'IAP1', rawPrice: 100000, highRate: 0.05, highPrice: 95000, lowRate: 0.05, lowPrice: 95000 },
         { source: 'toreca_bank', id: '1:1:0', rawPrice: 90000, highRate: 0.05, highPrice: 85000, lowRate: 0.05, lowPrice: 85000 },
       ] }]);
-    if (table === 'order_list_import') return json({ id: 'o', business_date: '2026-09-23' });
-    if (table === 'kaitori_checker_offer_snapshot') return json([]);
+    // This card has both selected prices in its original comparison.
+    // A search must not fetch legacy offer data to render it.
     if (table === 'custom_buyback_render_log') {
       assert.equal(q.get('store'), 'eq.manman-akihabara');
       assert.equal(q.get('order'), 'rendered_at.desc');

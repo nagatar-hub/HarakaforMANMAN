@@ -767,16 +767,27 @@ galleryRoutes.get('/gallery/price-history', async (c) => {
   if (!q || q.length > 100) return c.json({ error: '検索語は1〜100文字で指定してください' }, 400);
 
   const supabase = createSupabaseClient();
-  // ponytail: prepared_card を ILIKE で走査。遅くなったら pg_trgm インデックスを追加する
-  const { data: cardRows, error: cardError } = await supabase
-    .from('prepared_card')
-    .select('id, run_id, franchise, card_name, grade, list_no, tag, price_high, price_low, source_shinsoku_id, run:run_id!inner(started_at)')
-    .eq('run.store', STORE_NAME)
-    .eq('run.status', 'completed')
-    .not('run.generate_done_at', 'is', null)
-    .or(buildPriceHistoryOrFilter(q, ['card_name', 'list_no']))
-    .order('created_at', { ascending: false })
-    .limit(PRICE_HISTORY_LIMIT);
+  const [cardResult, logResult] = await Promise.all([
+    supabase
+      .from('prepared_card')
+      .select('id, run_id, franchise, card_name, grade, list_no, tag, price_high, price_low, source_shinsoku_id, run:run_id!inner(started_at)')
+      .eq('run.store', STORE_NAME)
+      .eq('run.status', 'completed')
+      .not('run.generate_done_at', 'is', null)
+      .or(buildPriceHistoryOrFilter(q, ['card_name', 'list_no']))
+      .order('created_at', { ascending: false })
+      .limit(PRICE_HISTORY_LIMIT),
+    supabase
+      .from('custom_buyback_render_log')
+      .select('id, rendered_at, rendered_by, sheet_name, sheet_created_by, franchise, display_date, card_name, grade, list_no, tag, final_price_high, source_shop_name, override_reason, backfilled')
+      .eq('store', STORE_NAME)
+      .or(buildPriceHistoryOrFilter(q, ['card_name', 'list_no']))
+      .order('rendered_at', { ascending: false })
+      .limit(PRICE_HISTORY_LIMIT),
+  ]);
+  const { data: cardRows, error: cardError } = cardResult;
+  const { data: logRows, error: logError } = logResult;
+  if (logError) return c.json({ error: logError.message }, 500);
   if (cardError) return c.json({ error: cardError.message }, 500);
   const cards = (cardRows ?? []) as unknown as Array<{
     id: string; run_id: string; franchise: string; card_name: string; grade: string | null; list_no: string | null;
@@ -803,15 +814,6 @@ galleryRoutes.get('/gallery/price-history', async (c) => {
     return c.json({ error: error instanceof Error ? error.message : '掲載価格の読込に失敗しました' }, 500);
   }
 
-  // カスタム買取表は画像生成ごとの掲載記録から引く（シートは上書き保存のため）
-  const { data: logRows, error: logError } = await supabase
-    .from('custom_buyback_render_log')
-    .select('id, rendered_at, rendered_by, sheet_name, sheet_created_by, franchise, display_date, card_name, grade, list_no, tag, final_price_high, source_shop_name, override_reason, backfilled')
-    .eq('store', STORE_NAME)
-    .or(buildPriceHistoryOrFilter(q, ['card_name', 'list_no']))
-    .order('rendered_at', { ascending: false })
-    .limit(PRICE_HISTORY_LIMIT);
-  if (logError) return c.json({ error: logError.message }, 500);
   const logs = logRows ?? [];
 
   const entries: PriceHistoryEntry[] = [

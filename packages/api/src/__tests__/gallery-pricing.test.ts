@@ -34,10 +34,8 @@ test('gallery prices use each card historical snapshot, exact checker edition, a
       assert.equal(q.get('id'), 'in.(old,new)');
       assert.equal(q.has('order'), false, 'must not select latest snapshot');
       data = ['old', 'new'].map(id => ({ id, checker_run_id: `checker-${id}`, checker_source_store: 'oripark',
-        order_list_import_id: `order-${id}`, business_date: '2026-09-17', report: {
-          order_business_date: id === 'old' ? '2026-09-16' : '2026-09-17',
-          ...(id === 'new' ? { price_sources: { IAP1: { source: 'shinsoku', price: 2000 } } } : {}),
-        } }));
+        order_list_import_id: `order-${id}`, business_date: '2026-09-17',
+        price_sources: id === 'new' ? { IAP1: { source: 'shinsoku', price: 2000 } } : null }));
     } else if (table === 'tokyo_buyback_product') {
       const old = q.get('snapshot_id') === 'eq.old';
       data = [{ id: 'IAP1', source_price: old ? 1000 : 2000, origins: [
@@ -116,7 +114,7 @@ test('five-source snapshots expose the per-store comparison and fall back when a
     ].map(card => Object.fromEntries(Object.entries(card).filter(([key]) => q.get('select')!.split(',').map(x => x.trim()).includes(key))));
     else if (table === 'tokyo_buyback_snapshot') data = [{ id: 's', checker_run_id: 'checker', checker_source_store: 'oripark',
       order_list_import_id: 'order', business_date: '2026-09-17',
-      report: { order_business_date: '2026-09-17', price_sources: { IAP2: { source: 'shinsoku', price: 50000 } } } }];
+      price_sources: { IAP2: { source: 'shinsoku', price: 50000 } } }];
     else if (table === 'tokyo_buyback_product') data = [
       { id: 'IAP1', source_price: 110000, price_high: 100000, price_low: 95000,
         selected_high_source: 'kecak', selected_low_source: 'shinsoku', origins },

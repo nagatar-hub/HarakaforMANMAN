@@ -1,4 +1,5 @@
 {
+  "regions": ["hnd1"],
   "buildCommand": "npm run build -w packages/shared && npm run build -w packages/web",
   "outputDirectory": "packages/web/.next",
   "installCommand": "npm ci",

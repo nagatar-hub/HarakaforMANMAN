@@ -29,6 +29,8 @@ type Stats = {
 const API_URL = '/api/backend';
 const FRANCHISE_JA: Readonly<Record<string, string>> = SHARED_FRANCHISE_JA;
 
+const CARD_BATCH_SIZE = 50;
+
 /** タグ選択プルダウン */
 function TagSelectCell({
   value,
@@ -185,6 +187,7 @@ export default function DbPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [tagOptions, setTagOptions] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
+  const [visibleCount, setVisibleCount] = useState(CARD_BATCH_SIZE);
   const [filter, setFilter] = useState('all');
   const [healthChecking, setHealthChecking] = useState(false);
   const [healthResult, setHealthResult] = useState<{ checked: number; ok: number; dead: number } | null>(null);
@@ -314,10 +317,7 @@ export default function DbPage() {
     return cards.filter((c) => c.tag === filterTag);
   })();
 
-  // フランチャイズタブ変更時にタグフィルターをリセット
-  useEffect(() => {
-    setFilterTag(null);
-  }, [filter]);
+  const visibleCards = filteredCards.slice(0, visibleCount);
 
   return (
     <div>
@@ -351,7 +351,10 @@ export default function DbPage() {
             {hasAnyTag && (
               <select
                 value={filterTag || ''}
-                onChange={(e) => setFilterTag(e.target.value || null)}
+                onChange={(e) => {
+                  setFilterTag(e.target.value || null);
+                  setVisibleCount(CARD_BATCH_SIZE);
+                }}
                 className="px-3 py-1.5 text-xs font-medium rounded-lg border border-border-card bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-[#b8a080] appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2212%22%20height%3D%2212%22%20viewBox%3D%220%200%2012%2012%22%3E%3Cpath%20fill%3D%22%23666%22%20d%3D%22M6%208L1%203h10z%22%2F%3E%3C%2Fsvg%3E')] bg-no-repeat bg-[right_8px_center] pr-7"
               >
                 <option value="">すべてのタグ</option>
@@ -370,7 +373,13 @@ export default function DbPage() {
         </div>
         <FranchiseTabs
           active={filter}
-          onChange={setFilter}
+          onChange={(nextFilter) => {
+            if (nextFilter !== filter) {
+              setFilter(nextFilter);
+              setFilterTag(null);
+              setVisibleCount(CARD_BATCH_SIZE);
+            }
+          }}
           extraTabs={[
             { key: 'error', label: 'エラー', badge: stats?.errorCount },
           ]}
@@ -407,13 +416,14 @@ export default function DbPage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredCards.map((card) => (
+                {visibleCards.map((card) => (
                   <tr key={card.id} className="border-t border-border-card hover:bg-[#ded5cb] transition-colors cursor-pointer" onClick={() => setPreviewCard(card)}>
                     <td className="px-4 py-3">
                       <div className="relative">
                         {card.image_url ? (
                           <img
                             src={card.image_url}
+                            loading="lazy"
                             alt=""
                             className={`w-14 h-[78px] object-cover rounded-lg ${card.image_status === 'dead' ? 'opacity-40 border-2 border-red-400' : ''}`}
                             onError={(e) => {
@@ -478,7 +488,7 @@ export default function DbPage() {
 
           {/* Mobile: カード表示 */}
           <div className="sm:hidden space-y-2">
-            {filteredCards.map((card) => (
+            {visibleCards.map((card) => (
               <div
                 key={card.id}
                 className="bg-card-bg border border-border-card rounded-xl p-3 active:bg-[#ded5cb] transition-colors cursor-pointer"
@@ -490,6 +500,7 @@ export default function DbPage() {
                     {card.image_url ? (
                       <img
                         src={card.image_url}
+                        loading="lazy"
                         alt=""
                         className={`w-12 h-[68px] object-cover rounded-lg ${card.image_status === 'dead' ? 'opacity-40 border-2 border-red-400' : ''}`}
                         onError={(e) => {
@@ -558,6 +569,16 @@ export default function DbPage() {
               </div>
             ))}
           </div>
+          {visibleCards.length < filteredCards.length && (
+            <button
+              type="button"
+              className="mt-4 w-full rounded-xl border border-border-card bg-card-bg py-3 text-sm font-medium"
+              onClick={() => setVisibleCount((count) => count + CARD_BATCH_SIZE)}
+            >
+              次の{Math.min(CARD_BATCH_SIZE, filteredCards.length - visibleCards.length)}件を表示
+              （{visibleCards.length} / {filteredCards.length}件）
+            </button>
+          )}
         </>
       )}
 
